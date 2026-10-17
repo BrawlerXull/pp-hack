@@ -1,8 +1,9 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+  --background: #f6f7f9;
+  --foreground: #0f172a;
 }
 
 @theme inline {
@@ -10,17 +11,42 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Wick & Wax (demo shop) */
+  --color-cream: #fbf7f0;
+  --color-wax: #f3e9da;
+  --color-ember: #b45309;
+  --color-ember-dark: #8a3f06;
+  --color-soot: #2b2118;
+
+  /* Checkout Guard */
+  --color-guard: #1d4ed8;
+  --color-guard-dark: #1e3a8a;
+  --color-ink: #0f172a;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
+
+/* Markdown rendered from incident reports */
+.prose-report h1 { font-size: 1.25rem; font-weight: 650; margin: 0 0 0.75rem; }
+.prose-report h2 { font-size: 1.05rem; font-weight: 650; margin: 1.25rem 0 0.5rem; }
+.prose-report h3 { font-size: 0.95rem; font-weight: 650; margin: 1rem 0 0.4rem; }
+.prose-report p { margin: 0.5rem 0; line-height: 1.6; }
+.prose-report ul { list-style: disc; padding-left: 1.25rem; margin: 0.5rem 0; }
+.prose-report ol { list-style: decimal; padding-left: 1.25rem; margin: 0.5rem 0; }
+.prose-report li { margin: 0.2rem 0; line-height: 1.55; }
+.prose-report strong { font-weight: 650; }
+.prose-report table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.875rem; }
+.prose-report th, .prose-report td { border: 1px solid #e2e8f0; padding: 0.4rem 0.6rem; text-align: left; }
+.prose-report th { background: #f8fafc; font-weight: 600; }
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgb(220 38 38 / 0.45); }
+  70% { box-shadow: 0 0 0 10px rgb(220 38 38 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(220 38 38 / 0); }
+}
+.pulse-danger { animation: pulse-ring 1.6s ease-out infinite; }

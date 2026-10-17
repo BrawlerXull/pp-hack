@@ -4,7 +4,7 @@
 
 Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox**. The attacker is a script, and the "stolen" cards are sandbox test cards.
 
-> Status: backend MVP working end to end (guard, detection, Gemini verdicts, policy, refunds, reports, webhooks). Frontend next. See [docs/](docs/README.md) for the plan and [backend/README.md](backend/README.md) to run it.
+> Status: working end to end. Demo shop with real PayPal (JS SDK v6) checkout, owner dashboard (AG Grid + AG Charts, live updates), and Python backend (guard, detection, Gemini verdicts, policy, refunds, reports, webhooks). See [docs/](docs/README.md) for the plan.
 
 ## Layout
 
@@ -22,7 +22,16 @@ createdb checkout_guard && createdb checkout_guard_test
 cd backend && uv sync && uv run alembic upgrade head
 uv run uvicorn app.main:app --port 8000      # API  (docs at http://localhost:8000/docs)
 uv run python -m app.worker.main             # worker (separate terminal)
+cd ../frontend && pnpm install && pnpm dev   # http://localhost:3000
 ```
+
+| URL | What |
+|---|---|
+| http://localhost:3000 | **Wick & Wax** demo shop: PayPal checkout, protected by the guard |
+| http://localhost:3000/guard | **Checkout Guard** dashboard (password `guard-demo`): War Room, incidents, settings, demo lab |
+| http://localhost:8000/docs | Backend API docs |
+
+In the dashboard: **Demo lab → Seed 28 days of normal history** once, then use **Simulate card-testing attack** / **Simulate flash sale** on the War Room.
 
 PayPal webhooks, enabling card payments in the sandbox, and demo scenarios are covered in [backend/README.md](backend/README.md).
 
