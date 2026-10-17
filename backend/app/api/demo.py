@@ -19,6 +19,7 @@ from app.db.models import (
     GuardMode,
     GuardState,
     Incident,
+    MerchantSettings,
     Report,
     Source,
 )
@@ -91,7 +92,8 @@ async def seed(shop_id: OwnerShop, session: Session, days: int = 28) -> dict:
 
 @router.post("/reset")
 async def reset(shop_id: OwnerShop, session: Session) -> dict:
-    """Wipe demo activity: attempts, incidents, actions, reports. Keeps seeded history and webhook events."""
+    """Wipe demo activity (attempts, incidents, actions, reports, sale windows).
+    Keeps seeded history and webhook events."""
     for r in RUNS.values():
         r.cancelled = True
     incident_ids = list(
@@ -111,6 +113,9 @@ async def reset(shop_id: OwnerShop, session: Session) -> dict:
         update(GuardState)
         .where(GuardState.shop_id == shop_id)
         .values(mode=GuardMode.NORMAL, blocked_fingerprints=[], held_skus=[], set_by_incident=None)
+    )
+    await session.execute(
+        update(MerchantSettings).where(MerchantSettings.shop_id == shop_id).values(sale_windows=[])
     )
     audit(session, "owner", "demo.reset")
     await publish(session, "demo.reset", {})

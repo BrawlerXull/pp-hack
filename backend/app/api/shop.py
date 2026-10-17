@@ -10,7 +10,7 @@ from app.api.deps import get_paypal
 from app.config import Settings, get_settings
 from app.db.models import Decision
 from app.db.session import get_session
-from app.guard.check import issue_challenge_token
+from app.guard.check import GuardContext, check, issue_challenge_token
 from app.paypal.client import PayPalClient
 from app.paypal.orders import generate_client_token
 from app.shop.catalog import PRODUCTS
@@ -35,6 +35,13 @@ class OrderIn(BaseModel):
         min_length=6, max_length=80, description="Random id the browser keeps in localStorage"
     )
     email: str | None = Field(default=None, max_length=254)
+    challenge_token: str | None = None
+
+
+class PrecheckIn(BaseModel):
+    sku: str
+    method: Literal["card", "wallet"]
+    device_id: str = Field(min_length=6, max_length=80)
     challenge_token: str | None = None
 
 
@@ -121,3 +128,17 @@ def challenge(body: ChallengeIn, request: Request) -> dict:
     """Human check passed in the browser → short-lived token bound to this device fingerprint."""
     fp = fingerprint(body.device_id, request.headers.get("user-agent"))
     return {"challenge_token": issue_challenge_token(fp), "expires_in": 600}
+
+
+@router.post("/precheck")
+async def precheck(
+    body: PrecheckIn,
+    request: Request,
+    session: Session,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict:
+    """Ask the guard before showing the PayPal button, so a challenge is shown up front instead of
+    after PayPal's popup has opened. Not logged as an attempt; /shop/orders enforces the same check."""
+    fp = fingerprint(body.device_id, request.headers.get("user-agent"))
+    v = await check(session, GuardContext(settings.shop_id, body.sku, body.method, fp, body.challenge_token))
+    return {"decision": v.decision, "reason": v.reason}

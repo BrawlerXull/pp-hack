@@ -104,6 +104,19 @@ def validate_evidence(verdict: Verdict, features: dict[int, Features]) -> tuple[
     return kept, len(verdict.evidence) - len(kept)
 
 
+def _friendly(exc: Exception) -> str:
+    msg = str(exc)
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return "Gemini quota exhausted"
+    if "503" in msg or "UNAVAILABLE" in msg:
+        return "Gemini temporarily overloaded"
+    if "timed out" in msg.lower() or "TimeoutError" in msg:
+        return "Gemini timed out"
+    if "GEMINI_API_KEY" in msg:
+        return "no Gemini API key configured"
+    return "Gemini request failed"
+
+
 def fallback_verdict(reason: str) -> Verdict:
     return Verdict(
         classification="unclear",
@@ -111,7 +124,7 @@ def fallback_verdict(reason: str) -> Verdict:
         summary="Unusual checkout activity detected. AI analysis is unavailable, so only soft defences apply.",  # noqa: E501
         evidence=[],
         recommended_actions=["SCA_ON", "NOTIFY"],
-        uncertainty_notes=f"AI unavailable: {reason}",
+        uncertainty_notes=f"AI unavailable ({reason}). It will retry on the next assessment.",
     )
 
 
@@ -121,7 +134,7 @@ async def analyse(analyst_input: dict[str, Any], features: dict[int, Features]) 
         try:
             verdict, model_id = await generate_json(system=SYSTEM, prompt=prompt, schema=Verdict)
         except AIUnavailable as exc:
-            return AnalystResult(fallback_verdict(str(exc)[:160]), "rules-fallback", ai_available=False)
+            return AnalystResult(fallback_verdict(_friendly(exc)), "rules-fallback", ai_available=False)
 
         kept, dropped = validate_evidence(verdict, features)
         if kept or verdict.classification == "unclear" or attempt == 1:
