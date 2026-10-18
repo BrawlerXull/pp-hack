@@ -31,7 +31,10 @@ All endpoints are FastAPI routes. The OpenAPI schema is exported at build time, 
 | GET | `/dashboard/attempts?from&to` | Rows for the AG Grid table and AG Studio data source |
 | GET | `/dashboard/incidents`, `/dashboard/incidents/{id}` | Verdict, evidence, actions, timeline |
 | GET | `/dashboard/incidents/{id}/report`, `/evidence` | Markdown (+ PDF) |
-| POST | `/dashboard/incidents/{id}/actions/{action_id}/approve` | Owner approval above caps |
+| POST | `/dashboard/incidents/{id}/actions/{action_id}/approve` | Owner approval of a queued refund. 409 `{code: "disputed"}` for a disputed payment (a refund on top of a chargeback pays the buyer twice) unless the body is `{"override_dispute": true}` |
+| POST | `/dashboard/incidents/{id}/actions/{action_id}/reject` | Owner "Keep": the payment is never refunded by this or any later incident |
+| GET | `/dashboard/devices` | Blocked and owner-trusted devices in force, with reason, incident and expiry |
+| POST | `/dashboard/devices/{fingerprint}/unblock` | Release the block and trust the device (left out of the attack signature and refund matching, so enforcement does not re-block it) |
 | POST | `/dashboard/incidents/{id}/undo` | Turn SCA off, unblock, end incident |
 | GET | `/dashboard/stream` | SSE: `attempt`, `incident.opened/updated/closed`, `action`, `alert` |
 | GET/PUT | `/settings` | Caps, approval threshold, sale windows, autopilot, kill switch |
@@ -51,12 +54,13 @@ All endpoints are FastAPI routes. The OpenAPI schema is exported at build time, 
 |---|---|
 | `shops` | id, name, api_key_hash, paypal_merchant_id |
 | `merchant_settings` | shop_id, autopilot (bool), kill_switch, max_auto_refund_per_txn (default 10.00), max_auto_refund_per_incident (100.00), approval_required_above, sale_windows (jsonb), deescalate_after_min (30) |
-| `guard_state` | shop_id, mode (`normal` \| `sca_all` \| `sca_all+challenge`), blocked_fingerprints (array), held_skus (array), updated_at, set_by_incident |
-| `checkout_attempts` | id, shop_id, ts, source (`web` \| `simulator`), sku, amount, method (`card` \| `wallet`), fingerprint_hash, ip_hash, email_domain, payer_id_hash, card_bin6, card_last4, card_expiry, guard_decision, paypal_order_id, order_status, capture_id, capture_tries, outcome (`created` \| `captured` \| `declined` \| `error` \| `blocked` \| `challenged` \| `sca_required` \| `refunded`), decline_code (canonical name), processor_code (raw `processor_response.response_code`), decline_category (`fraud` \| `customer` \| `probing` \| `processor` \| `unknown_decline`), paypal_debug_id, latency_ms |
+| `guard_state` | shop_id, mode (`normal` \| `sca_all` \| `sca_all+challenge`), held_skus (array), updated_at, set_by_incident |
+| `device_entries` | id, shop_id, fingerprint, kind (`block` \| `trust`), incident_id, reason, created_at, expires_at (blocks 24 h, trust 30 days), released_at. One open entry per device and kind (partial unique index). The worker releases expired entries (audit `block.expired`); the guard check filters by expiry too |
+| `checkout_attempts` | id, shop_id, ts, source (`web` \| `simulator`), sku, amount, method (`card` \| `wallet`), fingerprint_hash, ip_hash, email_domain, payer_id_hash, card_bin6, card_last4, card_expiry, guard_decision, paypal_order_id, order_status, capture_id, capture_tries, outcome (`created` \| `captured` \| `declined` \| `error` \| `blocked` \| `challenged` \| `sca_required` \| `refunded`), decline_code (canonical name), processor_code (raw `processor_response.response_code`), decline_category (`fraud` \| `customer` \| `probing` \| `processor` \| `unknown_decline`), paypal_debug_id, disputed (true while a refund would pay twice: dispute open, or resolved any way but the seller keeping the money), dispute_status, dispute_id (a new dispute id reopens a resolved one), latency_ms |
 | `paypal_events` | id, transmission_id (unique), event_type, resource_id, verified (enum), received_at, processed_at, payload (jsonb) |
 | `baselines` | shop_id, hour_of_week, feature, mean, std, sample_days, refreshed_at |
 | `incidents` | id, shop_id, opened_at, closed_at, status (`open` \| `contained` \| `closed` \| `false_alarm`), trigger, features (jsonb), verdict (jsonb), classification, confidence, model_id, prompt_version, ai_available (bool) |
-| `actions` | id, incident_id, type (`SCA_ON` \| `CHALLENGE_ON` \| `BLOCK_FP` \| `HOLD_SKU` \| `REFUND` \| `NOTIFY` \| `DEESCALATE`), params (jsonb), policy_rule, status (`proposed` \| `executed` \| `awaiting_approval` \| `rejected` \| `failed`), approved_by, paypal_ref, created_at |
+| `actions` | id, incident_id, type (`SCA_ON` \| `CHALLENGE_ON` \| `BLOCK_FP` \| `HOLD_SKU` \| `REFUND` \| `NOTIFY` \| `DEESCALATE`), params (jsonb), policy_rule, status (`proposed` \| `executed` \| `awaiting_approval` \| `rejected` \| `failed` \| `in_flight`), approved_by, paypal_ref, created_at, claimed_at. A REFUND's params hold attempt_id, capture_id, amount, request_id, `match` (strong \| weak) and `matched_on`. Partial unique index `uq_actions_refund_attempt` on `params->>'attempt_id'` for REFUND rows in executed / awaiting_approval / rejected / in_flight: one refund decision per payment across all incidents (FAILED may be retried) |
 | `reports` | incident_id, alert_text, report_md, evidence_md, generated_at, model_id |
 | `audit_log` | id, ts, actor (`detector` \| `ai` \| `policy` \| `executor` \| `owner`), incident_id, event, data (jsonb). Append-only |
 

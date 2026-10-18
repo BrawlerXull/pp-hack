@@ -68,6 +68,23 @@ async def gather_facts(session: AsyncSession, incident: Incident) -> dict[str, A
     pending = [
         a for a in actions if a.type == ActionType.REFUND and a.status == ActionStatus.AWAITING_APPROVAL
     ]
+    # Sent to PayPal with no answer yet, or refused / given up on: money may or may not have moved, so the
+    # owner has to check these in PayPal and the report must never say "no action needed" while they exist.
+    # A failed try that a later refund decision settled (a retry, the owner's approval or Keep) is history.
+    settled = {
+        a.params.get("attempt_id")
+        for a in actions
+        if a.type == ActionType.REFUND and a.status != ActionStatus.FAILED
+    }
+    unresolved = [
+        a
+        for a in actions
+        if a.type == ActionType.REFUND
+        and (
+            a.status == ActionStatus.IN_FLIGHT
+            or (a.status == ActionStatus.FAILED and a.params.get("attempt_id") not in settled)
+        )
+    ]
     refunded_total = sum((Decimal(a.params.get("amount", "0")) for a in refunds), Decimal("0"))
     defences = [
         DEFENCE_TEXT[ActionType(a.type)]
@@ -109,6 +126,8 @@ async def gather_facts(session: AsyncSession, incident: Incident) -> dict[str, A
         "refunded_count": str(len(refunds)),
         "refunded_total": f"${refunded_total:.2f}",
         "pending_refunds": str(len(pending)),
+        "refunds_unresolved": str(len(unresolved)),
+        "refund_table": refund_table(actions),
         "targeted_item": PRODUCTS[top_sku].name if top_sku in PRODUCTS else "several items",
         "devices_blocked": str(len(blocked_devices)),
         "new_email_domains": str(len(sig.get("new_email_domains", []))),
@@ -116,6 +135,41 @@ async def gather_facts(session: AsyncSession, incident: Incident) -> dict[str, A
         "ai_summary": (incident.verdict or {}).get("summary", ""),
         "incident_id": incident.id,
     }
+
+
+REFUND_STATUS = {
+    ActionStatus.EXECUTED: "refunded",
+    ActionStatus.IN_FLIGHT: "sent, no answer from PayPal yet",
+    ActionStatus.FAILED: "not refunded (check in PayPal)",
+    ActionStatus.AWAITING_APPROVAL: "waiting for the merchant",
+    ActionStatus.REJECTED: "kept by the merchant",
+}
+MATCH_TEXT = {
+    "strong_fingerprint": "device used several cards or accounts",
+    "blocked_device": "device already blocked as a bot",
+    "flagged_device": "device flagged in this attack",
+    "single_decline_device": "device had a declined payment",
+    "suspect_domain": "email domain with many declines",
+}
+
+
+def refund_table(actions: list[Action]) -> str:
+    """Every refund decision in the incident, straight from the actions table (never the model). Empty
+    when there were none."""
+    rows = [a for a in actions if a.type == ActionType.REFUND]
+    if not rows:
+        return ""
+    lines = ["| Capture | Amount | Status | Why it matched |", "|---|---|---|---|"]
+    for a in sorted(rows, key=lambda a: a.created_at or datetime.min.replace(tzinfo=UTC)):
+        p = a.params or {}
+        why = ", ".join(MATCH_TEXT.get(m, m) for m in p.get("matched_on") or []) or "-"
+        if p.get("simulated"):
+            why += " (simulated capture)"
+        lines.append(
+            f"| {p.get('capture_id', '-')} | ${Decimal(p.get('amount', '0')):.2f} "
+            f"| {REFUND_STATUS.get(ActionStatus(a.status), a.status)} | {why} |"
+        )
+    return "\n".join(lines)
 
 
 def fill(text: str, facts: dict[str, Any]) -> str:
@@ -135,8 +189,16 @@ def template(facts: dict[str, Any]) -> ReportDraft:
     if is_attack:
         alert = (
             "Your checkout is under a {{classification}}. I've blocked it and refunded {{refunded_count}} "
-            "test payments ({{refunded_total}}). No action needed tonight."
+            "test payments ({{refunded_total}}). "
         )
+        if facts["refunds_unresolved"] != "0":
+            alert += (
+                "{{refunds_unresolved}} refunds were not confirmed by PayPal: please check them in PayPal."
+            )
+        elif facts["pending_refunds"] != "0":
+            alert += "{{pending_refunds}} more refunds wait for your approval."
+        else:
+            alert += "No action needed tonight."
     elif facts["defences"] != NO_DEFENCES:
         # e.g. the AI was unavailable and the fixed rules acted on fraud signals (policy R0/R3b).
         alert = "I noticed {{classification}} at your checkout and {{defences}}. I'm still watching."
@@ -153,6 +215,7 @@ def template(facts: dict[str, Any]) -> ReportDraft:
 | Payments that went through | {{got_through}} |
 | Refunded automatically | {{refunded_count}} ({{refunded_total}}) |
 | Waiting for your approval | {{pending_refunds}} |
+| Not confirmed by PayPal (check in PayPal) | {{refunds_unresolved}} |
 
 **What I did:** {{defences}}.
 
@@ -170,6 +233,8 @@ The extra checks are switched off again once the attack stops, so real customers
 - **Attempts:** {{attempts}}; declined {{declined}}; stopped by 3-D Secure {{sca_required}}; blocked {{blocked}}
 - **Unauthorised payments that succeeded:** {{got_through}}; refunded proactively {{refunded_count}} ({{refunded_total}})
 - **Signals:** {{new_email_domains}} never-seen email domains, {{devices_blocked}} attacking devices
+
+{{refund_table}}
 
 The merchant refunded the test payments before any dispute was opened and asks that disputes
 related to this incident be reviewed with this context.
@@ -205,10 +270,17 @@ async def compose(
         )
     except AIUnavailable:
         return fallback, "template"
+    evidence = ai_draft.evidence_md
+    if facts["refund_table"] and "{{refund_table}}" not in evidence:
+        evidence += "\n\n{{refund_table}}"  # PayPal support always gets the per-capture refund list
     return ReportDraft(
-        alert=fallback.alert if has_stray_numbers(ai_draft.alert) else ai_draft.alert,
+        # Unconfirmed refunds must reach the owner: an AI alert that leaves them out is replaced.
+        alert=fallback.alert
+        if has_stray_numbers(ai_draft.alert)
+        or (facts["refunds_unresolved"] != "0" and "{{refunds_unresolved}}" not in ai_draft.alert)
+        else ai_draft.alert,
         report_md=fallback.report_md if has_stray_numbers(ai_draft.report_md) else ai_draft.report_md,
-        evidence_md=fallback.evidence_md if has_stray_numbers(ai_draft.evidence_md) else ai_draft.evidence_md,
+        evidence_md=fallback.evidence_md if has_stray_numbers(ai_draft.evidence_md) else evidence,
     ), model_id
 
 

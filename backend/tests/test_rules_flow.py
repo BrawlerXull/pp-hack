@@ -26,6 +26,7 @@ from app.db.models import (
 from app.detection import baseline as baseline_mod
 from app.detection.features import compute_all
 from app.detection.triggers import evaluate
+from app.guard import devices
 from app.guard.check import device_over_limit, invalidate_cache, issue_challenge_token
 from app.incidents.service import IncidentService
 from app.policy.engine import PlannedAction
@@ -33,7 +34,7 @@ from app.shop.catalog import CHEAPEST_SKU
 from app.shop.service import CheckoutRequest, OfflinePlan, fingerprint, place_order
 from app.simulator.scenarios import card_testing
 from app.simulator.seed import seed_history
-from tests.conftest import SHOP
+from tests.conftest import SHOP, blocked
 from tests.test_pipeline import fake_ai, run_scenario
 
 REASSESS = timedelta(minutes=2)
@@ -112,7 +113,7 @@ async def test_an_owner_close_between_r0_and_the_claim_leaves_the_checkout_resto
 
     assert seen == []  # the analyst was never asked about a closed incident
     gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert gs.mode == "normal" and gs.held_skus == [] and gs.blocked_fingerprints == []
+    assert gs.mode == "normal" and gs.held_skus == [] and await blocked(db) == []
     assert (await rules(db, incident.id))[-1] == "owner_closed"  # nothing re-armed after the close
 
 
@@ -174,9 +175,10 @@ async def open_incident_with_defences(db, set_by: str | None = None) -> tuple[In
     incident = Incident(shop_id=SHOP, opened_at=datetime.now(UTC), triggers=["decline_spike"])
     db.add(incident)
     await db.flush()
-    incident.previous_guard_state = {"mode": "normal", "blocked_fingerprints": ["old"], "held_skus": []}
+    incident.previous_guard_state = {"mode": "normal", "held_skus": []}
     gs = await db.get(GuardState, SHOP)
-    gs.mode, gs.held_skus, gs.blocked_fingerprints = "sca_all", [CHEAPEST_SKU], ["old", "bot"]
+    gs.mode, gs.held_skus = "sca_all", [CHEAPEST_SKU]
+    await devices.block(db, SHOP, ["old", "bot"], incident.id, {}, datetime.now(UTC))
     gs.set_by_incident = set_by or incident.id
     await db.commit()
     return incident, gs
@@ -188,7 +190,7 @@ async def test_relax_restores_mode_and_holds_but_keeps_blocks(db):
     done = await Executor(db, None).apply(incident, [relax])
     assert [a.params for a in done] == [{"restored_mode": "normal", "released_skus": [CHEAPEST_SKU]}]
     gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert gs.mode == "normal" and gs.held_skus == [] and sorted(gs.blocked_fingerprints) == ["bot", "old"]
+    assert gs.mode == "normal" and gs.held_skus == [] and await blocked(db) == ["bot", "old"]
     assert await Executor(db, None).apply(incident, [relax]) == []  # nothing left to restore
 
 
@@ -266,8 +268,7 @@ async def test_baseline_ignores_guard_stopped_attempts_refunds_and_blocked_devic
     db.add(attack_row(t, 1, outcome=Outcome.REFUNDED, fp="refunded-bot"))
     db.add(attack_row(t, 2, outcome=Outcome.CAPTURED, fp="blocked-now"))
     db.add(attack_row(t, 3, outcome=Outcome.CAPTURED, fp="real-shopper"))
-    gs = await db.get(GuardState, SHOP)
-    gs.blocked_fingerprints = ["blocked-now"]
+    await devices.block(db, SHOP, ["blocked-now"], None, {}, now)
     await db.commit()
 
     after = await baseline_mod.load_baseline(db, SHOP, now)
@@ -368,8 +369,7 @@ async def test_six_attempts_in_ten_minutes_challenge_the_device(db):
     # Past the token limit another challenge could not help: blocked (not looped on a challenge) until
     # the device's attempts age out of the window.
     assert more[5].decision == Decision.BLOCK and more[5].reason == "device_velocity_limit"
-    gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert fingerprint("dev-fast", "Mozilla/5.0") not in gs.blocked_fingerprints  # not a permanent block
+    assert fingerprint("dev-fast", "Mozilla/5.0") not in await blocked(db)  # not a permanent block
 
 
 async def test_two_declines_challenge_the_device_and_four_beat_a_token(db):

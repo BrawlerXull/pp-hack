@@ -1,4 +1,5 @@
-"""Background worker: webhook processing + the detector loop.
+"""Background worker: webhook processing, the detector loop, expiring device blocks, and re-sending
+refunds left in flight (crash or lost PayPal answer) with their original PayPal-Request-Id.
 
 Run: `uv run python -m app.worker.main`. A Postgres advisory lock makes sure only one worker is
 active, so a second instance (e.g. during a deploy) waits instead of double-acting.
@@ -6,15 +7,18 @@ active, so a second instance (e.g. during a deploy) waits instead of double-acti
 
 import asyncio
 import signal
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlalchemy import text
 
+from app.actions.executor import Executor
 from app.ai import breaker
 from app.config import get_settings
 from app.db.bootstrap import ensure_shop
 from app.db.session import get_engine, get_sessionmaker
+from app.guard import devices
+from app.guard.check import invalidate_cache
 from app.incidents.service import IncidentService, release_assessment_claims
 from app.incidents.webhook_processor import process_pending
 from app.log_config import configure_logging
@@ -48,6 +52,12 @@ async def run() -> None:
             try:
                 async with sessions() as s:
                     await process_pending(s)
+                async with sessions() as s:
+                    if await devices.prune_expired(s, settings.shop_id, datetime.now(UTC)):
+                        invalidate_cache(settings.shop_id)  # this process only; the API filters by expiry
+                    await s.commit()
+                async with sessions() as s:
+                    await Executor(s, paypal).sweep_in_flight(settings.shop_id)
                 async with sessions() as s:
                     svc = IncidentService(s, paypal, timedelta(seconds=settings.reassess_interval_s))
                     await svc.tick(settings.shop_id)

@@ -6,8 +6,20 @@ export class ApiError extends Error {
     public status: number,
     public body: unknown,
   ) {
-    super(typeof body === "object" && body && "detail" in body ? String((body as { detail: unknown }).detail) : `HTTP ${status}`);
+    super(errorMessage(status, body));
   }
+
+  // Structured FastAPI detail ({code, message}), e.g. the 409 for approving a refund on a disputed payment.
+  get code(): string | undefined {
+    const d = typeof this.body === "object" && this.body ? (this.body as { detail?: unknown }).detail : undefined;
+    return typeof d === "object" && d && "code" in d ? String((d as { code: unknown }).code) : undefined;
+  }
+}
+
+function errorMessage(status: number, body: unknown): string {
+  const d = typeof body === "object" && body && "detail" in body ? (body as { detail: unknown }).detail : undefined;
+  if (typeof d === "object" && d && "message" in d) return String((d as { message: unknown }).message);
+  return d !== undefined ? String(d) : `HTTP ${status}`;
 }
 
 export async function api<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
@@ -133,18 +145,23 @@ export type ActionRow = {
   id: string;
   incident_id: string;
   type: "SCA_ON" | "BLOCK_FP" | "HOLD_SKU" | "REFUND" | "NOTIFY" | "DEESCALATE";
-  status: "executed" | "awaiting_approval" | "rejected" | "failed";
+  // in_flight: a refund sent to PayPal whose answer is not in yet (re-sent with the same request id if lost).
+  status: "executed" | "awaiting_approval" | "rejected" | "failed" | "in_flight";
   rule: string;
   params: Record<string, unknown>;
   paypal_ref: string | null;
+  error: string | null;
   approved_by: string;
   created_at: string;
 };
 
+export type DeviceRow = { fingerprint: string; reason: string | null; incident_id: string | null; created_at: string; expires_at: string };
+export type Devices = { blocked: DeviceRow[]; trusted: DeviceRow[] };
+
 export type IncidentDetail = IncidentSummary & {
   verdict: Verdict | null;
   features: Record<string, unknown>;
-  signature: { top_sku?: string | null; fingerprints?: string[]; strong_fingerprints?: string[]; new_email_domains?: string[]; window_start?: string };
+  signature: { top_sku?: string | null; fingerprints?: string[]; strong_fingerprints?: string[]; weak_fingerprints?: string[]; new_email_domains?: string[]; suspect_domains?: string[]; window_start?: string };
   model_id: string | null;
   prompt_version: string | null;
   verdict_at: string | null;

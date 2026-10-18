@@ -7,11 +7,12 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from app.actions.executor import Executor, action_event
+from app.actions.executor import DisputedCapture, Executor, action_event
 from app.ai import gemini
 from app.api.deps import OwnerShop, get_broadcaster, get_paypal
 from app.config import Settings, get_settings
@@ -22,6 +23,7 @@ from app.db.models import (
     ActionType,
     AuditLog,
     CheckoutAttempt,
+    DeviceListKind,
     GuardMode,
     GuardState,
     Incident,
@@ -31,6 +33,7 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.events import Broadcaster, publish
+from app.guard import devices
 from app.guard.check import invalidate_cache
 from app.incidents.service import IncidentService, incident_event, open_incident
 from app.paypal.client import PayPalClient
@@ -91,7 +94,7 @@ async def summary(shop_id: OwnerShop, session: Session) -> dict[str, Any]:
         "ai": await gemini.status(),
         "guard_state": {
             "mode": gs.mode if gs else GuardMode.NORMAL,
-            "blocked_devices": len(gs.blocked_fingerprints or []) if gs else 0,
+            "blocked_devices": await devices.count_blocked(session, shop_id),
             "held_skus": gs.held_skus if gs else [],
         },
         "last_24h": {
@@ -220,6 +223,11 @@ async def _pending_action(session: AsyncSession, inc: Incident, action_id: str) 
     return action
 
 
+class ApproveIn(BaseModel):
+    # The owner read the double-loss warning and is settling the dispute with this refund on purpose.
+    override_dispute: bool = False
+
+
 @router.post("/incidents/{incident_id}/actions/{action_id}/approve")
 async def approve(
     incident_id: str,
@@ -227,9 +235,20 @@ async def approve(
     shop_id: OwnerShop,
     session: Session,
     paypal: Annotated[PayPalClient, Depends(get_paypal)],
+    body: ApproveIn | None = None,
 ) -> dict[str, Any]:
+    """409 for a disputed capture unless override_dispute is sent: see executor.DISPUTE_DOUBLE_LOSS."""
     inc = await _incident_or_404(session, shop_id, incident_id)
-    action = await Executor(session, paypal).approve(inc, await _pending_action(session, inc, action_id))
+    pending = await _pending_action(session, inc, action_id)
+    try:
+        action = await Executor(session, paypal).approve(
+            inc, pending, override_dispute=bool(body and body.override_dispute)
+        )
+    except DisputedCapture as exc:
+        await session.rollback()
+        raise HTTPException(
+            409, {"code": "disputed", "message": str(exc), "dispute_status": exc.dispute_status}
+        ) from exc
     await session.commit()
     return action_event(action)
 
@@ -316,16 +335,54 @@ async def regenerate_report(
 
 @router.post("/guard/reset")
 async def reset_guard(shop_id: OwnerShop, session: Session) -> dict[str, Any]:
-    """Clear all defences (unblock devices, release SKUs, SCA off)."""
+    """Clear all defences (unblock devices, release SKUs, SCA off). Trusted devices stay trusted."""
     gs = await session.get(GuardState, shop_id, with_for_update=True)
     assert gs is not None
-    gs.mode, gs.blocked_fingerprints, gs.held_skus, gs.set_by_incident = GuardMode.NORMAL, [], [], None
+    gs.mode, gs.held_skus, gs.set_by_incident = GuardMode.NORMAL, [], None
     gs.updated_at = datetime.now(UTC)
+    await devices.release_all(session, shop_id, gs.updated_at, (DeviceListKind.BLOCK,))
     audit(session, "owner", "guard.reset")
     await publish(session, "guard.reset", {})
     await session.commit()
     invalidate_cache(shop_id)
     return {"ok": True}
+
+
+@router.get("/devices")
+async def list_devices(shop_id: OwnerShop, session: Session) -> dict[str, list[dict[str, Any]]]:
+    """Blocked and owner-trusted devices that are in force, with why, which incident, and until when."""
+    rows = await devices.listing(session, shop_id)
+    out: dict[str, list[dict[str, Any]]] = {"blocked": [], "trusted": []}
+    for d in rows:
+        key = "blocked" if d.kind == DeviceListKind.BLOCK else "trusted"
+        out[key].append(
+            {
+                "fingerprint": d.fingerprint,
+                "reason": d.reason,
+                "incident_id": d.incident_id,
+                "created_at": d.created_at,
+                "expires_at": d.expires_at,
+            }
+        )
+    return out
+
+
+@router.post("/devices/{fingerprint}/unblock")
+async def unblock_device(fingerprint: str, shop_id: OwnerShop, session: Session) -> dict[str, Any]:
+    """Owner vouches for a device: its block is released and it is trusted, so the next enforcement pass
+    neither blocks it again nor refunds its payments (it is left out of the signature and refund matching).
+    Under the GuardState lock, like every other write to the device lists."""
+    if len(fingerprint) > 64:
+        raise HTTPException(422, "not a device fingerprint")
+    gs = await session.get(GuardState, shop_id, with_for_update=True)
+    assert gs is not None
+    now = datetime.now(UTC)
+    was_blocked = await devices.trust(session, shop_id, fingerprint, now, reason="unblocked by the owner")
+    audit(session, "owner", "device.unblocked", fingerprint=fingerprint, was_blocked=was_blocked)
+    await publish(session, "device.unblocked", {"fingerprint": fingerprint})
+    await session.commit()
+    invalidate_cache(shop_id)
+    return {"fingerprint": fingerprint, "was_blocked": was_blocked, "trusted": True}
 
 
 @router.get("/stream")

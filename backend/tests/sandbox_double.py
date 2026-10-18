@@ -88,6 +88,10 @@ class SandboxDouble:
     decline_shape: Literal["capture", "create_422"] = "capture"
     card_processing_enabled: bool = True
     token_fails: bool = False
+    # Refund trouble, counted down per request: an outage (nothing done, 503) or a lost answer (the refund
+    # IS made and cached under its request id, but the caller gets a 503, as after a timeout).
+    refund_outage: int = 0
+    refund_answer_lost: int = 0
     valid_signature: str = "valid-sig"
     orders: dict[str, _Order] = field(default_factory=dict)
     refunds: dict[str, dict[str, Any]] = field(default_factory=dict)  # capture id → refund
@@ -267,6 +271,17 @@ class SandboxDouble:
         }
         return httpx.Response(201, json=self.refunds[cid])
 
+    def _refund_route(self, request: httpx.Request, cid: str) -> httpx.Response:
+        if self.refund_outage:
+            self.refund_outage -= 1
+            self.calls.append((request.method, request.url.path, request.headers.get("PayPal-Request-Id")))
+            return httpx.Response(503, json={"name": "SERVICE_UNAVAILABLE", "details": []})
+        res = self._idempotent(request, self._refund, cid=cid)
+        if self.refund_answer_lost:
+            self.refund_answer_lost -= 1
+            return httpx.Response(503, json={"name": "SERVICE_UNAVAILABLE", "details": []})
+        return res
+
     def _verify(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.verify_bodies.append(body)
@@ -281,6 +296,6 @@ class SandboxDouble:
         )
         router.get(path__regex=r"^/v2/checkout/orders/(?P<oid>[^/]+)$").mock(side_effect=self._get_order)
         router.post(path__regex=r"^/v2/payments/captures/(?P<cid>[^/]+)/refund$").mock(
-            side_effect=lambda r, cid: self._idempotent(r, self._refund, cid=cid)
+            side_effect=lambda r, cid: self._refund_route(r, cid)
         )
         router.post("/v1/notifications/verify-webhook-signature").mock(side_effect=self._verify)

@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import useSWR, { useSWRConfig } from "swr";
+import { DevicesList } from "@/components/guard/DevicesCard";
 import { ActionsList, AlertPhone, StatusBanner, VerdictCard } from "@/components/guard/incident";
 import { QuickRun } from "@/components/guard/QuickRun";
 import { Card, Empty, Stat } from "@/components/guard/ui";
@@ -72,6 +73,10 @@ export default function WarRoom() {
           <Empty>No incidents yet. Try “Simulate card-testing attack” above.</Empty>
         </Card>
       )}
+
+      <Card title="Blocked and trusted devices">
+        <DevicesList />
+      </Card>
 
       <Card title="Live checkout attempts" action={<span className="text-xs text-slate-500">{attempts?.length ?? 0} in the last 2 h</span>}>
         <AttemptsGrid rows={attempts ?? []} />

@@ -36,7 +36,7 @@ from app.shop.service import fingerprint, place_order
 from app.simulator.runner import to_request
 from app.simulator.scenarios import BOT_UA, card_testing, flash_sale
 from app.simulator.seed import seed_history
-from tests.conftest import SHOP
+from tests.conftest import SHOP, blocked
 from tests.test_pipeline import fake_ai, run_scenario
 
 REASSESS = timedelta(minutes=2)
@@ -123,7 +123,7 @@ async def test_failed_recheck_keeps_card_testing_and_still_blocks_and_refunds(db
     assert "ai.refresh_failed" in await events(db, incident.id)
 
     gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert fp in gs.blocked_fingerprints and gs.mode == "sca_all" and gs.held_skus == ["SKU-TEALIGHT-3"]
+    assert fp in await blocked(db) and gs.mode == "sca_all" and gs.held_skus == ["SKU-TEALIGHT-3"]
     late = await db.get(CheckoutAttempt, late_id, populate_existing=True)
     assert late.outcome == Outcome.REFUNDED
 
@@ -147,7 +147,7 @@ async def test_failed_recheck_keeps_genuine_rush_and_the_checkout_normal(db, mon
     assert "ai.refresh_failed" in await events(db, incident.id)
     assert incident.classification == "genuine_rush" and incident.confidence == 0.9
     gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert gs.mode == "normal" and gs.blocked_fingerprints == [] and gs.held_skus == []
+    assert gs.mode == "normal" and await blocked(db) == [] and gs.held_skus == []
 
 
 async def test_kept_harmless_verdict_yields_to_a_new_fraud_trigger(db, monkeypatch):
@@ -185,8 +185,7 @@ async def test_kept_attack_verdict_yields_when_paypal_starts_failing(db, monkeyp
     await db.refresh(incident)
     assert "ai.kept_verdict_dropped" in await events(db, incident.id)
     assert incident.model_id == "rules-fallback" and incident.classification != "card_testing"
-    gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert fp not in gs.blocked_fingerprints
+    assert fp not in await blocked(db)
     late = await db.get(CheckoutAttempt, late_id, populate_existing=True)
     assert late.outcome == Outcome.CAPTURED
 
@@ -203,8 +202,7 @@ async def test_stale_kept_verdict_queues_new_refunds_but_keeps_blocking(db, monk
     await IncidentService(db, None, REASSESS).tick(SHOP)
     await db.refresh(incident)
     assert incident.ai_refresh_failures == 3 and cadence.verdict_stale(incident, datetime.now(UTC))
-    gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert fp in gs.blocked_fingerprints
+    assert fp in await blocked(db)
     late = await db.get(CheckoutAttempt, late_id, populate_existing=True)
     assert late.outcome == Outcome.CAPTURED
     pending = (
@@ -340,7 +338,7 @@ async def refunds_with_owner_acting_after_the_first(db, monkeypatch, owner_sql: 
     await run_scenario(db, card_testing, 60)
     incident = await IncidentService(db, None, REASSESS).tick(SHOP)
     await owner[0]
-    candidates = await Executor(db, None)._matched_capture_ids(incident)
+    candidates = await Executor(db, None)._matches(incident)
     assert len(refunded) == 1 and candidates, "the scenario needs more than one matched capture"
     assert "refunds.stopped" in await events(db, incident.id)
     return published
@@ -449,7 +447,7 @@ async def test_incident_closed_during_the_call_discards_the_verdict(db, monkeypa
     # The discarded verdict blocked and held nothing. 3-D Secure is on: policy R0 commits it for the fraud
     # triggers before the analyst is asked. (This test closes the row with raw SQL; the owner's real close
     # goes through IncidentService.close, which restores the pre-incident mode.)
-    assert gs.mode == "sca_all" and gs.blocked_fingerprints == [] and gs.held_skus == []
+    assert gs.mode == "sca_all" and await blocked(db) == [] and gs.held_skus == []
     acts = (await db.execute(select(Action.policy_rule).where(Action.incident_id == incident.id))).scalars()
     assert list(acts) == ["R0_fraud_signal"]
 

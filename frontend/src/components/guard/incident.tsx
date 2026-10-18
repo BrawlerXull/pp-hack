@@ -1,10 +1,10 @@
 "use client";
 
-import { Bot, Check, ShieldAlert, ShieldCheck, Sparkles, TriangleAlert, Users, X } from "lucide-react";
+import { Bot, Check, Clock, ShieldAlert, ShieldCheck, Sparkles, TriangleAlert, Users, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useState } from "react";
-import { api, type ActionRow, type IncidentDetail, type Summary } from "@/lib/api";
+import { api, ApiError, type ActionRow, type IncidentDetail, type Summary } from "@/lib/api";
 import { ACTION_LABEL, CLASSIFICATION_LABEL, FEATURE_LABEL, RULES_HINT_LABEL, STATUS_COPY, featureValue, money, timeAgo } from "@/lib/format";
 import { Badge, Button } from "./ui";
 
@@ -103,6 +103,11 @@ export function ActionsList({ incident, onChange }: { incident: IncidentDetail; 
   const others = incident.actions.filter((a) => a.type !== "REFUND");
   const executed = refunds.filter((a) => a.status === "executed");
   const pending = refunds.filter((a) => a.status === "awaiting_approval");
+  const inFlight = refunds.filter((a) => a.status === "in_flight");
+  // Refused by PayPal, or no answer after every retry: money may already have moved, so each one is shown.
+  // A failed try that a later one settled (retry, approval) is history, not something to check.
+  const settled = new Set(refunds.filter((a) => a.status !== "failed").map((a) => String(a.params.attempt_id)));
+  const failed = refunds.filter((a) => a.status === "failed" && !settled.has(String(a.params.attempt_id)));
   const total = executed.reduce((s, a) => s + Number(a.params.amount ?? 0), 0);
   const simulated = executed.some((a) => a.params.simulated);
 
@@ -136,11 +141,33 @@ export function ActionsList({ incident, onChange }: { incident: IncidentDetail; 
             </div>
           </li>
         )}
-        {others.length === 0 && executed.length === 0 && <li className="text-sm text-slate-500">No defences needed.</li>}
+        {inFlight.length > 0 && (
+          <li className="flex items-start gap-3 text-sm">
+            <Clock className="mt-0.5 size-4 shrink-0 text-amber-600" />
+            <div>
+              <p className="text-slate-800">
+                {inFlight.length} refund{inFlight.length === 1 ? "" : "s"} sent to PayPal, waiting for its answer
+              </p>
+              <p className="text-xs text-slate-500">Re-sent automatically with the same request id, so PayPal refunds each one once</p>
+            </div>
+          </li>
+        )}
+        {failed.map((a) => (
+          <li key={a.id} className="flex items-start gap-3 text-sm">
+            <TriangleAlert className="mt-0.5 size-4 shrink-0 text-red-600" />
+            <div>
+              <p className="text-slate-800">
+                Refund of {money(String(a.params.amount ?? 0))} not confirmed · capture <code className="font-mono text-xs">{String(a.params.capture_id)}</code>
+              </p>
+              <p className="text-xs text-red-700">{a.error ?? "PayPal did not confirm it"}. Check this capture in PayPal.</p>
+            </div>
+          </li>
+        ))}
+        {others.length === 0 && executed.length === 0 && inFlight.length === 0 && failed.length === 0 && <li className="text-sm text-slate-500">No defences needed.</li>}
       </ul>
       {pending.length > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-          <p className="text-sm font-medium text-amber-900">{pending.length} refund{pending.length === 1 ? "" : "s"} need your approval (above your auto-refund limit)</p>
+          <p className="text-sm font-medium text-amber-900">{pending.length} refund{pending.length === 1 ? "" : "s"} need your approval</p>
           <ul className="mt-2 space-y-1.5">
             {pending.map((a) => (
               <PendingRefund key={a.id} action={a} onChange={onChange} />
@@ -152,21 +179,55 @@ export function ActionsList({ incident, onChange }: { incident: IncidentDetail; 
   );
 }
 
+// Why a refund waits for the owner (policy rule) and why the payment matched the attack (params.matched_on).
+const WAIT_REASON: Record<string, string> = {
+  R5_weak_match_needs_owner: "weak match",
+  R5_sca_passed_needs_owner: "buyer passed 3-D Secure, which bots rarely do",
+  R5_over_cap_needs_owner: "above your auto-refund limit",
+  R5_stale_verdict_needs_owner: "the AI verdict is out of date",
+};
+const MATCH_REASON: Record<string, string> = {
+  strong_fingerprint: "device used several cards or accounts",
+  blocked_device: "device already blocked as a bot",
+  flagged_device: "device flagged in this attack",
+  single_decline_device: "device had one declined payment",
+  suspect_domain: "email domain with many declines",
+};
+
+function refundReason(action: ActionRow): string {
+  const on = ((action.params.matched_on as string[] | undefined) ?? []).map((m) => MATCH_REASON[m] ?? m);
+  return [WAIT_REASON[action.rule] ?? "needs your approval", ...on].join(" · ");
+}
+
 function PendingRefund({ action, onChange }: { action: ActionRow; onChange: () => void }) {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   async function act(kind: "approve" | "reject") {
     setBusy(true);
+    setError(null);
+    const path = `/dashboard/incidents/${action.incident_id}/actions/${action.id}/${kind}`;
     try {
-      await api(`/dashboard/incidents/${action.incident_id}/actions/${action.id}/${kind}`, { method: "POST" });
+      try {
+        await api(path, { method: "POST" });
+      } catch (e) {
+        // A disputed payment: refunding can pay the buyer twice. Only on an explicit second confirmation.
+        if (!(e instanceof ApiError && e.code === "disputed")) throw e;
+        if (!window.confirm(`${e.message}\n\nRefund anyway?`)) return;
+        await api(path, { method: "POST", json: { override_dispute: true } });
+      }
       onChange();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
       setBusy(false);
     }
   }
   return (
     <li className="flex items-center justify-between gap-3 text-sm">
-      <span className="text-amber-900">
+      <span className="min-w-0 text-amber-900">
         {money(String(action.params.amount ?? 0))} · capture <code className="font-mono text-xs">{String(action.params.capture_id)}</code>
+        <span className="block text-xs text-amber-800/80">{refundReason(action)}</span>
+        {error && <span className="block text-xs text-red-700">{error}</span>}
       </span>
       <span className="flex gap-1.5">
         <Button variant="secondary" className="px-2 py-1 text-xs" disabled={busy} onClick={() => act("reject")}>

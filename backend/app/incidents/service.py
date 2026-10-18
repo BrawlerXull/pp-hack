@@ -32,6 +32,7 @@ from app.detection import baseline as baseline_mod
 from app.detection import features as feat
 from app.detection import triggers as trig
 from app.events import publish
+from app.guard import devices
 from app.incidents import cadence
 from app.paypal.client import PayPalClient
 from app.policy.engine import PlannedAction, PolicyInput, decide, rules_first, rules_hint
@@ -213,7 +214,8 @@ class IncidentService:
         Catches captures that landed while the AI was deciding and bot devices seen since."""
         if incident.classification is None:
             return
-        sig = trig.signature(rows, incident.opened_at - timedelta(minutes=15), now, base)
+        trusted = await devices.trusted(self.s, incident.shop_id)
+        sig = trig.signature(rows, incident.opened_at - timedelta(minutes=15), now, base, trusted)
         incident.signature = sig.as_dict()
         planned = [
             p for p in await self._plan(incident, ms, sig, features[15], now) if p.type != ActionType.NOTIFY
@@ -264,7 +266,8 @@ class IncidentService:
         gs = await self.s.get(GuardState, incident.shop_id)
         assert gs is not None
         sale = active_sale_window(ms, now)
-        sig = trig.signature(rows, min(incident.opened_at, now) - timedelta(minutes=15), now, base)
+        trusted = await devices.trusted(self.s, incident.shop_id)
+        sig = trig.signature(rows, min(incident.opened_at, now) - timedelta(minutes=15), now, base, trusted)
         rules_acted = await self._rules_first(incident, ms, sig, features[15], fired, now)
         if incident.status != IncidentStatus.OPEN:
             return  # closed by the owner before R0 could act
@@ -278,7 +281,7 @@ class IncidentService:
             sale_window=sale,
             guard_state={
                 "mode": gs.mode,
-                "blocked_devices": len(gs.blocked_fingerprints or []),
+                "blocked_devices": await devices.count_blocked(self.s, incident.shop_id),
                 "held_skus": gs.held_skus,
             },
             actions_so_far=sorted(set(prior)),

@@ -66,14 +66,18 @@ Triggers carry a tier (`backend/app/detection/triggers.py`): **volume** (`veloci
    - **R3d** AI down and only ops triggers (PayPal failing) → notify only;
    - **R3b** AI down, a fraud-tier trigger, no sale, no processor errors → `SCA_ON`, `BLOCK_FP` for *strong* fingerprints only (never a known customer; 2+ cards or 2+ fraud/probing declines), `HOLD_SKU` for the targeted item. Never refunds, never blocks domains.
    - Fallback verdicts stay `unclear`; the triggers' reading is stored separately as `incidents.rules_hint` (`fraud_signals`, `processor_trouble`, `returning_customer_rush`, `unusual_volume`), so a rules guess never reaches the report or the eval as a classification.
-4. `card_testing | account_testing` with `confidence ≥ 0.7` → `SCA_ON`, `BLOCK_FP` (fingerprints in the signature), `HOLD_SKU` if one SKU is over 80% of the window, `NOTIFY`.
-5. `REFUND_MATCHED` is allowed only when `confidence ≥ 0.85` **and** autopilot is on. Captures are picked **by deterministic matching**, never by the model listing IDs:
-   - inside the incident window
-   - SKU and fingerprint match the signature
-   - `source` doesn't matter
-   - each ≤ `max_auto_refund_per_txn`
-   - running total ≤ `max_auto_refund_per_incident`
-   - anything else → `awaiting_approval`
+4. `card_testing | account_testing` with `confidence ≥ 0.7` → `SCA_ON`, `BLOCK_FP` (flagged fingerprints in the signature), `HOLD_SKU` if one SKU is over 80% of the window, `NOTIFY`. A device is flagged only for 2+ cards or PayPal payers, a fraud-coded decline, 2+ guessing (probing) declines, or 3+ declines on the attacked SKU. Only declines count there: captures, errors (a PayPal outage) and `SCA_REQUIRED`, `CHALLENGED`, `BLOCKED`, `CREATED` (a PayPal popup opened and closed) never do, since a real shopper makes them freely. Known customers and owner-trusted devices are never flagged. Blocks expire after 24 h (`backend/app/guard/devices.py`); the owner can unblock a device, which also trusts it.
+5. `REFUND_MATCHED` is allowed only when `confidence ≥ 0.85` **and** autopilot is on. Captures are picked **by deterministic matching** (`backend/app/actions/executor.py` `classify_match`), never by the model listing IDs:
+   - captured on the attacked SKU inside the incident window, not disputed, not from a trusted device, and not already decided in **any** incident (refunded, in flight, awaiting the owner, or kept by the owner; only a failed refund may be retried)
+   - **STRONG** match: the device is a strong fingerprint (2+ cards or payers, or 2+ guessing declines) or was blocked by an **earlier** incident that saw it as a strong fingerprint (`devices.blocked_as_strong`). This incident's own blocks never make a match strong: under an attack verdict it blocks every flagged device, weak flags included. Only STRONG matches are refunded automatically
+   - **WEAK** match → `awaiting_approval` (`R5_weak_match_needs_owner`): a flagged device (even one this incident blocked), a device with one honest-looking decline, or only a suspect email domain (new to the shop, 3+ attempts in the window, 30%+ declined). A new domain alone never matches
+   - a capture that passed our 3-D Secure (`allow_with_sca`) → `awaiting_approval` (`R5_sca_passed_needs_owner`): bots do not complete 3-D Secure
+   - the 3-D Secure and weak-match rules win over the generic approval rules (autopilot off, stale verdict), so the owner always sees the stronger warning; params also store `sca_passed`
+   - each ≤ `max_auto_refund_per_txn`, running total ≤ `max_auto_refund_per_incident`, else `R5_over_cap_needs_owner`
+   - the refund's params store `match` and `matched_on`, shown on the owner's approval row
+   - a refund is committed as `in_flight` before PayPal is called; the worker re-sends one still in flight after 5 minutes with the same `PayPal-Request-Id` (PayPal replays a refund it already made), and marks it failed after 6 tries. A capture that became disputed meanwhile is never re-sent: the refund is marked failed for the owner to check in PayPal
+   - failed and in-flight refunds are shown on the incident and counted in the report (`{{refunds_unresolved}}`); the alert never says "no action needed" while any is unconfirmed. The evidence pack carries a DB-filled `{{refund_table}}` (capture, amount, status, why it matched)
+   - approving a refund on a disputed payment returns 409 unless the owner explicitly overrides: if the dispute returns the money, a refund pays the buyer twice. `disputed` is cleared only by a resolution that left the money with the seller (`RESOLVED_SELLER_FAVOUR`, `CANCELED_BY_BUYER`, `DENIED`); a missing or unknown outcome keeps it set, a buyer payout is never cleared, and a `CREATED` for a new `dispute_id` reopens it
 6. The AI can recommend; only policy-approved actions run. Every decision is written to `audit_log` with the rule that allowed it.
 7. **De-escalation:** after `deescalate_after_min` with triggers clear, restore the previous `guard_state`.
 

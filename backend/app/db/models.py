@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -100,6 +101,24 @@ class ActionStatus(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     REJECTED = "rejected"
     FAILED = "failed"
+    # A refund committed as claimed before PayPal is called: a crash or a timeout leaves this on record,
+    # and the sweeper (app/actions/executor.sweep_in_flight) re-sends it with the same PayPal-Request-Id.
+    IN_FLIGHT = "in_flight"
+
+
+# Refund states that settle a capture for good (one per capture, enforced by uq_actions_refund_attempt).
+# FAILED is left out on purpose: a failed refund may be retried.
+REFUND_CLAIM_STATUSES = (
+    ActionStatus.EXECUTED,
+    ActionStatus.AWAITING_APPROVAL,
+    ActionStatus.REJECTED,
+    ActionStatus.IN_FLIGHT,
+)
+
+
+class DeviceListKind(StrEnum):
+    BLOCK = "block"  # guard check stops the device
+    TRUST = "trust"  # owner unblocked it: never re-blocked or matched for refunds while the entry lasts
 
 
 class CooldownReason(StrEnum):
@@ -142,7 +161,7 @@ class GuardState(Base):
     __tablename__ = "guard_state"
     shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"), primary_key=True)
     mode: Mapped[str] = mapped_column(String(20), default=GuardMode.NORMAL)
-    blocked_fingerprints: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list)
+    # Device blocks live in device_entries (they expire and carry a reason); see app/guard/devices.py.
     held_skus: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list)
     set_by_incident: Mapped[str | None] = mapped_column(String(16))
     updated_at: Mapped[datetime] = mapped_column(
@@ -186,7 +205,13 @@ class CheckoutAttempt(Base):
     decline_category: Mapped[str | None] = mapped_column(String(20))
     paypal_debug_id: Mapped[str | None] = mapped_column(String(40))
     refund_id: Mapped[str | None] = mapped_column(String(40))
+    # True while a refund would risk paying twice: a dispute is open, or it ended with the buyer refunded.
+    # A dispute settled in the seller's favour clears it. dispute_status is PayPal's last word on it.
     disputed: Mapped[bool] = mapped_column(Boolean, default=False)
+    dispute_status: Mapped[str | None] = mapped_column(String(40))
+    # The dispute dispute_status is about: a CREATED for a different id is a new dispute, even after the
+    # earlier one was resolved.
+    dispute_id: Mapped[str | None] = mapped_column(String(64))
     latency_ms: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (
@@ -258,6 +283,51 @@ class Action(Base):
     paypal_ref: Mapped[str | None] = mapped_column(String(80))
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # When an IN_FLIGHT refund was last sent to PayPal: the sweeper re-sends ones older than its timeout.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        # One refund claim per capture across every incident: an owner's "Keep" (rejected) in one incident
+        # is respected by the next, and two racing claimers cannot both refund. Postgres-only expression.
+        Index(
+            "uq_actions_refund_attempt",
+            text("(params ->> 'attempt_id')"),
+            unique=True,
+            postgresql_where=text(
+                "type = 'REFUND' AND status IN ('executed', 'awaiting_approval', 'rejected', 'in_flight')"
+            ),
+        ),
+    )
+
+
+class DeviceEntry(Base):
+    """A blocked or owner-trusted device. Blocks expire (a reused or shared device id must not stay locked
+    out for good); released_at is set when one expires, is unblocked or the guard is reset. Active means
+    released_at IS NULL AND expires_at > now()."""
+
+    __tablename__ = "device_entries"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default=new_id)
+    shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(10))
+    incident_id: Mapped[str | None] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_device_entries_shop_kind", "shop_id", "kind", "expires_at"),
+        # At most one unreleased entry per device and kind (expired ones are released by the prune first).
+        Index(
+            "uq_device_entries_open",
+            "shop_id",
+            "fingerprint",
+            "kind",
+            unique=True,
+            postgresql_where=text("released_at IS NULL"),
+        ),
+    )
 
 
 class Report(Base):

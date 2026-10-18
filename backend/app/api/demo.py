@@ -16,6 +16,7 @@ from app.db.models import (
     Action,
     AuditLog,
     CheckoutAttempt,
+    DeviceEntry,
     GuardMode,
     GuardState,
     Incident,
@@ -92,7 +93,7 @@ async def seed(shop_id: OwnerShop, session: Session, days: int = 28) -> dict:
 
 @router.post("/reset")
 async def reset(shop_id: OwnerShop, session: Session) -> dict:
-    """Wipe demo activity (attempts, incidents, actions, reports, sale windows).
+    """Wipe demo activity (attempts, incidents, actions, reports, device blocks and trust, sale windows).
     Keeps seeded history and webhook events."""
     for r in RUNS.values():
         r.cancelled = True
@@ -112,8 +113,9 @@ async def reset(shop_id: OwnerShop, session: Session) -> dict:
     await session.execute(
         update(GuardState)
         .where(GuardState.shop_id == shop_id)
-        .values(mode=GuardMode.NORMAL, blocked_fingerprints=[], held_skus=[], set_by_incident=None)
+        .values(mode=GuardMode.NORMAL, held_skus=[], set_by_incident=None)
     )
+    await session.execute(delete(DeviceEntry).where(DeviceEntry.shop_id == shop_id))
     await session.execute(
         update(MerchantSettings).where(MerchantSettings.shop_id == shop_id).values(sale_windows=[])
     )

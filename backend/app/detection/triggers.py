@@ -105,11 +105,22 @@ class Signature:
     window_start: datetime
     window_end: datetime
     top_sku: str | None
+    # Devices flagged as attacking (blocked under an attack verdict): several cards or PayPal payers, a
+    # fraud-coded refusal, two guessing refusals, or SKU_ATTEMPTS_TO_FLAG refusals on the targeted item.
     fingerprints: list[str] = field(default_factory=list)
-    # The subset that is unmistakably a bot without any AI judgement: never a known customer, and several
-    # cards or several fraud/probing refusals from one device. Rules-only blocking (policy R3b) uses these.
+    # The subset that is unmistakably a bot without any AI judgement: several cards or payers, or several
+    # fraud/probing refusals from one device. Rules-only blocking (policy R3b) uses these; their captures
+    # are the only ones refunded without the owner (with currently blocked devices).
     strong_fingerprints: list[str] = field(default_factory=list)
+    # One honest-looking bad outcome (a decline that is not fraud-coded): never blocked, and a capture from
+    # it is refunded only with the owner's approval.
+    weak_fingerprints: list[str] = field(default_factory=list)
+    # Why each flagged device was flagged, for the owner's device list.
+    flag_reasons: dict[str, str] = field(default_factory=dict)
     new_email_domains: list[str] = field(default_factory=list)
+    # New domains that are themselves a signal: enough attempts and enough of them declined. A domain
+    # match alone is still weak (owner approval): a real first-time shopper can share one.
+    suspect_domains: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -119,9 +130,19 @@ class Signature:
 
 
 STRONG_DECLINES = frozenset({DeclineCategory.FRAUD, DeclineCategory.PROBING})
+SKU_ATTEMPTS_TO_FLAG = 3
+SUSPECT_DOMAIN_MIN_ATTEMPTS = 3
+SUSPECT_DOMAIN_DECLINE_RATE = 0.30
 
 
-def signature(rows: list[AttemptRow], since: datetime, now: datetime, baseline: Baseline) -> Signature:
+def signature(
+    rows: list[AttemptRow],
+    since: datetime,
+    now: datetime,
+    baseline: Baseline,
+    trusted: frozenset[str] = frozenset(),
+) -> Signature:
+    """trusted: devices the owner unblocked; never flagged, whatever they do."""
     w = [r for r in rows if since <= r.ts <= now]
     sig = Signature(window_start=since, window_end=now, top_sku=None)
     if not w:
@@ -136,22 +157,50 @@ def signature(rows: list[AttemptRow], since: datetime, now: datetime, baseline: 
     per_fp: dict[str, list[AttemptRow]] = defaultdict(list)
     for r in w:
         per_fp[r.fingerprint_hash].append(r)
-    suspicious, strong = [], []
+    suspicious, strong, weak = [], [], []
     for fp, attempts in per_fp.items():
-        if fp in baseline.known_fingerprints:
-            continue  # returning customer with a past successful purchase
-        bad = sum(a.outcome in {Outcome.DECLINED, Outcome.SCA_REQUIRED} for a in attempts)
-        distinct_cards = len({a.card_key for a in attempts if a.card_key})
-        if bad >= 1 or len(attempts) >= 3 or distinct_cards >= 2:
-            suspicious.append(fp)
+        if fp in baseline.known_fingerprints or fp in trusted:
+            continue  # returning customer with a past successful purchase, or vouched for by the owner
+        cards = len({a.card_key for a in attempts if a.card_key})
+        payers = len({a.payer_id_hash for a in attempts if a.payer_id_hash})
+        fraud = sum(a.decline_category == DeclineCategory.FRAUD for a in attempts)
         guessing = sum(a.decline_category in STRONG_DECLINES for a in attempts)
-        if distinct_cards >= 2 or guessing >= 2:
-            strong.append(fp)
+        # Refusals only: a shopper who pays (or retries through a PayPal outage, ERROR) is not attacking,
+        # and a capture that counted here would get its own payment flagged and blocked.
+        on_sku = (
+            sum(a.sku == sig.top_sku and a.outcome == Outcome.DECLINED for a in attempts)
+            if sig.top_sku
+            else 0
+        )
+        reasons = [
+            *([f"{cards} cards"] if cards >= 2 else []),
+            *([f"{payers} PayPal accounts"] if payers >= 2 else []),
+            *(["refused as stolen or restricted"] if fraud else []),
+            *([f"{guessing} guessing refusals"] if guessing >= 2 and not fraud else []),
+            *([f"{on_sku} refusals on the targeted item"] if on_sku >= SKU_ATTEMPTS_TO_FLAG else []),
+        ]
+        if reasons:
+            suspicious.append(fp)
+            sig.flag_reasons[fp] = ", ".join(reasons)
+            if cards >= 2 or payers >= 2 or guessing >= 2:
+                strong.append(fp)
+        elif any(a.outcome == Outcome.DECLINED for a in attempts):
+            weak.append(fp)
     sig.fingerprints = sorted(suspicious)
     sig.strong_fingerprints = sorted(strong)
+    sig.weak_fingerprints = sorted(weak)
 
-    sig.new_email_domains = sorted(
-        {r.email_domain for r in w if r.email_domain and r.email_domain not in baseline.known_domains}
+    per_domain: dict[str, list[AttemptRow]] = defaultdict(list)
+    for r in w:
+        if r.email_domain and r.email_domain not in baseline.known_domains:
+            per_domain[r.email_domain].append(r)
+    sig.new_email_domains = sorted(per_domain)
+    sig.suspect_domains = sorted(
+        d
+        for d, attempts in per_domain.items()
+        if len(attempts) >= SUSPECT_DOMAIN_MIN_ATTEMPTS
+        and sum(a.outcome == Outcome.DECLINED for a in attempts) / len(attempts)
+        >= SUSPECT_DOMAIN_DECLINE_RATE
     )
     return sig
 
