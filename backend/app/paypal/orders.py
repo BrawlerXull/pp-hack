@@ -6,20 +6,6 @@ from typing import Any
 
 from app.paypal.client import PayPalClient, PayPalResponse
 
-# Order create/capture issues that mean "the card or account was declined" (vs. a processor error).
-DECLINE_ISSUES = {
-    "INSTRUMENT_DECLINED",
-    "CARD_DECLINED",
-    "TRANSACTION_REFUSED",
-    "PAYER_ACTION_REQUIRED",
-    "CARD_EXPIRED",
-    "INVALID_SECURITY_CODE",
-    "CARD_CLOSED",
-    "PAYER_CANNOT_PAY",
-    "TRANSACTION_BLOCKED_BY_PAYEE",
-    "COMPLIANCE_VIOLATION",
-}
-
 
 @dataclass
 class CardDetails:
@@ -39,6 +25,8 @@ def order_payload(
     custom_id: str,
     card: CardDetails | None = None,
     force_sca: bool = False,
+    return_url: str | None = None,
+    cancel_url: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "intent": "CAPTURE",
@@ -63,6 +51,9 @@ def order_payload(
         # Per-order 3-D Secure: SCA_ALWAYS asks the issuer to authenticate every eligible card.
         card_source = card_source or {}
         card_source["attributes"] = {"verification": {"method": "SCA_ALWAYS"}}
+        if return_url and cancel_url:
+            # Where PayPal sends the buyer back after the 3-D Secure page (payer-action link).
+            card_source["experience_context"] = {"return_url": return_url, "cancel_url": cancel_url}
     if card_source is not None:
         payload["payment_source"] = {"card": card_source}
     return payload
@@ -79,10 +70,7 @@ class OrderResult:
     debug_id: str | None
     latency_ms: int
     payer_action_url: str | None = None
-
-    @property
-    def is_processor_error(self) -> bool:
-        return self.http >= 500 or self.http == 0
+    processor_code: str | None = None  # processor_response.response_code of a declined capture
 
 
 def parse_order(res: PayPalResponse) -> OrderResult:
@@ -92,8 +80,9 @@ def parse_order(res: PayPalResponse) -> OrderResult:
     cap = captures[0] if captures else {}
     err = res.error_summary() or {}
     issue = next((i for i in err.get("issues", []) if i), None) or err.get("name")
-    if cap.get("status") == "DECLINED":
-        issue = issue or (cap.get("processor_response") or {}).get("response_code") or "CAPTURE_DECLINED"
+    processor_code = None
+    if cap.get("status") in {"DECLINED", "FAILED"}:
+        processor_code = (cap.get("processor_response") or {}).get("response_code")
     return OrderResult(
         http=res.status,
         order_id=body.get("id"),
@@ -106,28 +95,62 @@ def parse_order(res: PayPalResponse) -> OrderResult:
         payer_action_url=next(
             (link["href"] for link in body.get("links", []) if link.get("rel") == "payer-action"), None
         ),
+        processor_code=processor_code,
     )
 
 
-async def create_order(client: PayPalClient, payload: dict[str, Any]) -> OrderResult:
+def order_request_id(attempt_id: str) -> str:
+    return f"cg-order-{attempt_id}"
+
+
+def capture_request_id(order_id: str, tries: int = 0) -> str:
+    """Same key for every capture of an order whose last result is unknown (timeout, 5xx), so PayPal
+    sees one request. `tries` (definitive 4xx refusals so far) changes it after a refusal: PayPal
+    replays a cached response for a reused key, which would replay the refusal to the legitimate
+    capture after 3-D Secure or after the buyer picked another funding source."""
+    return f"cg-capture-{order_id}" + (f"-{tries}" if tries else "")
+
+
+def refund_request_id(attempt_id: str) -> str:
+    # Per attempt, not per action: two incidents (or owner + autopilot) can never refund it twice.
+    return f"cg-refund-{attempt_id}"
+
+
+async def create_order(client: PayPalClient, payload: dict[str, Any], request_id: str) -> OrderResult:
     res = await client.request(
-        "POST", "/v2/checkout/orders", json=payload, headers={"Prefer": "return=representation"}
+        "POST",
+        "/v2/checkout/orders",
+        json=payload,
+        headers={"Prefer": "return=representation"},
+        request_id=request_id,
     )
     return parse_order(res)
 
 
-async def capture_order(client: PayPalClient, order_id: str) -> OrderResult:
+async def capture_order(client: PayPalClient, order_id: str, tries: int = 0) -> OrderResult:
     res = await client.request(
-        "POST", f"/v2/checkout/orders/{order_id}/capture", headers={"Prefer": "return=representation"}
+        "POST",
+        f"/v2/checkout/orders/{order_id}/capture",
+        headers={"Prefer": "return=representation"},
+        request_id=capture_request_id(order_id, tries),
     )
     result = parse_order(res)
     result.order_id = result.order_id or order_id
     return result
 
 
-async def refund_capture(client: PayPalClient, capture_id: str, note: str) -> PayPalResponse:
+async def get_order(client: PayPalClient, order_id: str) -> OrderResult:
+    result = parse_order(await client.request("GET", f"/v2/checkout/orders/{order_id}"))
+    result.order_id = result.order_id or order_id
+    return result
+
+
+async def refund_capture(client: PayPalClient, capture_id: str, note: str, request_id: str) -> PayPalResponse:
     return await client.request(
-        "POST", f"/v2/payments/captures/{capture_id}/refund", json={"note_to_payer": note[:255]}
+        "POST",
+        f"/v2/payments/captures/{capture_id}/refund",
+        json={"note_to_payer": note[:255]},
+        request_id=request_id,
     )
 
 

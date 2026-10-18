@@ -10,7 +10,9 @@ Sources: `backend/scripts/spike.py`, the FastAPI webhook receiver, and end-to-en
 | JS SDK v6 client token (`response_type=client_token`) | ✅ Returns a token | `POST /shop/client-token` |
 | Webhook registration via API | ✅ `POST /v1/notifications/webhooks` created `1A9810902M7052934` | `scripts/register_webhook.py` |
 | Webhook delivery + postback verification | ✅ Simulated `PAYMENT.CAPTURE.COMPLETED` arrived through ngrok and verified `SUCCESS` (the docs said mock events can't be verified; in practice they were) | `paypal_events` table |
-| Do `CCREJECT-*` triggers decline at create or capture? Which codes? | ⏳ Blocked until card processing is enabled | — |
+| Do `CCREJECT-*` triggers decline at create or capture? Which codes? | ⏳ Blocked until card processing is enabled. The code handles both shapes (201 + capture `DECLINED` with a processor code, and 422 `INSTRUMENT_DECLINED`); tests cover both with a respx double, not the real sandbox | `backend/tests/test_paypal_live.py` |
+| Does the sandbox accept every published test card number used by live scenarios (`SANDBOX_TEST_CARDS`)? | ⏳ Blocked until card processing is enabled | — |
+| Does PayPal replay a cached 4xx for a reused `PayPal-Request-Id`? | ⏳ Not tested yet | Mitigated for captures (new key after a definitive 4xx); a refund retried after a 4xx still reuses its key |
 | Which webhooks fire for a declined card? | ⏳ Blocked until card processing is enabled | — |
 | Does `SCA_ALWAYS` return `PAYER_ACTION_REQUIRED` for the 3DS test cards? | ⏳ Blocked until card processing is enabled | — |
 | Refunds on real sandbox captures | ⏳ Needs a real capture (card, or a wallet order approved in the browser) | — |
@@ -23,7 +25,7 @@ Sources: `backend/scripts/spike.py`, the FastAPI webhook receiver, and end-to-en
 
 ## AI evaluation (`scripts/eval_ai.py`, live Gemini)
 
-10/10 scenarios classified correctly (2 runs each). Latency was 3–10 s per verdict with the reduced thinking settings.
+10/10 scenarios classified correctly (2 runs each). This run predates the decline-code table (Oct 18): the eval now derives outcomes and codes through the same path as the shop, so account_testing and flash_sale declines are no longer counted as errors. Re-run pending. Latency was 3–10 s per verdict with the reduced thinking settings.
 
 | Scenario | Verdict | Confidence |
 |---|---|---|

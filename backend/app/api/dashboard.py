@@ -205,7 +205,9 @@ async def evidence_md(incident_id: str, shop_id: OwnerShop, session: Session) ->
 
 
 async def _pending_action(session: AsyncSession, inc: Incident, action_id: str) -> Action:
-    action = await session.get(Action, action_id)
+    """Row-locked until commit, so a second approve/reject (double click, two tabs) waits for the first
+    and then sees it is no longer awaiting approval (409) instead of refunding or flipping it again."""
+    action = await session.get(Action, action_id, with_for_update=True, populate_existing=True)
     if action is None or action.incident_id != inc.id:
         raise HTTPException(404, "action not found")
     if action.status != ActionStatus.AWAITING_APPROVAL:

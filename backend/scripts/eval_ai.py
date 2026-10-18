@@ -12,10 +12,11 @@ from datetime import UTC, datetime, timedelta
 import typer
 
 from app.ai import analyst
-from app.detection.features import AttemptRow, Baseline, compute_all
+from app.detection.features import AttemptRow, Baseline, card_key, compute_all
 from app.detection.triggers import evaluate
 from app.shop.catalog import PRODUCTS
-from app.shop.service import email_domain, fingerprint
+from app.shop.service import classify, email_domain, fingerprint, offline_result
+from app.simulator.runner import to_request
 from app.simulator.scenarios import BROWSER_UA, COMMON_DOMAINS, SCENARIOS, customer_pool
 
 EXPECTED = {
@@ -25,7 +26,6 @@ EXPECTED = {
     "flash_sale": {"genuine_rush"},
     "paypal_outage": {"paypal_outage"},
 }
-OUTCOME = {"approve": "captured", "decline": "declined", "error": "error"}
 
 
 def rows_for(name: str, seed: int, now: datetime) -> list[AttemptRow]:
@@ -33,6 +33,10 @@ def rows_for(name: str, seed: int, now: datetime) -> list[AttemptRow]:
     t = now
     rows = []
     for a in reversed(attempts):
+        # Same offline result + code table as the shop flow, so the eval sees what the DB would store.
+        req = to_request("eval", name, a, "offline")
+        assert req.offline is not None
+        c = classify(offline_result(req.offline, False, a.method, req.card), a.method)
         rows.append(
             AttemptRow(
                 ts=t,
@@ -41,12 +45,12 @@ def rows_for(name: str, seed: int, now: datetime) -> list[AttemptRow]:
                 method=a.method,
                 fingerprint_hash=fingerprint(a.device_id, a.user_agent),
                 email_domain=email_domain(a.email),
-                card_key=(a.card_number[:6] + a.card_number[-4:]) if a.card_number else None,
+                card_key=card_key(a.card_number[:6], a.card_number[-4:], a.card_expiry)
+                if a.card_number
+                else None,
                 payer_id_hash=a.payer_id,
-                outcome=OUTCOME[a.outcome],
-                decline_code=a.decline_code
-                if a.outcome == "decline"
-                else ("SERVICE_UNAVAILABLE" if a.outcome == "error" else None),
+                outcome=c.outcome,
+                decline_code=c.decline_code,
             )
         )
         t -= timedelta(seconds=a.delay_s)

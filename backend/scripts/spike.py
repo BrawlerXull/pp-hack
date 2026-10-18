@@ -70,6 +70,12 @@ async def attempt(
     card_source: dict[str, Any] = {"number": card, "expiry": "2030-12", "security_code": "123", "name": name}
     if sca:
         card_source["attributes"] = {"verification": {"method": sca}}
+        # Without return/cancel URLs the payer-action (3DS) page has nowhere to send the buyer back.
+        app_url = pp.settings.public_app_url.rstrip("/")
+        card_source["experience_context"] = {
+            "return_url": f"{app_url}/?3ds=return",
+            "cancel_url": f"{app_url}/?3ds=cancel",
+        }
 
     create = await pp.request(
         "POST",

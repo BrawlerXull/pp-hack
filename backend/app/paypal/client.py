@@ -2,8 +2,12 @@
 
 - OAuth client-credentials token, cached and refreshed 60 s before expiry (the demo must
   keep running unattended until judging ends on Dec 15, 2026).
-- `PayPal-Request-Id` idempotency key on every POST.
+- `PayPal-Request-Id` idempotency key on every POST. Callers pass a key derived from our own ids
+  (cg-order-{attempt}, cg-capture-{order}, cg-refund-{attempt}), so a repeat of the same business
+  operation is the same request to PayPal; a random key is only the fallback.
 - Retries 429/5xx with backoff; never retries 4xx.
+- Never raises for PayPal trouble: network and OAuth failures come back as a status-0 response, which
+  callers already treat as a processor error (an outage signal, not a crash of the detector tick).
 - Returns the `paypal-debug-id` so callers can store it next to each row.
 """
 
@@ -73,16 +77,19 @@ class PayPalClient:
                 return self._token
             if not self._settings.paypal_client_id or not self._settings.paypal_client_secret:
                 raise PayPalAuthError("PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET not set")
-            res = await self._http.post(
-                "/v1/oauth2/token",
-                auth=(self._settings.paypal_client_id, self._settings.paypal_client_secret),
-                data={"grant_type": "client_credentials"},
-            )
-            if res.status_code != 200:
-                raise PayPalAuthError(f"PayPal OAuth failed: {res.status_code} {res.text}")
-            body = res.json()
-            self._token = body["access_token"]
-            self._token_expires_at = time.monotonic() + body["expires_in"]
+            try:
+                res = await self._http.post(
+                    "/v1/oauth2/token",
+                    auth=(self._settings.paypal_client_id, self._settings.paypal_client_secret),
+                    data={"grant_type": "client_credentials"},
+                )
+                if res.status_code != 200:
+                    raise PayPalAuthError(f"PayPal OAuth failed: {res.status_code} {res.text[:200]}")
+                body = res.json()
+                self._token = body["access_token"]
+                self._token_expires_at = time.monotonic() + body["expires_in"]
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                raise PayPalAuthError(f"PayPal OAuth failed: {type(exc).__name__}: {exc}") from exc
             return self._token
 
     async def request(
@@ -94,15 +101,21 @@ class PayPalClient:
         params: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         content: str | None = None,
+        request_id: str | None = None,
     ) -> PayPalResponse:
         req_headers = {"Content-Type": "application/json", **(headers or {})}
         if method.upper() == "POST":
             # Same id across retries, so PayPal treats a retried POST as the same request.
-            req_headers.setdefault("PayPal-Request-Id", str(uuid.uuid4()))
+            req_headers["PayPal-Request-Id"] = (
+                request_id or req_headers.get("PayPal-Request-Id") or str(uuid.uuid4())
+            )
 
         attempt = 0
         while True:
-            token = await self.access_token()
+            try:
+                token = await self.access_token()
+            except PayPalAuthError as exc:
+                return PayPalResponse(0, {"name": "AUTH_ERROR", "message": str(exc)}, None, 0)
             started = time.monotonic()
             try:
                 res = await self._http.request(

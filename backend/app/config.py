@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     admin_password: str = "guard-demo"  # dashboard login (judge credentials go in README)
     session_secret: str = "dev-session-secret-change-me"
 
+    # Public URL of the shop frontend: 3-D Secure return/cancel pages for SCA_ALWAYS card orders.
+    public_app_url: str = "http://localhost:3000"
+
     # Simulator endpoints (/sim/*) are only mounted when this is true.
     simulator_enabled: bool = True
 

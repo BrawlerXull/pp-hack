@@ -35,6 +35,15 @@ class FeatureKey(StrEnum):
     WALLET_SHARE = "wallet_share"
 
 
+def card_key(bin6: str | None, last4: str | None, expiry: str | None) -> str | None:
+    """Identity of a card for unique-card counts. Expiry is part of it on purpose: card testers try
+    many expiry dates against one number, and each guess is a separate credential to the issuer.
+    A shopper whose card is reissued counts as a new card once, which is harmless."""
+    if not bin6 or not last4:
+        return None
+    return f"{bin6}{last4}:{expiry}" if expiry else f"{bin6}{last4}"
+
+
 @dataclass(frozen=True)
 class AttemptRow:
     ts: datetime
@@ -43,7 +52,7 @@ class AttemptRow:
     method: str
     fingerprint_hash: str
     email_domain: str | None
-    card_key: str | None  # bin6+last4, never the full number
+    card_key: str | None  # card_key(): bin6+last4+expiry, never the full number
     payer_id_hash: str | None
     outcome: str
     decline_code: str | None

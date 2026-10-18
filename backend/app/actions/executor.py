@@ -24,7 +24,7 @@ from app.db.models import (
 from app.events import publish
 from app.guard.check import invalidate_cache
 from app.paypal.client import PayPalClient
-from app.paypal.orders import refund_capture
+from app.paypal.orders import refund_capture, refund_request_id
 from app.policy.engine import PlannedAction
 
 log = structlog.get_logger()
@@ -124,6 +124,10 @@ class Executor:
                 CheckoutAttempt.id.not_in(already),
             )
             .order_by(CheckoutAttempt.ts)
+            # Locked (in ts order) until the tick commits: an owner approve or another incident refunding
+            # the same capture waits, then sees REFUNDED, so only one action ever claims the refund.
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         return list((await self.s.execute(q)).scalars())
 
@@ -188,7 +192,10 @@ class Executor:
             )
         else:
             assert self.paypal is not None
-            res = await refund_capture(self.paypal, attempt.capture_id or "", REFUND_NOTE)
+            # Kept in the action params: the key that makes a retried or repeated refund a no-op at PayPal.
+            request_id = refund_request_id(attempt.id)
+            params = {**params, "request_id": request_id}
+            res = await refund_capture(self.paypal, attempt.capture_id or "", REFUND_NOTE, request_id)
             body = res.json if isinstance(res.json, dict) else {}
             if res.ok:
                 attempt.outcome = Outcome.REFUNDED
@@ -216,7 +223,11 @@ class Executor:
         return pending
 
     async def approve(self, incident: Incident, action: Action) -> Action:
-        attempt = await self.s.get(CheckoutAttempt, action.params["attempt_id"])
+        # Locked and re-read: an autopilot refund or another incident's approval of the same capture may
+        # have just refunded it (same refund key, so PayPal would replay that refund as if it were ours).
+        attempt = await self.s.get(
+            CheckoutAttempt, action.params["attempt_id"], with_for_update=True, populate_existing=True
+        )
         if attempt is None or attempt.outcome != Outcome.CAPTURED:
             action.status = ActionStatus.REJECTED
             action.error = "capture is no longer refundable"

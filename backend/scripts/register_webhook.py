@@ -58,7 +58,13 @@ async def run(base_url: str) -> None:
                 json=[{"op": "replace", "path": "/event_types", "value": events}],
             )
             webhook_id = same["id"]
-            print(f"Updated existing webhook {webhook_id}: HTTP {res.status}")
+            issue = (res.error_summary() or {}).get("name")
+            if res.ok:
+                print(f"Updated existing webhook {webhook_id} → {url}")
+            elif issue == "WEBHOOK_PATCH_REQUEST_NO_CHANGE":
+                print(f"Webhook {webhook_id} already points at {url} with all events: nothing to change")
+            else:
+                raise SystemExit(f"Could not update webhook {webhook_id}: HTTP {res.status} {res.json}")
         else:
             res = await pp.request(
                 "POST", "/v1/notifications/webhooks", json={"url": url, "event_types": events}

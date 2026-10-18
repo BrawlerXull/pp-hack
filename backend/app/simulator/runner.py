@@ -37,7 +37,11 @@ _TASKS: set[asyncio.Task[None]] = set()  # keep references so runs aren't garbag
 
 
 def to_request(shop_id: str, scenario: str, a: SimAttempt, mode: Mode) -> CheckoutRequest:
-    card = CardDetails(number=a.card_number, name=a.card_name or "Test Buyer") if a.card_number else None
+    card = (
+        CardDetails(number=a.card_number, name=a.card_name or "Test Buyer", expiry=a.card_expiry)
+        if a.card_number
+        else None
+    )
     return CheckoutRequest(
         shop_id=shop_id,
         sku=a.sku,

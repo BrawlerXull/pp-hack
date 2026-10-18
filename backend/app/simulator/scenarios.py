@@ -2,6 +2,9 @@
 
 mode="live"    → real PayPal sandbox calls with sandbox test cards (declines via CCREJECT-* name triggers)
 mode="offline" → no PayPal call; outcome is synthesised and the row is stored with paypal_live=false
+
+Declines use the same CCREJECT-* trigger in both modes; offline derives the code the sandbox would
+return from it through app/paypal/codes.py, so both modes store the same canonical decline names.
 """
 
 import random
@@ -9,10 +12,24 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal
 
+from app.paypal import codes
 from app.shop.catalog import CHEAPEST_SKU, PRODUCTS
 
 Mode = Literal["live", "offline"]
-SANDBOX_APPROVE_CARD = "4012888888881881"
+# PayPal's published sandbox Visa test numbers (developer.paypal.com/tools/sandbox/card-testing/).
+# Live mode rotates through them with a varied expiry, so a live attack shows "a new card on almost
+# every attempt" like a real one (card_key includes expiry, see detection/features.py). Whether the
+# sandbox accepts every number is still to confirm once card processing is enabled.
+SANDBOX_TEST_CARDS = (
+    "4005519200000004",
+    "4012000033330026",
+    "4012000077777777",
+    "4012888888881881",
+    "4217651111111119",
+    "4500600000000061",
+    "4772129056533503",
+    "4915805038587737",
+)
 DECLINE_TRIGGERS = [
     "CCREJECT-REFUSED",
     "CCREJECT-SF",
@@ -21,7 +38,6 @@ DECLINE_TRIGGERS = [
     "CCREJECT-CVV_F",
     "CCREJECT-EC",
 ]
-OFFLINE_DECLINE_CODES = ["INSTRUMENT_DECLINED", "CARD_DECLINED", "TRANSACTION_REFUSED", "CARD_EXPIRED"]
 COMMON_DOMAINS = ["gmail.com", "outlook.com", "yahoo.com", "icloud.com", "hotmail.com", "proton.me"]
 BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 Safari/605.1.15"
 BOT_UA = "Mozilla/5.0 (X11; Linux x86_64) HeadlessChrome/131.0 Safari/537.36"
@@ -37,6 +53,7 @@ class SimAttempt:
     email: str
     card_number: str | None = None
     card_name: str | None = None
+    card_expiry: str = "2030-12"
     payer_id: str | None = None
     # offline plan (also used as the intended outcome in live mode)
     outcome: Literal["approve", "decline", "error"] = "approve"
@@ -55,6 +72,27 @@ def luhn_card(prefix: str = "4", length: int = 16, rng: random.Random | None = N
             d -= 9 if d > 9 else 0
         total += d
     return "".join(map(str, digits)) + str((10 - total % 10) % 10)
+
+
+def _expiry(rng: random.Random) -> str:
+    return f"{rng.randint(2028, 2033)}-{rng.randint(1, 12):02d}"
+
+
+def live_card(rng: random.Random) -> tuple[str, str]:
+    """(number, expiry) for a card tester: any published test number, any future expiry."""
+    return rng.choice(SANDBOX_TEST_CARDS), _expiry(rng)
+
+
+def customer_card(device_id: str) -> tuple[str, str]:
+    """(number, expiry) for a returning shopper in live mode: the same card on every visit."""
+    rng = random.Random(device_id)
+    return rng.choice(SANDBOX_TEST_CARDS), _expiry(rng)
+
+
+def trigger_decline(card_name: str) -> str:
+    """Canonical decline name the sandbox gives a CCREJECT-* card name (same table as live results)."""
+    code = codes.lookup(codes.trigger_code(card_name))
+    return code.name if code else "INSTRUMENT_DECLINED"
 
 
 def customer_pool(n: int = 60, seed: int = 7) -> list[tuple[str, str]]:
@@ -81,7 +119,8 @@ def card_testing(
     farm = [f"bot-{rng.randint(1000, 9999)}" for _ in range(4)]
     for i in range(count):
         approve = rng.random() < 0.28
-        number = luhn_card("4", rng=rng) if mode == "offline" else SANDBOX_APPROVE_CARD
+        number, expiry = (luhn_card("4", rng=rng), "2030-12") if mode == "offline" else live_card(rng)
+        name = "Test Buyer" if approve else DECLINE_TRIGGERS[i % len(DECLINE_TRIGGERS)]
         yield SimAttempt(
             delay_s=rng.uniform(0.3, 1.2) / speed,
             sku=CHEAPEST_SKU,
@@ -90,9 +129,10 @@ def card_testing(
             user_agent=BOT_UA,
             email=_bot_email(rng),
             card_number=number,
-            card_name="Test Buyer" if approve else DECLINE_TRIGGERS[i % len(DECLINE_TRIGGERS)],
+            card_name=name,
+            card_expiry=expiry,
             outcome="approve" if approve else "decline",
-            decline_code=rng.choice(OFFLINE_DECLINE_CODES),
+            decline_code=trigger_decline(name),
             is_bot=True,
         )
 
@@ -145,6 +185,7 @@ def flash_sale(
         )
         method = rng.choice(["card", "wallet"]) if mode == "offline" else "card"
         approve = rng.random() > 0.04
+        number, expiry = (luhn_card("4", rng=rng), "2030-12") if mode == "offline" else customer_card(device)
         yield SimAttempt(
             delay_s=rng.uniform(0.8, 2.5) / speed,
             sku=rng.choices(skus, weights=[2, 5, 4])[0],
@@ -152,9 +193,8 @@ def flash_sale(
             device_id=device,
             user_agent=BROWSER_UA,
             email=email,
-            card_number=(luhn_card("4", rng=rng) if mode == "offline" else SANDBOX_APPROVE_CARD)
-            if method == "card"
-            else None,
+            card_number=number if method == "card" else None,
+            card_expiry=expiry,
             card_name="Test Buyer" if approve else "CCREJECT-IF",
             payer_id=f"PAYER{rng.randint(10**9, 10**10)}" if method == "wallet" else None,
             outcome="approve" if approve else "decline",
@@ -190,6 +230,7 @@ def normal_night(
     pool = customer_pool()
     for _ in range(count):
         device, email = rng.choice(pool)
+        number, expiry = (luhn_card("4", rng=rng), "2030-12") if mode == "offline" else customer_card(device)
         yield SimAttempt(
             delay_s=rng.uniform(5, 20) / speed,
             sku=rng.choice(list(PRODUCTS)),
@@ -197,7 +238,8 @@ def normal_night(
             device_id=device,
             user_agent=BROWSER_UA,
             email=email,
-            card_number=luhn_card("4", rng=rng) if mode == "offline" else SANDBOX_APPROVE_CARD,
+            card_number=number,
+            card_expiry=expiry,
             card_name="Test Buyer",
         )
 

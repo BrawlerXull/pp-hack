@@ -65,6 +65,16 @@ class Outcome(StrEnum):
     REFUNDED = "refunded"
 
 
+class DeclineCategory(StrEnum):
+    """Why PayPal said no (app/paypal/codes.py). Lets detection tell stolen cards from honest bad luck."""
+
+    FRAUD = "fraud"  # stolen, lost, invalid or restricted card/account
+    CUSTOMER = "customer"  # honest shopper's bad luck: insufficient funds, expired card
+    PROBING = "probing"  # wrong CVV/expiry: someone guessing card details
+    PROCESSOR = "processor"  # integration or processor problem (stored on ERROR rows)
+    UNKNOWN_DECLINE = "unknown_decline"  # declined without a reason (a 422 carries only an issue name)
+
+
 class GuardMode(StrEnum):
     NORMAL = "normal"
     SCA_ALL = "sca_all"
@@ -146,13 +156,22 @@ class CheckoutAttempt(Base):
     payer_id_hash: Mapped[str | None] = mapped_column(String(64))
     card_bin6: Mapped[str | None] = mapped_column(String(6))
     card_last4: Mapped[str | None] = mapped_column(String(4))
+    # YYYY-MM. Part of the card key, so expiry guessing on one card number counts as new cards.
+    card_expiry: Mapped[str | None] = mapped_column(String(7))
     guard_decision: Mapped[str] = mapped_column(String(20))
     guard_reason: Mapped[str | None] = mapped_column(String(60))
     paypal_order_id: Mapped[str | None] = mapped_column(String(40), index=True)
     order_status: Mapped[str | None] = mapped_column(String(40))
     capture_id: Mapped[str | None] = mapped_column(String(40), index=True)
+    # Definitive (4xx) capture refusals so far. Part of the capture PayPal-Request-Id, so a capture
+    # after 3-D Secure or a new funding source is a new request, not a replay of the cached refusal.
+    capture_tries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     outcome: Mapped[str] = mapped_column(String(20))
+    # Canonical name from app/paypal/codes.py (e.g. SUSPECTED_FRAUD), set on DECLINED and ERROR rows.
     decline_code: Mapped[str | None] = mapped_column(String(80))
+    # Raw processor_response.response_code (e.g. "9500") when PayPal sent one; 422s carry none.
+    processor_code: Mapped[str | None] = mapped_column(String(20))
+    decline_category: Mapped[str | None] = mapped_column(String(20))
     paypal_debug_id: Mapped[str | None] = mapped_column(String(40))
     refund_id: Mapped[str | None] = mapped_column(String(40))
     disputed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -171,6 +190,8 @@ class PayPalEvent(Base):
     verified: Mapped[str] = mapped_column(String(20))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Unmatched event waiting for its attempt row: skipped until then, so it never starves new events.
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     payload: Mapped[dict[str, Any]] = mapped_column(JsonB)
 
 

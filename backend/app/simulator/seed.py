@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import CheckoutAttempt, Decision, Outcome, Source
+from app.db.models import CheckoutAttempt, Decision, DeclineCategory, Outcome, Source
 from app.shop.catalog import PRODUCTS
 from app.shop.service import email_domain, fingerprint
 from app.simulator.scenarios import BROWSER_UA, customer_pool, luhn_card
@@ -55,10 +55,13 @@ async def seed_history(session: AsyncSession, shop_id: str, days: int = 28, orde
                         email_domain=email_domain(email),
                         card_bin6=card[:6],
                         card_last4=card[-4:],
+                        card_expiry="2030-12",  # same default as offline cards, so card keys compare
                         guard_decision=Decision.ALLOW,
                         guard_reason="normal",
                         outcome=Outcome.DECLINED if declined else Outcome.CAPTURED,
                         decline_code="INSUFFICIENT_FUNDS" if declined else None,
+                        processor_code="5120" if declined else None,
+                        decline_category=DeclineCategory.CUSTOMER if declined else None,
                     )
                 )
                 rows += 1

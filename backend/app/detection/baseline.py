@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import CheckoutAttempt, Outcome
-from app.detection.features import AttemptRow, Baseline
+from app.detection.features import AttemptRow, Baseline, card_key
 
 HISTORY_DAYS = 28
 # History closer than this is excluded so an ongoing attack can't become "normal".
@@ -24,6 +24,7 @@ async def recent_rows(session: AsyncSession, shop_id: str, since: datetime) -> l
         CheckoutAttempt.email_domain,
         CheckoutAttempt.card_bin6,
         CheckoutAttempt.card_last4,
+        CheckoutAttempt.card_expiry,
         CheckoutAttempt.payer_id_hash,
         CheckoutAttempt.outcome,
         CheckoutAttempt.decline_code,
@@ -36,7 +37,7 @@ async def recent_rows(session: AsyncSession, shop_id: str, since: datetime) -> l
             method=r.method,
             fingerprint_hash=r.fingerprint_hash,
             email_domain=r.email_domain,
-            card_key=f"{r.card_bin6}{r.card_last4}" if r.card_bin6 else None,
+            card_key=card_key(r.card_bin6, r.card_last4, r.card_expiry),
             payer_id_hash=r.payer_id_hash,
             outcome=r.outcome,
             decline_code=r.decline_code,

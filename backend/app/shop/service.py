@@ -17,14 +17,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import CheckoutAttempt, Decision, Method, Outcome, Source, new_id
 from app.events import publish
 from app.guard.check import GuardContext, GuardVerdict, check
+from app.paypal import codes
 from app.paypal.client import PayPalClient
 from app.paypal.orders import (
-    DECLINE_ISSUES,
     CardDetails,
     OrderResult,
     capture_order,
     create_order,
+    get_order,
     order_payload,
+    order_request_id,
 )
 from app.shop.catalog import PRODUCTS
 
@@ -64,7 +66,9 @@ class CheckoutRequest:
 @dataclass
 class OfflinePlan:
     """Labelled offline simulation (no PayPal call): what PayPal *would* have returned.
-    Used for the eval harness and when the sandbox account can't process cards yet."""
+    Used for the eval harness and when the sandbox account can't process cards yet.
+    A card decline's code comes from the CCREJECT-* trigger in the card name (as in the sandbox);
+    `decline_code` is the 422 issue used when there is no trigger (wallet declines)."""
 
     outcome: Literal["approve", "decline", "error"]
     decline_code: str = "INSTRUMENT_DECLINED"
@@ -84,24 +88,36 @@ class CheckoutResult:
     payer_action_url: str | None = None
 
 
-def _outcome_from_paypal(res: OrderResult) -> Outcome:
-    if res.is_processor_error:
-        return Outcome.ERROR
-    if res.status == "PAYER_ACTION_REQUIRED":
-        return Outcome.SCA_REQUIRED
-    if res.capture_status == "COMPLETED" or res.status == "COMPLETED":
-        return Outcome.CAPTURED
-    if res.capture_status == "DECLINED" or (res.issue and res.issue in DECLINE_ISSUES):
-        return Outcome.DECLINED
-    if res.http >= 400:
-        # Other 4xx: integration problems (e.g. PAYEE_NOT_ENABLED_FOR_CARD_PROCESSING) count as errors.
-        return Outcome.ERROR
-    if res.status in {"CREATED", "APPROVED", "SAVED"}:
-        return Outcome.CREATED
-    return Outcome.ERROR
+def classify(res: OrderResult, method: str = Method.CARD) -> codes.Classification:
+    return codes.classify(
+        http=res.http,
+        order_status=res.status,
+        capture_status=res.capture_status,
+        issue=res.issue,
+        processor_code=res.processor_code,
+        card=method == Method.CARD,
+    )
 
 
-def _offline_result(plan: OfflinePlan, force_sca: bool, method: str) -> OrderResult:
+def apply_result(attempt: CheckoutAttempt, res: OrderResult) -> None:
+    """Copy a PayPal (or simulated) order result onto the attempt row. A row that is already CAPTURED or
+    REFUNDED is never downgraded: a late failure (timeout, racing request) does not undo a real capture,
+    which would drop it from refund matching and show a charged buyer as declined."""
+    c = classify(res, attempt.method)
+    if attempt.outcome in {Outcome.CAPTURED, Outcome.REFUNDED} and c.outcome != Outcome.CAPTURED:
+        return
+    attempt.outcome = c.outcome
+    attempt.paypal_order_id = res.order_id or attempt.paypal_order_id
+    attempt.order_status = res.status
+    # Never drop a capture id we already hold (e.g. a later failed re-capture).
+    attempt.capture_id = res.capture_id or attempt.capture_id
+    attempt.decline_code = c.decline_code
+    attempt.decline_category = c.category
+    attempt.processor_code = c.processor_code
+    attempt.paypal_debug_id = res.debug_id
+
+
+def offline_result(plan: OfflinePlan, force_sca: bool, method: str, card: CardDetails | None) -> OrderResult:
     oid = f"SIM-{uuid.uuid4().hex[:12].upper()}"
     latency = random.randint(180, 650)
     if plan.outcome == "error":
@@ -109,6 +125,13 @@ def _offline_result(plan: OfflinePlan, force_sca: bool, method: str) -> OrderRes
     if force_sca and method == Method.CARD and plan.is_bot:
         return OrderResult(200, oid, "PAYER_ACTION_REQUIRED", None, None, None, None, latency)
     if plan.outcome == "decline":
+        trigger = codes.trigger_code(card.name) if card else None
+        if trigger:
+            # PayPal's capture-decline shape: 201, capture DECLINED + processor code (unconfirmed in sandbox).
+            # No simulated capture id: on a declined row it would look like money was taken.
+            return OrderResult(
+                201, oid, "COMPLETED", None, "DECLINED", None, None, latency, processor_code=trigger
+            )
         return OrderResult(422, None, None, None, None, plan.decline_code, None, latency)
     cap = f"SIMCAP-{uuid.uuid4().hex[:10].upper()}"
     return OrderResult(201, oid, "COMPLETED", cap, "COMPLETED", None, None, latency)
@@ -138,6 +161,7 @@ async def place_order(
         payer_id_hash=short_hash(req.payer_id),
         card_bin6=req.card.number[:6] if req.card else None,
         card_last4=req.card.number[-4:] if req.card else None,
+        card_expiry=req.card.expiry if req.card else None,
         guard_decision=verdict.decision,
         guard_reason=verdict.reason,
     )
@@ -152,27 +176,25 @@ async def place_order(
     else:
         force_sca = verdict.decision == Decision.ALLOW_WITH_SCA
         if req.offline is not None:
-            result = _offline_result(req.offline, force_sca, req.method)
+            result = offline_result(req.offline, force_sca, req.method, req.card)
         else:
             assert paypal is not None
+            app_url = paypal.settings.public_app_url.rstrip("/")
             payload = order_payload(
                 sku=product.sku,
                 description=product.name,
                 amount=product.price,
-                custom_id=f"{req.shop_id}:{attempt.id}",
+                custom_id=custom_id(req.shop_id, attempt.id),
                 card=req.card,
                 force_sca=force_sca and req.method == Method.CARD,
+                return_url=f"{app_url}/?3ds=return",
+                cancel_url=f"{app_url}/?3ds=cancel",
             )
-            result = await create_order(paypal, payload)
+            result = await create_order(paypal, payload, order_request_id(attempt.id))
             # Server-side card orders (simulator) come back APPROVED and are captured immediately.
             if req.card and result.order_id and result.status == "APPROVED":
                 result = await capture_order(paypal, result.order_id)
-        attempt.outcome = _outcome_from_paypal(result)
-        attempt.paypal_order_id = result.order_id
-        attempt.order_status = result.status
-        attempt.capture_id = result.capture_id
-        attempt.decline_code = result.issue if attempt.outcome in {Outcome.DECLINED, Outcome.ERROR} else None
-        attempt.paypal_debug_id = result.debug_id
+        apply_result(attempt, result)
         attempt.latency_ms = result.latency_ms
 
     session.add(attempt)
@@ -193,10 +215,21 @@ async def place_order(
     )
 
 
+def custom_id(shop_id: str, attempt_id: str) -> str:
+    """Sent as purchase_units[].custom_id; webhooks echo it back (webhook_processor.py)."""
+    return f"{shop_id}:{attempt_id}"
+
+
 async def capture_web_order(
     session: AsyncSession, paypal: PayPalClient, shop_id: str, order_id: str
 ) -> CheckoutAttempt | None:
-    """Capture a browser order after buyer approval (wallet) or card-fields submit."""
+    """Capture a browser order after buyer approval (wallet) or card-fields submit.
+
+    Idempotent: a repeat (double click, browser retry) returns the stored capture without calling
+    PayPal. When PayPal's answer is unknown (timeout, 5xx) or says ORDER_ALREADY_CAPTURED, the order
+    itself is read and decides. The row is re-read under a short lock only after PayPal answered (no
+    lock is held across the call), and apply_result never downgrades a capture that a racing request
+    or the webhook committed meanwhile."""
     attempt = (
         await session.execute(
             select(CheckoutAttempt).where(
@@ -206,13 +239,25 @@ async def capture_web_order(
     ).scalar_one_or_none()
     if attempt is None:
         return None
-    res = await capture_order(paypal, order_id)
-    attempt.outcome = _outcome_from_paypal(res)
-    attempt.order_status = res.status
-    attempt.capture_id = res.capture_id
-    attempt.decline_code = res.issue if attempt.outcome in {Outcome.DECLINED, Outcome.ERROR} else None
-    attempt.paypal_debug_id = res.debug_id
-    await publish(session, "attempt", attempt_event(attempt))
+    if attempt.outcome in {Outcome.CAPTURED, Outcome.REFUNDED} and attempt.capture_id:
+        return attempt
+    tries = attempt.capture_tries or 0
+    captured = await capture_order(paypal, order_id, tries)
+    res: OrderResult | None = captured
+    already = captured.issue == "ORDER_ALREADY_CAPTURED"
+    if already or captured.http == 0 or captured.http >= 500:
+        order = await get_order(paypal, order_id)
+        if order.http == 200 and order.capture_status:
+            res = order
+        elif already:
+            res = None  # PayPal says captured but we can't read it: leave the row for the webhook
+    attempt = await session.get(CheckoutAttempt, attempt.id, with_for_update=True, populate_existing=True)
+    assert attempt is not None
+    if res is not None:
+        if 400 <= res.http < 500:
+            attempt.capture_tries = tries + 1  # a definitive refusal: the next capture is a new request
+        apply_result(attempt, res)
+        await publish(session, "attempt", attempt_event(attempt))
     await session.commit()
     return attempt
 
@@ -232,4 +277,5 @@ def attempt_event(a: CheckoutAttempt) -> dict[str, Any]:
         "decision": a.guard_decision,
         "outcome": a.outcome,
         "decline_code": a.decline_code,
+        "decline_category": a.decline_category,
     }
