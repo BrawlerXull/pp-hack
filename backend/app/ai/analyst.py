@@ -16,21 +16,28 @@ from app.ai.gemini import AIUnavailable, generate_json
 from app.ai.schemas import Evidence, Verdict
 from app.detection.features import AttemptRow, Baseline, Features, lookup
 
-PROMPT_VERSION = "analyst-v1"
+PROMPT_VERSION = "analyst-v2"
 log = structlog.get_logger()
 
 SYSTEM = """You are Checkout Guard's fraud analyst for a small online shop that takes PayPal payments.
-A deterministic detector flagged unusual checkout traffic. Decide what it is:
+A deterministic detector flagged unusual checkout traffic. Decide what it is from the traffic pattern:
 
 - card_testing: a bot testing stolen cards. Typical signs: many attempts on the cheapest item, high
-  decline rate with card-decline codes, a new card on almost every attempt, many email domains never
-  seen before, few repeat customers, tiny average amounts.
-- account_testing: the same but with stolen PayPal accounts (wallet payments, many unique payer ids).
-- genuine_rush: real customers, e.g. an owner-announced sale. Signs: a sale window is active, varied
-  items and basket sizes, returning customers and common email domains, low decline rate.
+  decline rate, declines PayPal codes as fraud (fraud_declines, fraud_decline_share: stolen, lost,
+  restricted cards) or as guessing (wrong CVV/expiry), a new card on almost every attempt
+  (cheapest_sku_cards), many email domains never seen before, few repeat customers, tiny amounts.
+- account_testing: the same but with stolen PayPal accounts (wallet payments, many unique payer ids,
+  restricted-account declines).
+- genuine_rush: real customers arriving at once. Signs: varied items and basket sizes, returning
+  customers (known_customer_share) and common email domains, a low decline rate whose declines are
+  honest bad luck (insufficient funds, expired card) rather than fraud codes. Rushes are often
+  unannounced (a post going viral), so judge the pattern itself.
 - paypal_outage: PayPal/processor trouble. Signs: processor errors (5xx, timeouts, SERVICE_UNAVAILABLE)
   across all kinds of customers rather than card declines; volume not unusually high.
 - unclear: signals conflict or there is too little data.
+
+Supporting context, not proof: `context.sale_window_active` says the owner announced a sale. It makes a
+rush more likely, but its absence does not make one an attack, and attackers also strike during sales.
 
 Rules:
 - Cite only features present in the input. For each evidence item copy `observed` exactly from the
@@ -66,14 +73,13 @@ def build_input(
     actions_so_far: list[str],
     sample: list[AttemptRow],
 ) -> dict[str, Any]:
+    # Pattern signals first; the owner's sale window and our own defences come last, as context, so the
+    # model judges the traffic before it reads "there's a sale on" (a rush nobody announced must still read
+    # as a rush; scripts/eval_ai.py flash_sale_no_hint).
     return {
         "triggers": triggers,
         "windows": {f"{m}m": f.as_dict() for m, f in features.items()},
         "baseline": baseline.public(),
-        "sale_window_active": sale_window is not None,
-        "sale_note": (sale_window or {}).get("note"),
-        "guard_state": guard_state,
-        "actions_so_far": actions_so_far,
         "sample_attempts": [
             {
                 "sku": r.sku,
@@ -81,12 +87,19 @@ def build_input(
                 "method": r.method,
                 "outcome": r.outcome,
                 "decline_code": r.decline_code,
+                "decline_category": r.decline_category,
                 "fp": r.fingerprint_hash[:8],
                 "email_domain": _clean_domain(r.email_domain),
                 "returning_customer": r.fingerprint_hash in baseline.known_fingerprints,
             }
             for r in sorted(sample, key=lambda r: r.ts, reverse=True)[:20]
         ],
+        "context": {
+            "sale_window_active": sale_window is not None,
+            "sale_note": (sale_window or {}).get("note"),
+            "guard_state": guard_state,
+            "actions_so_far": actions_so_far,
+        },
     }
 
 
@@ -123,7 +136,7 @@ def fallback_verdict(reason: str) -> Verdict:
     return Verdict(
         classification="unclear",
         confidence=0.5,
-        summary="Unusual checkout activity detected. AI analysis is unavailable, so only soft defences apply.",  # noqa: E501
+        summary="Unusual checkout activity detected. AI analysis is unavailable, so fixed safety rules apply.",  # noqa: E501
         evidence=[],
         recommended_actions=["SCA_ON", "NOTIFY"],
         uncertainty_notes=f"AI unavailable ({reason}). It will retry on the next assessment.",

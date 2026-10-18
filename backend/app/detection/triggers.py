@@ -2,15 +2,47 @@
 
 Triggers are deliberately sensitive. Telling a real rush or an outage apart from an attack is
 the AI analyst's job, and what we're allowed to do about it is the policy engine's job.
+
+Each trigger has a tier, so the policy can act on the kind of signal before (and without) the AI:
+  volume   velocity_spike, sku_concentration     busy, not necessarily bad (a single-product sale trips both)
+  fraud    decline_spike, fraud_declines,         stolen credentials: banks refusing, cards cycling
+           cheap_sku_card_cycling
+  ops      processor_errors                       PayPal or our integration failing, not the shoppers
+  holding  blocked_activity                       defences already stopping someone; keeps the incident alive
 """
 
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import Any
 
-from app.db.models import Outcome
+from app.db.models import DeclineCategory, Outcome
 from app.detection.features import AttemptRow, Baseline, Features
+
+
+class Tier(StrEnum):
+    VOLUME = "volume"
+    FRAUD = "fraud"
+    OPS = "ops"
+    HOLDING = "holding"
+
+
+TRIGGER_TIER: dict[str, Tier] = {
+    "velocity_spike": Tier.VOLUME,
+    "sku_concentration": Tier.VOLUME,
+    "decline_spike": Tier.FRAUD,
+    "fraud_declines": Tier.FRAUD,
+    "cheap_sku_card_cycling": Tier.FRAUD,
+    "processor_errors": Tier.OPS,
+    "blocked_activity": Tier.HOLDING,
+}
+FRAUD_TRIGGERS = frozenset(t for t, tier in TRIGGER_TIER.items() if tier == Tier.FRAUD)
+
+
+def tiers(triggers: Iterable[str]) -> frozenset[Tier]:
+    return frozenset(TRIGGER_TIER[t] for t in triggers if t in TRIGGER_TIER)
 
 
 @dataclass(frozen=True)
@@ -25,6 +57,13 @@ class TriggerThresholds:
     error_rate: float = 0.30
     error_min_attempts_5m: int = 5
     blocked_min_5m: int = 3
+    fraud_declines_10m: int = 3
+    # Card cycling on the cheapest item, 15 min: enough tries, enough distinct credentials of ONE kind
+    # (cards, or PayPal payers), and enough of them refused. A sale on the cheap item has the volume and
+    # the cards but not the declines.
+    cycling_min_attempts: int = 10
+    cycling_min_credentials: int = 5
+    cycling_decline_rate: float = 0.30
 
 
 DEFAULT_THRESHOLDS = TriggerThresholds()
@@ -33,7 +72,7 @@ DEFAULT_THRESHOLDS = TriggerThresholds()
 def evaluate(
     features: dict[int, Features], baseline: Baseline, t: TriggerThresholds = DEFAULT_THRESHOLDS
 ) -> list[str]:
-    f5, f15 = features[5], features[15]
+    f5, f10, f15 = features[5], features[10], features[15]
     fired: list[str] = []
     if f5.attempts >= t.velocity_min_attempts_5m and f5.velocity_z > t.velocity_z:
         fired.append("velocity_spike")
@@ -42,6 +81,14 @@ def evaluate(
         fired.append("decline_spike")
     if f15.attempts >= t.sku_min_attempts_15m and f15.top_sku_share > t.sku_share:
         fired.append("sku_concentration")
+    if f10.fraud_declines >= t.fraud_declines_10m:
+        fired.append("fraud_declines")
+    if (
+        f15.cheapest_sku_attempts >= t.cycling_min_attempts
+        and max(f15.cheapest_sku_cards, f15.cheapest_sku_payers) >= t.cycling_min_credentials
+        and f15.cheapest_sku_decline_rate >= t.cycling_decline_rate
+    ):
+        fired.append("cheap_sku_card_cycling")
     if f5.reached_paypal >= t.error_min_attempts_5m and f5.error_rate > t.error_rate:
         fired.append("processor_errors")
     if f5.blocked_or_challenged >= t.blocked_min_5m:
@@ -59,6 +106,9 @@ class Signature:
     window_end: datetime
     top_sku: str | None
     fingerprints: list[str] = field(default_factory=list)
+    # The subset that is unmistakably a bot without any AI judgement: never a known customer, and several
+    # cards or several fraud/probing refusals from one device. Rules-only blocking (policy R3b) uses these.
+    strong_fingerprints: list[str] = field(default_factory=list)
     new_email_domains: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -66,6 +116,9 @@ class Signature:
         d["window_start"] = self.window_start.isoformat()
         d["window_end"] = self.window_end.isoformat()
         return d
+
+
+STRONG_DECLINES = frozenset({DeclineCategory.FRAUD, DeclineCategory.PROBING})
 
 
 def signature(rows: list[AttemptRow], since: datetime, now: datetime, baseline: Baseline) -> Signature:
@@ -83,7 +136,7 @@ def signature(rows: list[AttemptRow], since: datetime, now: datetime, baseline: 
     per_fp: dict[str, list[AttemptRow]] = defaultdict(list)
     for r in w:
         per_fp[r.fingerprint_hash].append(r)
-    suspicious = []
+    suspicious, strong = [], []
     for fp, attempts in per_fp.items():
         if fp in baseline.known_fingerprints:
             continue  # returning customer with a past successful purchase
@@ -91,7 +144,11 @@ def signature(rows: list[AttemptRow], since: datetime, now: datetime, baseline: 
         distinct_cards = len({a.card_key for a in attempts if a.card_key})
         if bad >= 1 or len(attempts) >= 3 or distinct_cards >= 2:
             suspicious.append(fp)
+        guessing = sum(a.decline_category in STRONG_DECLINES for a in attempts)
+        if distinct_cards >= 2 or guessing >= 2:
+            strong.append(fp)
     sig.fingerprints = sorted(suspicious)
+    sig.strong_fingerprints = sorted(strong)
 
     sig.new_email_domains = sorted(
         {r.email_domain for r in w if r.email_domain and r.email_domain not in baseline.known_domains}

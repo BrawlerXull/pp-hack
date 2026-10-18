@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useState } from "react";
 import { api, type ActionRow, type IncidentDetail, type Summary } from "@/lib/api";
-import { ACTION_LABEL, CLASSIFICATION_LABEL, FEATURE_LABEL, STATUS_COPY, featureValue, money, timeAgo } from "@/lib/format";
+import { ACTION_LABEL, CLASSIFICATION_LABEL, FEATURE_LABEL, RULES_HINT_LABEL, STATUS_COPY, featureValue, money, timeAgo } from "@/lib/format";
 import { Badge, Button } from "./ui";
 
 const BANNER = {
@@ -66,6 +66,11 @@ export function VerdictCard({ incident }: { incident: IncidentDetail }) {
         <p className="text-xs text-amber-700">
           AI re-check failed {timeAgo(incident.ai_refresh_failed_at)} ({incident.ai_refresh_failures}×). Keeping the verdict from{" "}
           {incident.verdict_at ? timeAgo(incident.verdict_at) : "earlier"}; new refunds wait for your approval if this persists.
+        </p>
+      )}
+      {!incident.ai_available && incident.rules_hint && (
+        <p className="text-xs text-slate-600">
+          Fixed rules saw: {RULES_HINT_LABEL[incident.rules_hint]}. This is not an AI verdict.
         </p>
       )}
       <p className="text-[15px] leading-relaxed text-slate-800">{v.summary}</p>

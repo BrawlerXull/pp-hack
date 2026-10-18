@@ -9,7 +9,7 @@ All endpoints are FastAPI routes. The OpenAPI schema is exported at build time, 
 |---|---|---|---|
 | GET | `/shop/products` | frontend | 3 SKUs incl. `SKU-TEALIGHT-3` ($3) |
 | POST | `/shop/client-token` | frontend | Browser-safe token for JS SDK v6 |
-| POST | `/shop/orders` | frontend / simulator | Guard check → create PayPal order (adds `SCA_ALWAYS` when told to) → returns `order_id` or a guard refusal |
+| POST | `/shop/orders` | frontend / simulator | Guard check (incl. a per-device velocity breaker: 6+ attempts or 2+ declines in 10 min → challenge, past 12 / 4 even with a challenge token → block until they age out; never keyed on IP; check and attempt row are serialised per device with an advisory lock and the row is committed before the PayPal call, so parallel requests can't outrun it. The challenge itself is a demo click-through, not a bot barrier) → create PayPal order (adds `SCA_ALWAYS` when told to) → returns `order_id` or a guard refusal |
 | POST | `/shop/orders/{id}/capture` | frontend | Capture after buyer approval or card submit; logs the outcome |
 | POST | `/sim/orders` | simulator only (`SIMULATOR_ENABLED`) | Same as above but with a sandbox test card in `payment_source.card`, then auto-capture. Tagged `source=simulator` |
 
@@ -101,7 +101,7 @@ A single process holds a Postgres advisory lock so only one instance runs.
 | Job | Every | Does |
 |---|---|---|
 | `process_webhooks` | 2 s | Unprocessed `paypal_events` → update attempts/captures/refunds/disputes |
-| `detect` | 10 s | Features over 1/5/15/60 min windows vs baseline → triggers → open an incident (or update the open one) → AI analyst → policy → executor → reporter alert |
+| `detect` | 10 s | Features over 1/5/10/15/60 min windows vs baseline (history excludes incident windows, guard-stopped attempts and blocked devices) → triggers → open an incident (or update the open one) → AI analyst → policy → executor → reporter alert |
 | `reassess` | 5 min per open incident | Updated features → AI `continue / escalate / de-escalate` → policy |
 | `deescalate` | 1 min | No attack signal for `deescalate_after_min` → restore `guard_state`, close incident, write report + evidence |
 | `refresh_baseline` | 1 h | Transaction Search + our attempts → `baselines` |

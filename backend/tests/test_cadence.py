@@ -72,11 +72,20 @@ def test_low_confidence_reasks_on_growth_or_new_captures():
 
 
 def test_a_real_sale_is_not_reasked_on_growth_or_captures():
-    # R2 ignores confidence for harmless classes, so a rush that keeps selling must not cost a call per tick.
+    # A confident harmless verdict means no friction (R2), so a rush that keeps selling costs no extra calls.
     for cls in ("genuine_rush", "paypal_outage"):
-        rush = inc(classification=cls, confidence=0.6)
+        rush = inc(classification=cls, confidence=0.7)
         assert reason(rush, timedelta(minutes=3), attempts_15m=100, new_captures=True) is None
         assert reason(rush, timedelta(minutes=10)) == "verdict_aged"
+
+
+def test_a_weak_harmless_verdict_is_reasked_like_unclear():
+    # Below the floor R2 falls through to R3 (3-D Secure on): growth must get a better verdict, which
+    # may RELAX it, instead of keeping the friction until the verdict ages out.
+    for cls in ("genuine_rush", "paypal_outage"):
+        weak = inc(classification=cls, confidence=0.55)
+        assert reason(weak, timedelta(minutes=3), attempts_15m=60) == "attempts_grew"
+        assert reason(weak, timedelta(minutes=3), new_captures=True) == "new_captures"
 
 
 def test_old_verdict_is_reasked_only_while_signals_fire():
@@ -118,3 +127,27 @@ def test_has_real_verdict_ignores_the_ai_available_default():
     assert not cadence.has_real_verdict(Incident(classification=None, model_id=None))
     assert not cadence.has_real_verdict(inc(model_id=cadence.RULES_FALLBACK))
     assert cadence.has_real_verdict(inc())
+
+
+def test_r0_only_acts_on_triggers_a_confident_harmless_verdict_has_not_weighed():
+    fired = ["decline_spike", "velocity_spike", "fraud_declines"]
+    rush = inc(classification="genuine_rush", confidence=0.9)  # its verdict saw decline_spike + velocity
+    assert cadence.unjudged_triggers(rush, fired) == ["fraud_declines"]
+    # A weak rush verdict, an attack verdict, or the rules fallback: R0 sees everything.
+    assert cadence.unjudged_triggers(inc(classification="genuine_rush", confidence=0.6), fired) == fired
+    assert cadence.unjudged_triggers(inc(), fired) == fired
+    assert (
+        cadence.unjudged_triggers(inc(model_id=cadence.RULES_FALLBACK, classification="genuine_rush"), fired)
+        == fired
+    )
+
+
+def test_sku_concentration_is_not_a_fraud_signal_for_guard1():
+    # A single-product sale trips sku_concentration; it must not break a kept genuine_rush verdict.
+    rush = inc(classification="genuine_rush", triggers=["velocity_spike", "sku_concentration"])
+    rush.assessment_context = cadence.context(
+        triggers=["velocity_spike"], sale_window=False, attempts_15m=40, verdict_triggers=["velocity_spike"]
+    )
+    assert cadence.contradicting_triggers(rush) == set()
+    rush.triggers = [*rush.triggers, "cheap_sku_card_cycling"]
+    assert cadence.contradicting_triggers(rush) == {"cheap_sku_card_cycling"}

@@ -15,7 +15,7 @@ FeatureName = Literal[tuple(k.value for k in FeatureKey)]  # type: ignore[valid-
 
 class Evidence(BaseModel):
     feature: FeatureName  # type: ignore[valid-type]
-    window_min: int = Field(description="Window the value comes from: 1, 5, 15 or 60")
+    window_min: int = Field(description="Window the value comes from: 1, 5, 10, 15 or 60")
     observed: float = Field(description="Value exactly as given in the input for this feature/window")
     baseline: float | None = Field(default=None, description="Normal value for comparison, if relevant")
     why: str = Field(description="One sentence, plain English, why this matters")

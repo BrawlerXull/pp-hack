@@ -137,7 +137,11 @@ async def test_flash_sale_gets_no_defences(db, mock_ai):
     assert ActionType.REFUND not in acts and ActionType.BLOCK_FP not in acts
 
 
-async def test_ai_outage_falls_back_to_soft_defences(db, monkeypatch):
+async def test_ai_outage_falls_back_to_rules_only_defences(db, monkeypatch):
+    """Used to assert "soft defences only, no blocks". That left an AI outage with no real defence: 3-D
+    Secure is card-only and the web shop is wallet-only. Now (policy R0 + R3b) fraud-tier triggers get
+    3-D Secure before the AI is asked, and with the AI down the strongest bot fingerprints are blocked and
+    the targeted item held. Still never a refund, and the classification stays "unclear"."""
     calls: list[type] = []
 
     async def down(**kw):
@@ -153,9 +157,16 @@ async def test_ai_outage_falls_back_to_soft_defences(db, monkeypatch):
     assert incident.classification == "unclear" and not incident.ai_available
     assert calls == [Verdict]  # the reporter did not try Gemini again in the same tick
     assert (await db.get(Report, incident.id)).model_id == "template"
+    assert incident.rules_hint == "fraud_signals"
     gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert gs.mode == "sca_all" and gs.blocked_fingerprints == []
+    assert gs.mode == "sca_all" and gs.held_skus == ["SKU-TEALIGHT-3"]
+    assert gs.blocked_fingerprints == incident.signature["strong_fingerprints"]
+    assert len(gs.blocked_fingerprints) == 4  # the bot farm: a new card on every attempt
+    rules = (await db.execute(select(Action.policy_rule).where(Action.incident_id == incident.id))).scalars()
+    assert set(rules) == {"R0_fraud_signal", "R3b_ai_down_fraud_signal"}
     assert not (await db.execute(select(Action).where(Action.type == ActionType.REFUND))).scalars().all()
+    report = await db.get(Report, incident.id)
+    assert "Nothing was blocked" not in report.alert_text and "blocked the devices" in report.alert_text
 
 
 async def test_incident_deescalates_when_quiet(db, mock_ai):

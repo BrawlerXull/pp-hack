@@ -74,7 +74,11 @@ export type IncidentSummary = {
   ai_available: boolean;
   // Last AI re-check failed and the previous AI verdict was kept (the badge keeps showing that model).
   ai_refresh_failed_at: string | null;
+  // What the triggers alone suggest; shown with a rules-fallback verdict, never used as the classification.
+  rules_hint?: RulesHint | null;
 };
+
+export type RulesHint = "fraud_signals" | "processor_trouble" | "returning_customer_rush" | "unusual_volume";
 
 export type GuardStatus = "quiet" | "under_attack" | "busy_genuine_rush" | "paypal_issue" | "investigating" | "recovering";
 
@@ -140,7 +144,7 @@ export type ActionRow = {
 export type IncidentDetail = IncidentSummary & {
   verdict: Verdict | null;
   features: Record<string, unknown>;
-  signature: { top_sku?: string | null; fingerprints?: string[]; new_email_domains?: string[]; window_start?: string };
+  signature: { top_sku?: string | null; fingerprints?: string[]; strong_fingerprints?: string[]; new_email_domains?: string[]; window_start?: string };
   model_id: string | null;
   prompt_version: string | null;
   verdict_at: string | null;

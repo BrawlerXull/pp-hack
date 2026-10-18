@@ -82,14 +82,14 @@ async def age_verdict(db, incident: Incident, minutes: float) -> None:
 
 
 async def new_bot_device(db) -> tuple[str, str]:
-    """A device the verdict has never seen: two declines and a capture that lands before defences catch up.
-    Returns (fingerprint, captured attempt id)."""
+    """A device the verdict has never seen: a decline and a capture that lands before defences catch up
+    (a second decline would trip the guard's per-device breaker first). Returns (fingerprint, attempt id)."""
     gs = await db.get(GuardState, SHOP, populate_existing=True)
     gs.mode, gs.held_skus = "normal", []
     await db.commit()
     invalidate_cache()
     pool = list(card_testing("offline", count=40, seed=99))
-    batch = [a for a in pool if a.outcome == "decline"][:2] + [
+    batch = [a for a in pool if a.outcome == "decline"][:1] + [
         next(a for a in pool if a.outcome == "approve")
     ]
     res = None
@@ -446,7 +446,12 @@ async def test_incident_closed_during_the_call_discards_the_verdict(db, monkeypa
     assert incident.status == IncidentStatus.CLOSED and incident.classification is None
     assert "ai.verdict_discarded" in await events(db, incident.id)
     gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert gs.mode == "normal" and gs.blocked_fingerprints == []
+    # The discarded verdict blocked and held nothing. 3-D Secure is on: policy R0 commits it for the fraud
+    # triggers before the analyst is asked. (This test closes the row with raw SQL; the owner's real close
+    # goes through IncidentService.close, which restores the pre-incident mode.)
+    assert gs.mode == "sca_all" and gs.blocked_fingerprints == [] and gs.held_skus == []
+    acts = (await db.execute(select(Action.policy_rule).where(Action.incident_id == incident.id))).scalars()
+    assert list(acts) == ["R0_fraud_signal"]
 
 
 async def test_assessment_in_flight_elsewhere_is_not_repeated(db, monkeypatch):

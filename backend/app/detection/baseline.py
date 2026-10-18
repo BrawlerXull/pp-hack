@@ -1,17 +1,34 @@
-"""Loads recent attempts and the shop's "normal" baseline from its own history."""
+"""Loads recent attempts and the shop's "normal" baseline from its own history.
+
+The baseline must describe the shop's customers, not its attackers: otherwise every attack makes the next
+one look normal (a past card-testing run's ~70% decline rate lifts the decline_spike limit above what the
+next run reaches). So history excludes, using only what the guard itself recorded (never simulator labels,
+which a real shop doesn't have and would leak the answer into the test):
+  - attempts inside any incident window [opened - 15 min, closed or now]
+  - attempts the guard stopped (BLOCKED, CHALLENGED) and devices that are blocked right now
+  - the last 2 hours, so an attack the detector has not opened an incident for yet can't become "normal"
+and only CAPTURED attempts make a device or email domain "known" (a refunded capture was the attacker's).
+Hours an incident window covers are left out of the hourly series (not counted as zero-traffic hours,
+which would lower the mean and inflate velocity_z). The known-customer sets drop only the windows of
+incidents not confidently judged harmless: a shopper whose first purchase fell in a flash sale the AI
+called genuine_rush is a returning customer next time, not a stranger R4 may block and refund.
+"""
 
 import math
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, exists, func, literal, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import CheckoutAttempt, Outcome
+from app.db.models import CheckoutAttempt, GuardState, Incident, Outcome
 from app.detection.features import AttemptRow, Baseline, card_key
+from app.policy.engine import CONFIDENCE_ACT, HARMLESS_CLASSES
 
 HISTORY_DAYS = 28
 # History closer than this is excluded so an ongoing attack can't become "normal".
 EXCLUDE_RECENT = timedelta(hours=2)
+# Same lookback the signature and refunds use: an attack's first attempts land before the incident opens.
+INCIDENT_LEAD = timedelta(minutes=15)
 
 
 async def recent_rows(session: AsyncSession, shop_id: str, since: datetime) -> list[AttemptRow]:
@@ -28,6 +45,7 @@ async def recent_rows(session: AsyncSession, shop_id: str, since: datetime) -> l
         CheckoutAttempt.payer_id_hash,
         CheckoutAttempt.outcome,
         CheckoutAttempt.decline_code,
+        CheckoutAttempt.decline_category,
     ).where(CheckoutAttempt.shop_id == shop_id, CheckoutAttempt.ts > since)
     return [
         AttemptRow(
@@ -41,6 +59,7 @@ async def recent_rows(session: AsyncSession, shop_id: str, since: datetime) -> l
             payer_id_hash=r.payer_id_hash,
             outcome=r.outcome,
             decline_code=r.decline_code,
+            decline_category=r.decline_category,
         )
         for r in (await session.execute(q)).all()
     ]
@@ -49,7 +68,28 @@ async def recent_rows(session: AsyncSession, shop_id: str, since: datetime) -> l
 async def load_baseline(session: AsyncSession, shop_id: str, now: datetime) -> Baseline:
     end = now - EXCLUDE_RECENT
     start = end - timedelta(days=HISTORY_DAYS)
-    in_range = (CheckoutAttempt.shop_id == shop_id, CheckoutAttempt.ts > start, CheckoutAttempt.ts <= end)
+    gs = await session.get(GuardState, shop_id)
+    blocked = list(gs.blocked_fingerprints or []) if gs else []
+    window = (
+        Incident.shop_id == shop_id,
+        CheckoutAttempt.ts >= Incident.opened_at - INCIDENT_LEAD,
+        CheckoutAttempt.ts <= func.coalesce(Incident.closed_at, literal(now)),
+    )
+    in_incident = exists().where(*window)
+    judged_harmless = and_(
+        Incident.classification.in_(HARMLESS_CLASSES), func.coalesce(Incident.confidence, 0) >= CONFIDENCE_ACT
+    )
+    in_suspect_incident = exists().where(
+        *window, or_(Incident.classification.is_(None), not_(judged_harmless))
+    )
+    eligible = (
+        CheckoutAttempt.shop_id == shop_id,
+        CheckoutAttempt.ts > start,
+        CheckoutAttempt.ts <= end,
+        CheckoutAttempt.outcome.not_in([Outcome.BLOCKED, Outcome.CHALLENGED]),
+        *([CheckoutAttempt.fingerprint_hash.not_in(blocked)] if blocked else []),
+    )
+    in_range = (*eligible, ~in_incident)  # rate and volume statistics: no incident window at all
 
     hour = func.date_trunc("hour", CheckoutAttempt.ts)
     hourly = (await session.execute(select(hour, func.count()).where(*in_range).group_by(hour))).all()
@@ -58,8 +98,10 @@ async def load_baseline(session: AsyncSession, shop_id: str, now: datetime) -> B
 
     first = min(h for h, _ in hourly)
     span_hours = max(1, int((end - first).total_seconds() // 3600))
+    windows = await _incident_windows(session, shop_id, first, now)
     counts = {h: c for h, c in hourly}
-    series = [counts.get(first + timedelta(hours=i), 0) for i in range(span_hours)]
+    hours = [first + timedelta(hours=i) for i in range(span_hours)]
+    series = [counts.get(h, 0) for h in hours if not _covered(h, windows)] or [c for _, c in hourly]
     mean = sum(series) / len(series)
     std = math.sqrt(sum((c - mean) ** 2 for c in series) / len(series))
 
@@ -68,12 +110,12 @@ async def load_baseline(session: AsyncSession, shop_id: str, now: datetime) -> B
             select(
                 func.count().filter(CheckoutAttempt.outcome == Outcome.DECLINED),
                 func.count().filter(CheckoutAttempt.outcome == Outcome.ERROR),
-                func.count().filter(CheckoutAttempt.outcome.not_in([Outcome.BLOCKED, Outcome.CHALLENGED])),
+                func.count(),
             ).where(*in_range)
         )
     ).one()
     declined, errors, reached = totals
-    good = (*in_range, CheckoutAttempt.outcome.in_([Outcome.CAPTURED, Outcome.REFUNDED]))
+    good = (*eligible, ~in_suspect_incident, CheckoutAttempt.outcome == Outcome.CAPTURED)
     domains = (
         await session.execute(
             select(CheckoutAttempt.email_domain)
@@ -92,3 +134,17 @@ async def load_baseline(session: AsyncSession, shop_id: str, now: datetime) -> B
         known_fingerprints=frozenset(fps),
         history_days=max(1, span_hours // 24),
     )
+
+
+async def _incident_windows(
+    session: AsyncSession, shop_id: str, since: datetime, now: datetime
+) -> list[tuple[datetime, datetime]]:
+    q = select(Incident.opened_at, Incident.closed_at).where(
+        Incident.shop_id == shop_id, func.coalesce(Incident.closed_at, literal(now)) >= since
+    )
+    return [(opened - INCIDENT_LEAD, closed or now) for opened, closed in (await session.execute(q)).all()]
+
+
+def _covered(hour: datetime, windows: list[tuple[datetime, datetime]]) -> bool:
+    """By overlap, not by bucket key: date_trunc buckets follow the DB session's time zone."""
+    return any(hour < end and hour + timedelta(hours=1) > start for start, end in windows)

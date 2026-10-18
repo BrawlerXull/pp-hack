@@ -96,6 +96,9 @@ class Executor:
                             incident, p.type, p.rule, ActionStatus.EXECUTED, params={"fingerprints": new}
                         )
                     )
+            elif p.type == ActionType.RELAX:
+                if action := await self._relax(incident, gs, p):
+                    done.append(action)
             elif p.type == ActionType.HOLD_SKU and p.params["sku"] not in (gs.held_skus or []):
                 gs.held_skus = sorted({*(gs.held_skus or []), p.params["sku"]})
                 done.append(
@@ -105,6 +108,26 @@ class Executor:
         gs.set_by_incident = incident.id
         gs.updated_at = datetime.now(UTC)
         return done
+
+    async def _relax(self, incident: Incident, gs: GuardState, p: PlannedAction) -> Action | None:
+        """Restore the 3-D Secure mode and SKU holds from before this incident. Only when this incident set
+        the current state (another incident's defences are not ours to undo); fingerprint blocks stay, since
+        a device that was blocked was blocked for what it did. Idempotent: nothing to restore, no action."""
+        prev = incident.previous_guard_state
+        if prev is None or gs.set_by_incident != incident.id:
+            return None
+        released = sorted(set(gs.held_skus or []) - set(prev["held_skus"]))
+        if gs.mode == prev["mode"] and not released:
+            return None
+        gs.mode = prev["mode"]
+        gs.held_skus = sorted(set(gs.held_skus or []) & set(prev["held_skus"]))
+        return await self._record(
+            incident,
+            p.type,
+            p.rule,
+            ActionStatus.EXECUTED,
+            params={"restored_mode": prev["mode"], "released_skus": released},
+        )
 
     @staticmethod
     def _claimed(incident: Incident) -> Select[tuple[str | None]]:

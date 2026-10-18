@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import CheckoutAttempt, Decision, Method, Outcome, Source, new_id
 from app.events import publish
-from app.guard.check import GuardContext, GuardVerdict, check
+from app.guard.check import GuardContext, GuardVerdict, check, lock_device
 from app.paypal import codes
 from app.paypal.client import PayPalClient
 from app.paypal.orders import (
@@ -142,6 +142,8 @@ async def place_order(
 ) -> CheckoutResult:
     product = PRODUCTS[req.sku]
     fp = fingerprint(req.device_id, req.user_agent)
+    # Held until the attempt row below is committed: parallel requests from one device are counted in turn.
+    await lock_device(session, req.shop_id, fp)
     verdict: GuardVerdict = await check(
         session, GuardContext(req.shop_id, req.sku, req.method, fp, req.challenge_token)
     )
@@ -174,6 +176,11 @@ async def place_order(
         attempt.outcome = Outcome.CHALLENGED
         attempt.paypal_live = False
     else:
+        # Reserve the device's slot before PayPal answers (0.2-3 s): the next parallel request's velocity
+        # count sees this row. Commits, which releases the device lock; no lock is held across the call.
+        attempt.outcome = Outcome.CREATED
+        session.add(attempt)
+        await session.commit()
         force_sca = verdict.decision == Decision.ALLOW_WITH_SCA
         if req.offline is not None:
             result = offline_result(req.offline, force_sca, req.method, req.card)
@@ -194,6 +201,10 @@ async def place_order(
             # Server-side card orders (simulator) come back APPROVED and are captured immediately.
             if req.card and result.order_id and result.status == "APPROVED":
                 result = await capture_order(paypal, result.order_id)
+        # Re-read under a short lock: a webhook may have updated the row while PayPal answered.
+        locked = await session.get(CheckoutAttempt, attempt.id, with_for_update=True, populate_existing=True)
+        assert locked is not None
+        attempt = locked
         apply_result(attempt, result)
         attempt.latency_ms = result.latency_ms
 

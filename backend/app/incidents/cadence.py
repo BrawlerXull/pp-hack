@@ -15,12 +15,10 @@ from typing import Any
 
 from app.ai.schemas import ATTACK_CLASSES
 from app.db.models import Incident
-from app.policy.engine import CONFIDENCE_ACT, CONFIDENCE_REFUND
+from app.detection.triggers import FRAUD_TRIGGERS
+from app.policy.engine import CONFIDENCE_ACT, CONFIDENCE_REFUND, HARMLESS_CLASSES
 
 RULES_FALLBACK = "rules-fallback"  # AnalystResult.model_id when Gemini was unavailable
-HARMLESS_CLASSES = frozenset({"genuine_rush", "paypal_outage"})
-# Triggers that point at stolen cards rather than shoppers or PayPal (app/detection/triggers.py).
-FRAUD_TRIGGERS = frozenset({"decline_spike", "sku_concentration"})
 # Triggers that point at PayPal failing: real shoppers retrying through an outage look like a bot that
 # retries (3+ attempts per device), so a kept attack verdict must not keep blocking and refunding them.
 OUTAGE_TRIGGERS = frozenset({"processor_errors"})
@@ -83,9 +81,10 @@ def reassess_reason(
     if since < base:
         return None
     confidence = inc.confidence or 0.0
-    if inc.classification in HARMLESS_CLASSES:
-        # Policy R2 ignores confidence for these, and a real sale keeps growing and capturing: re-asking on
-        # that would cost a call every interval for nothing. An attack starting shows up as a new trigger.
+    if inc.classification in HARMLESS_CLASSES and confidence >= CONFIDENCE_ACT:
+        # A confident harmless verdict (policy R2: no friction) and a real sale keeps growing and capturing:
+        # re-asking on that would cost a call every interval for nothing. An attack starting shows up as a
+        # new trigger. Below the floor R2 falls through to R3 (3-D Secure), so it is re-asked like "unclear".
         return "verdict_aged" if fired and _aged(inc, now, max_age) else None
     if confidence < CONFIDENCE_ACT and attempts_15m >= GROWTH * max(ctx.get("attempts_15m", 0), 1):
         return "attempts_grew"
@@ -112,6 +111,20 @@ def contradicting_triggers(inc: Incident) -> set[str]:
         return set()
     seen = set((inc.assessment_context or {}).get("verdict_triggers", []))
     return (set(inc.triggers or []) & against) - seen
+
+
+def unjudged_triggers(inc: Incident, fired: list[str]) -> list[str]:
+    """Triggers policy R0 may act on before the analyst answers: all of them, minus those a confident
+    harmless AI verdict has already weighed (otherwise every re-check of a real rush would switch 3-D Secure
+    on, then RELAX would switch it off again)."""
+    if (
+        has_real_verdict(inc)
+        and inc.classification in HARMLESS_CLASSES
+        and (inc.confidence or 0) >= CONFIDENCE_ACT
+    ):
+        seen = set((inc.assessment_context or {}).get("verdict_triggers", []))
+        return [t for t in fired if t not in seen]
+    return list(fired)
 
 
 def verdict_stale(inc: Incident, now: datetime) -> bool:

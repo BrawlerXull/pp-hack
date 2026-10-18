@@ -1,4 +1,4 @@
-import type { Classification, GuardStatus, Outcome } from "./api";
+import type { Classification, GuardStatus, Outcome, RulesHint } from "./api";
 
 export const money = (v: string | number) => `$${Number(v).toFixed(2)}`;
 
@@ -45,11 +45,19 @@ export const OUTCOME_META: Record<Outcome, { label: string; tone: Tone; color: s
 
 export const ACTION_LABEL: Record<string, string> = {
   SCA_ON: "3-D Secure required on every card",
-  BLOCK_FP: "Blocked attacking devices",
+  BLOCK_FP: "Blocked devices showing card-testing behaviour",
   HOLD_SKU: "Paused first-time checkouts of the targeted item",
   REFUND: "Refund",
   NOTIFY: "Owner notified",
   DEESCALATE: "Stood down: checkout back to normal",
+  RELAX: "Extra checks switched off: AI judged it was not fraud",
+};
+
+export const RULES_HINT_LABEL: Record<RulesHint, string> = {
+  fraud_signals: "fraud signals (bank fraud codes, card cycling or a decline spike)",
+  processor_trouble: "PayPal errors only",
+  returning_customer_rush: "mostly returning customers, few declines",
+  unusual_volume: "unusual volume",
 };
 
 export const FEATURE_LABEL: Record<string, string> = {
@@ -57,6 +65,8 @@ export const FEATURE_LABEL: Record<string, string> = {
   attempts_per_min: "Attempts per minute",
   velocity_z: "Speed vs normal (z-score)",
   decline_rate: "Decline rate",
+  fraud_declines: "Declines coded as fraud",
+  fraud_decline_share: "Share of declines coded as fraud",
   error_rate: "PayPal error rate",
   captured: "Payments that went through",
   blocked_or_challenged: "Stopped by the guard",
@@ -67,6 +77,10 @@ export const FEATURE_LABEL: Record<string, string> = {
   unique_payers_ratio: "New PayPal account per attempt",
   top_sku_share: "Share on one item",
   cheapest_sku_share: "Share on cheapest item",
+  cheapest_sku_attempts: "Attempts on cheapest item",
+  cheapest_sku_cards: "Distinct cards on cheapest item",
+  cheapest_sku_payers: "Distinct PayPal accounts on cheapest item",
+  cheapest_sku_decline_rate: "Decline rate on cheapest item",
   avg_amount: "Average amount",
   new_email_domain_share: "Never-seen email domains",
   known_customer_share: "Returning customers",
@@ -75,6 +89,8 @@ export const FEATURE_LABEL: Record<string, string> = {
 
 const RATIO_FEATURES = new Set([
   "decline_rate",
+  "fraud_decline_share",
+  "cheapest_sku_decline_rate",
   "error_rate",
   "top_fingerprint_share",
   "unique_cards_ratio",

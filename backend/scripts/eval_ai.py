@@ -2,11 +2,16 @@
 
 Builds features from each simulated scenario (no database, no PayPal), runs the real analyst, and
 scores the verdicts. Usage: uv run python scripts/eval_ai.py [--runs 2]
+
+flash_sale_no_hint is the false-positive test: the same real-customer rush with no owner-announced sale
+window, so the model has to read it from the traffic. A miss at confidence >= 0.70 would block (and above
+0.85 refund) real customers, so it is scored separately and always with at least NO_HINT_MIN_SEEDS seeds.
 """
 
 import asyncio
 import random
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import typer
@@ -25,6 +30,26 @@ EXPECTED = {
     "slow_drip": {"card_testing"},
     "flash_sale": {"genuine_rush"},
     "paypal_outage": {"paypal_outage"},
+}
+
+
+@dataclass(frozen=True)
+class Case:
+    scenario: str  # simulator scenario that generates the traffic
+    expected: frozenset[str]
+    sale_window: dict[str, str] | None = None
+    min_seeds: int = 1
+    separate: bool = False  # scored on its own line, not mixed into the headline accuracy
+
+
+SALE = {"note": "Autumn sale announced on Instagram"}
+NO_HINT_MIN_SEEDS = 3
+CASES: dict[str, Case] = {
+    name: Case(name, frozenset(exp), SALE if name == "flash_sale" else None) for name, exp in EXPECTED.items()
+} | {
+    "flash_sale_no_hint": Case(
+        "flash_sale", frozenset({"genuine_rush"}), None, min_seeds=NO_HINT_MIN_SEEDS, separate=True
+    ),
 }
 
 
@@ -51,6 +76,7 @@ def rows_for(name: str, seed: int, now: datetime) -> list[AttemptRow]:
                 payer_id_hash=a.payer_id,
                 outcome=c.outcome,
                 decline_code=c.decline_code,
+                decline_category=c.category,
             )
         )
         t -= timedelta(seconds=a.delay_s)
@@ -73,13 +99,14 @@ def baseline() -> Baseline:
 async def main(runs: int) -> None:
     now = datetime.now(UTC)
     base = baseline()
-    correct = total = 0
-    for name, expected in EXPECTED.items():
-        for r in range(runs):
-            rows = rows_for(name, seed=r + 1, now=now)
+    score: dict[bool, list[int]] = {False: [0, 0], True: [0, 0]}  # separate? → [correct, total]
+    for name, case in CASES.items():
+        expected = case.expected
+        for r in range(max(runs, case.min_seeds)):
+            rows = rows_for(case.scenario, seed=r + 1, now=now)
             feats = compute_all(rows, now, base)
             fired = evaluate(feats, base)
-            sale = {"note": "Autumn sale announced on Instagram"} if name == "flash_sale" else None
+            sale = case.sale_window
             inp = analyst.build_input(
                 features=feats,
                 baseline=base,
@@ -93,16 +120,17 @@ async def main(runs: int) -> None:
             res = await analyst.analyse(inp, feats)
             v = res.verdict
             ok = v.classification in expected
-            correct += ok
-            total += 1
+            score[case.separate][0] += ok
+            score[case.separate][1] += 1
             print(
-                f"{'PASS' if ok else 'FAIL'} {name:<16} triggers={','.join(fired) or '-':<45} "
+                f"{'PASS' if ok else 'FAIL'} {name:<18} triggers={','.join(fired) or '-':<45} "
                 f"→ {v.classification:<15} "
                 f"conf={v.confidence:.2f} evidence={len(v.evidence)} dropped={res.dropped_evidence} "
                 f"{res.model_id} {time.time() - t0:.1f}s"
             )
             print(f"     {v.summary}")
-    print(f"\nAccuracy: {correct}/{total}")
+    print(f"\nAccuracy: {score[False][0]}/{score[False][1]}")
+    print(f"Unannounced rush (flash_sale_no_hint): {score[True][0]}/{score[True][1]}")
 
 
 def cli(runs: int = typer.Option(1, help="Runs per scenario (different seeds)")) -> None:

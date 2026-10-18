@@ -34,7 +34,7 @@ from app.detection import triggers as trig
 from app.events import publish
 from app.incidents import cadence
 from app.paypal.client import PayPalClient
-from app.policy.engine import PlannedAction, PolicyInput, decide
+from app.policy.engine import PlannedAction, PolicyInput, decide, rules_first, rules_hint
 
 log = structlog.get_logger()
 # An in-flight claim older than this was left by a crashed assessor (the analyst's worst case is two
@@ -128,25 +128,77 @@ class IncidentService:
             ):
                 await self._assess(incident, ms, rows, base, features, fired, now, reason=reason)
             else:
-                await self._enforce(incident, ms, rows, base, now)
+                await self._enforce(incident, ms, rows, base, features, now)
         await self.s.commit()
         return incident
 
-    def _plan(
-        self, incident: Incident, ms: MerchantSettings, sig: trig.Signature, now: datetime
-    ) -> list[PlannedAction]:
-        return decide(
-            PolicyInput(
-                classification=incident.classification or "unclear",
-                confidence=incident.confidence or 0.0,
-                autopilot=ms.autopilot,
-                kill_switch=ms.kill_switch,
-                sale_window_active=active_sale_window(ms, now) is not None,
-                attack_fingerprints=sig.fingerprints,
-                attack_sku=sig.top_sku,
-                verdict_stale=cadence.verdict_stale(incident, now),
-            )
+    async def _policy_input(
+        self,
+        incident: Incident,
+        ms: MerchantSettings,
+        sig: trig.Signature,
+        f15: feat.Features,
+        now: datetime,
+        triggers: list[str] | None = None,
+    ) -> PolicyInput:
+        """triggers: the ones to tier; defaults to everything this incident has fired (a fraud signal seen
+        once keeps an AI-down incident in R3b, and keeps it out of the volume-only R3c)."""
+        gs = await self.s.get(GuardState, incident.shop_id, populate_existing=True)
+        return PolicyInput(
+            classification=incident.classification or "unclear",
+            confidence=incident.confidence or 0.0,
+            autopilot=ms.autopilot,
+            kill_switch=ms.kill_switch,
+            sale_window_active=active_sale_window(ms, now) is not None,
+            attack_fingerprints=sig.fingerprints,
+            attack_sku=sig.top_sku,
+            verdict_stale=cadence.verdict_stale(incident, now),
+            ai_available=incident.ai_available,
+            trigger_tiers=trig.tiers(incident.triggers or [] if triggers is None else triggers),
+            known_customer_share=f15.known_customer_share,
+            decline_rate=f15.decline_rate,
+            strong_fingerprints=sig.strong_fingerprints,
+            guard_set_by_incident=gs is not None and gs.set_by_incident == incident.id,
         )
+
+    async def _plan(
+        self, incident: Incident, ms: MerchantSettings, sig: trig.Signature, f15: feat.Features, now: datetime
+    ) -> list[PlannedAction]:
+        return decide(await self._policy_input(incident, ms, sig, f15, now))
+
+    async def _rules_first(
+        self,
+        incident: Incident,
+        ms: MerchantSettings,
+        sig: trig.Signature,
+        f15: feat.Features,
+        fired: list[str],
+        now: datetime,
+    ) -> list[Action]:
+        """Policy R0: commit 3-D Secure for a fraud-tier signal before the analyst is asked. Commits.
+        Re-locks the incident first: a new incident was committed before this (and Executor.apply's commit
+        releases the tick's lock), so the owner may have closed it, and a closed incident's checkout must
+        not be re-armed with nothing left to undo it."""
+        await self.s.flush()  # keep this tick's trigger updates: the refresh would overwrite them
+        await self.s.refresh(incident, with_for_update=True)
+        if incident.status != IncidentStatus.OPEN:
+            return []
+        unjudged = cadence.unjudged_triggers(incident, fired)
+        planned = rules_first(await self._policy_input(incident, ms, sig, f15, now, triggers=unjudged))
+        if not planned:
+            return []
+        executed = await Executor(self.s, self.paypal).apply(incident, planned)
+        if executed:
+            audit(
+                self.s,
+                "policy",
+                "rules_first",
+                incident.id,
+                triggers=sorted(set(unjudged) & trig.FRAUD_TRIGGERS),
+                actions=[f"{a.type}:{a.policy_rule}" for a in executed],
+            )
+            await self.s.commit()
+        return executed
 
     async def _enforce(
         self,
@@ -154,6 +206,7 @@ class IncidentService:
         ms: MerchantSettings,
         rows: list[feat.AttemptRow],
         base: feat.Baseline,
+        features: dict[int, feat.Features],
         now: datetime,
     ) -> None:
         """Between AI assessments: re-apply the current verdict's policy to new data (no AI call).
@@ -162,7 +215,9 @@ class IncidentService:
             return
         sig = trig.signature(rows, incident.opened_at - timedelta(minutes=15), now, base)
         incident.signature = sig.as_dict()
-        planned = [p for p in self._plan(incident, ms, sig, now) if p.type != ActionType.NOTIFY]
+        planned = [
+            p for p in await self._plan(incident, ms, sig, features[15], now) if p.type != ActionType.NOTIFY
+        ]
         executed = await Executor(self.s, self.paypal).apply(incident, planned)
         if executed:
             audit(
@@ -210,6 +265,10 @@ class IncidentService:
         assert gs is not None
         sale = active_sale_window(ms, now)
         sig = trig.signature(rows, min(incident.opened_at, now) - timedelta(minutes=15), now, base)
+        rules_acted = await self._rules_first(incident, ms, sig, features[15], fired, now)
+        if incident.status != IncidentStatus.OPEN:
+            return  # closed by the owner before R0 could act
+        await self.s.refresh(gs)  # R0 may have just turned 3-D Secure on: the analyst sees the current state
         prior = (await self.s.execute(select(Action.type).where(Action.incident_id == incident.id))).scalars()
 
         analyst_input = analyst.build_input(
@@ -226,8 +285,13 @@ class IncidentService:
             sample=[r for r in rows if r.ts > now - timedelta(minutes=15)],
         )
         if not await self._claim(incident, now):
+            # Either another assessor holds the claim, or the incident was closed since R0's commit: only
+            # an open incident's verdict is enforced (a closed one's checkout was already restored).
+            await self.s.refresh(incident, with_for_update=True)
+            if incident.status != IncidentStatus.OPEN:
+                return
             log.info("assessment_already_in_flight", incident=incident.id)
-            await self._enforce(incident, ms, rows, base, now)
+            await self._enforce(incident, ms, rows, base, features, now)
             return
         await self.s.commit()  # no transaction, no row lock while Gemini thinks
 
@@ -253,8 +317,8 @@ class IncidentService:
         await publish(self.s, "incident.updated", incident_event(incident))
         await self.s.commit()
 
-        # Notify the owner on the first verdict and whenever new defences were switched on.
-        if first or any(a.type != ActionType.REFUND for a in executed):
+        # Notify the owner on the first verdict and whenever new defences were switched on (by R0 too).
+        if first or rules_acted or any(a.type != ActionType.REFUND for a in executed):
             await self.write_report(incident, skip_ai=not result.ai_available)
 
     async def _apply_verdict(
@@ -285,7 +349,9 @@ class IncidentService:
         self._record_verdict(
             incident, result, features, base, sig, now, reason, active_sale_window(ms, now) is not None
         )
-        planned = self._plan(incident, ms, sig, now)
+        policy_input = await self._policy_input(incident, ms, sig, features[15], now)
+        incident.rules_hint = rules_hint(policy_input)
+        planned = decide(policy_input)
         audit(self.s, "policy", "decided", incident.id, actions=[f"{p.type}:{p.rule}" for p in planned])
         return await Executor(self.s, self.paypal).apply(incident, planned)
 
@@ -427,4 +493,5 @@ def incident_event(i: Incident) -> dict[str, Any]:
         "triggers": i.triggers,
         "ai_available": i.ai_available,
         "ai_refresh_failed_at": i.ai_refresh_failed_at,
+        "rules_hint": i.rules_hint,
     }

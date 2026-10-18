@@ -28,9 +28,13 @@ LABELS = {
 }
 DEFENCE_TEXT = {
     ActionType.SCA_ON: "required the bank's 3-D Secure check on every card payment",
-    ActionType.BLOCK_FP: "blocked the devices the attack came from",
+    # Neutral: a rules-only block (AI down, "unclear") is a guess from behaviour, not a confirmed attack.
+    ActionType.BLOCK_FP: "blocked the devices showing card-testing behaviour",
     ActionType.HOLD_SKU: "paused first-time checkouts of the targeted item",
+    # Also planned for a confident paypal_outage verdict, so it must not claim the shoppers were genuine.
+    ActionType.RELAX: "switched the extra checks off again once the AI judged it was not fraud",
 }
+NO_DEFENCES = "no defences were needed"
 
 SYSTEM = """You write messages for a small-shop owner about checkout security incidents handled by
 Checkout Guard. Plain, calm, short sentences. No jargon beyond "3-D Secure".
@@ -70,6 +74,14 @@ async def gather_facts(session: AsyncSession, incident: Incident) -> dict[str, A
         for a in actions
         if a.type in DEFENCE_TEXT and a.status == ActionStatus.EXECUTED
     ]
+    # What was actually blocked: without the AI only the strongest fingerprints are (policy R3b), so the
+    # signature's list of suspicious devices would overstate it.
+    blocked_devices = {
+        fp
+        for a in actions
+        if a.type == ActionType.BLOCK_FP and a.status == ActionStatus.EXECUTED
+        for fp in (a.params or {}).get("fingerprints", [])
+    }
     sig = incident.signature or {}
     top_sku = sig.get("top_sku")
     attempts = sum(counts.values())
@@ -98,9 +110,9 @@ async def gather_facts(session: AsyncSession, incident: Incident) -> dict[str, A
         "refunded_total": f"${refunded_total:.2f}",
         "pending_refunds": str(len(pending)),
         "targeted_item": PRODUCTS[top_sku].name if top_sku in PRODUCTS else "several items",
-        "devices_blocked": str(len(sig.get("fingerprints", []))),
+        "devices_blocked": str(len(blocked_devices)),
         "new_email_domains": str(len(sig.get("new_email_domains", []))),
-        "defences": "; ".join(defences) if defences else "no defences were needed",
+        "defences": "; ".join(defences) if defences else NO_DEFENCES,
         "ai_summary": (incident.verdict or {}).get("summary", ""),
         "incident_id": incident.id,
     }
@@ -120,12 +132,16 @@ def has_stray_numbers(text: str) -> bool:
 
 def template(facts: dict[str, Any]) -> ReportDraft:
     is_attack = "attack" in facts["classification"]
-    alert = (
-        "Your checkout is under a {{classification}}. I've blocked it and refunded {{refunded_count}} test "
-        "payments ({{refunded_total}}). No action needed tonight."
-        if is_attack
-        else "I noticed {{classification}} at your checkout and kept watching. Nothing was blocked."
-    )
+    if is_attack:
+        alert = (
+            "Your checkout is under a {{classification}}. I've blocked it and refunded {{refunded_count}} "
+            "test payments ({{refunded_total}}). No action needed tonight."
+        )
+    elif facts["defences"] != NO_DEFENCES:
+        # e.g. the AI was unavailable and the fixed rules acted on fraud signals (policy R0/R3b).
+        alert = "I noticed {{classification}} at your checkout and {{defences}}. I'm still watching."
+    else:
+        alert = "I noticed {{classification}} at your checkout and kept watching. Nothing was blocked."
     report = """# Overnight report: {{classification}}
 
 **When:** {{date}}, {{time_range}}, {{duration_min}} min

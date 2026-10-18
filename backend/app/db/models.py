@@ -92,6 +92,7 @@ class ActionType(StrEnum):
     REFUND = "REFUND"
     NOTIFY = "NOTIFY"
     DEESCALATE = "DEESCALATE"
+    RELAX = "RELAX"  # a confident harmless verdict undid this incident's 3-D Secure / SKU holds (policy R2)
 
 
 class ActionStatus(StrEnum):
@@ -188,7 +189,11 @@ class CheckoutAttempt(Base):
     disputed: Mapped[bool] = mapped_column(Boolean, default=False)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
 
-    __table_args__ = (Index("ix_attempts_shop_ts", "shop_id", "ts"),)
+    __table_args__ = (
+        Index("ix_attempts_shop_ts", "shop_id", "ts"),
+        # The guard's per-device velocity count (app/guard/check.py) on every checkout.
+        Index("ix_attempts_shop_fp_ts", "shop_id", "fingerprint_hash", "ts"),
+    )
 
 
 class PayPalEvent(Base):
@@ -236,6 +241,9 @@ class Incident(Base):
     # What the last assessment saw (app/incidents/cadence.py): decides whether a new AI call is worth it.
     assessment_context: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
     previous_guard_state: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
+    # What the triggers alone suggest (app/policy/engine.rules_hint), kept apart from `classification` so a
+    # rules guess is never presented as the AI's verdict.
+    rules_hint: Mapped[str | None] = mapped_column(String(40))
 
 
 class Action(Base):

@@ -6,10 +6,11 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from app.db.models import Outcome
+from app.db.models import DeclineCategory, Outcome
 from app.shop.catalog import CHEAPEST_SKU
 
-WINDOWS_MIN = (1, 5, 15, 60)
+# 10 min is the fraud-decline window (triggers.fraud_declines); the others are the original rolling views.
+WINDOWS_MIN = (1, 5, 10, 15, 60)
 
 
 class FeatureKey(StrEnum):
@@ -19,6 +20,8 @@ class FeatureKey(StrEnum):
     ATTEMPTS_PER_MIN = "attempts_per_min"
     VELOCITY_Z = "velocity_z"
     DECLINE_RATE = "decline_rate"
+    FRAUD_DECLINES = "fraud_declines"
+    FRAUD_DECLINE_SHARE = "fraud_decline_share"
     ERROR_RATE = "error_rate"
     CAPTURED = "captured"
     BLOCKED_OR_CHALLENGED = "blocked_or_challenged"
@@ -29,6 +32,10 @@ class FeatureKey(StrEnum):
     UNIQUE_PAYERS_RATIO = "unique_payers_ratio"
     TOP_SKU_SHARE = "top_sku_share"
     CHEAPEST_SKU_SHARE = "cheapest_sku_share"
+    CHEAPEST_SKU_ATTEMPTS = "cheapest_sku_attempts"
+    CHEAPEST_SKU_CARDS = "cheapest_sku_cards"
+    CHEAPEST_SKU_PAYERS = "cheapest_sku_payers"
+    CHEAPEST_SKU_DECLINE_RATE = "cheapest_sku_decline_rate"
     AVG_AMOUNT = "avg_amount"
     NEW_EMAIL_DOMAIN_SHARE = "new_email_domain_share"
     KNOWN_CUSTOMER_SHARE = "known_customer_share"
@@ -56,6 +63,7 @@ class AttemptRow:
     payer_id_hash: str | None
     outcome: str
     decline_code: str | None
+    decline_category: str | None = None  # DeclineCategory from app/paypal/codes.py, on DECLINED rows
 
 
 @dataclass
@@ -92,6 +100,8 @@ class Features:
     reached_paypal: int = 0
     declined: int = 0
     decline_rate: float = 0.0
+    fraud_declines: int = 0
+    fraud_decline_share: float = 0.0  # of declines, the share PayPal coded as fraud (stolen, restricted)
     errors: int = 0
     error_rate: float = 0.0
     captured: int = 0
@@ -105,6 +115,12 @@ class Features:
     top_sku: str | None = None
     top_sku_share: float = 0.0
     cheapest_sku_share: float = 0.0
+    # Card cycling on the cheapest item (triggers.cheap_sku_card_cycling). Cards and payers are counted
+    # separately and never mixed with devices: a bot rotates device ids for free, not real credentials.
+    cheapest_sku_attempts: int = 0
+    cheapest_sku_cards: int = 0
+    cheapest_sku_payers: int = 0
+    cheapest_sku_decline_rate: float = 0.0
     avg_amount: float = 0.0
     unique_email_domains: int = 0
     new_email_domain_share: float = 0.0
@@ -136,6 +152,10 @@ def compute(rows: list[AttemptRow], window_min: int, now: datetime, baseline: Ba
     f.declined = sum(r.outcome == Outcome.DECLINED for r in reached)
     f.errors = sum(r.outcome == Outcome.ERROR for r in reached)
     f.decline_rate = _ratio(f.declined, len(reached))
+    f.fraud_declines = sum(
+        r.outcome == Outcome.DECLINED and r.decline_category == DeclineCategory.FRAUD for r in reached
+    )
+    f.fraud_decline_share = _ratio(f.fraud_declines, f.declined)
     f.error_rate = _ratio(f.errors, len(reached))
     captured = [r for r in w if r.outcome in {Outcome.CAPTURED, Outcome.REFUNDED}]
     f.captured = len(captured)
@@ -158,6 +178,14 @@ def compute(rows: list[AttemptRow], window_min: int, now: datetime, baseline: Ba
     f.top_sku, top_n = skus.most_common(1)[0]
     f.top_sku_share = top_n / len(w)
     f.cheapest_sku_share = skus.get(CHEAPEST_SKU, 0) / len(w)
+    cheap = [r for r in w if r.sku == CHEAPEST_SKU]
+    cheap_reached = [r for r in cheap if r.outcome not in {Outcome.BLOCKED, Outcome.CHALLENGED}]
+    f.cheapest_sku_attempts = len(cheap)
+    f.cheapest_sku_cards = len({r.card_key for r in cheap if r.card_key})
+    f.cheapest_sku_payers = len({r.payer_id_hash for r in cheap if r.payer_id_hash})
+    f.cheapest_sku_decline_rate = _ratio(
+        sum(r.outcome == Outcome.DECLINED for r in cheap_reached), len(cheap_reached)
+    )
     f.avg_amount = sum(r.amount for r in w) / len(w)
 
     domains = [r.email_domain for r in w if r.email_domain]

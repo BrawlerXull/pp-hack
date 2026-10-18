@@ -1,20 +1,39 @@
 """The guard check: runs before every PayPal order is created. Hot path, so it reads a small cached
-copy of the guard state and makes at most one indexed query.
+copy of the guard state, makes one indexed count per check (device velocity, on ix_attempts_shop_fp_ts)
+and one more indexed lookup only for a held SKU.
 
 Decision order (first match wins):
   1. kill switch on            → allow (owner turned the guard off)
   2. fingerprint blocked       → block
-  3. SKU on hold + first-time fingerprint without a valid challenge token → challenge
-  4. SCA mode + card payment   → allow_with_sca (order is created with 3-D Secure SCA_ALWAYS)
-  5. otherwise                 → allow
+  3. device velocity: this device made 6+ attempts or had 2+ declines in 10 min → challenge
+     (a valid challenge token lets it through up to 12 attempts / 4 declines; past that → block until its
+     attempts age out of the window, since another challenge could not let it through anyway)
+  4. SKU on hold + first-time fingerprint without a valid challenge token → challenge
+  5. SCA mode + card payment   → allow_with_sca (order is created with 3-D Secure SCA_ALWAYS)
+  6. otherwise                 → allow
+
+The velocity breaker works with no incident open and no AI: it slows one device down within seconds,
+while detection needs a burst across the shop. It keys on the device fingerprint, never on the IP: the IP
+comes from X-Forwarded-For (spoofable) and is shared by every shopper behind one carrier NAT. The
+fingerprint comes from a client-supplied device id, so a bot that rotates ids escapes this check; the
+shop-wide triggers (cheap_sku_card_cycling, decline_spike) are what catch that.
+
+Parallel requests: place_order takes lock_device() before check() and commits the attempt row (outcome
+CREATED) before calling PayPal, so N parallel requests from one device are counted one after another and
+at most `attempts` of them reach PayPal. Declines are only known once PayPal answers, so the decline limit
+only slows a device down from its next request on.
+
+The challenge is a demo click-through ("I'm a real shopper"): /shop/challenge issues a token with no real
+proof. The token tier is a convenience for people, not a bot barrier; a production shop would issue it only
+after a server-verified captcha.
 """
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from itsdangerous import BadSignature, TimestampSigner
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -22,6 +41,20 @@ from app.db.models import CheckoutAttempt, Decision, GuardMode, GuardState, Merc
 
 CACHE_TTL_S = 2.0
 CHALLENGE_MAX_AGE_S = 600
+
+
+@dataclass(frozen=True)
+class DeviceLimits:
+    window: timedelta = timedelta(minutes=10)
+    attempts: int = 6
+    declines: int = 2
+    # With a valid challenge token: a person who clicked through the challenge still retries a card or
+    # two, but a token (free to get in this demo) must not buy a bot unlimited tries.
+    attempts_with_token: int = 12
+    declines_with_token: int = 4
+
+
+DEVICE_LIMITS = DeviceLimits()
 
 
 @dataclass
@@ -108,13 +141,55 @@ async def _is_known_customer(session: AsyncSession, shop_id: str, fp: str, befor
     return bool((await session.execute(q)).scalar())
 
 
+async def lock_device(session: AsyncSession, shop_id: str, fp: str) -> None:
+    """Serialise check-then-insert per device until the caller commits (two-key advisory lock: its own
+    key space, apart from the worker's single-key lock)."""
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(shop_id), func.hashtext(fp))))
+
+
+async def _device_activity(
+    session: AsyncSession, shop_id: str, fp: str, window: timedelta
+) -> tuple[int, int]:
+    """(attempts, declines) by this device in the window, before this one. Guard-stopped attempts count:
+    a bot that keeps hammering after a challenge stays challenged."""
+    q = select(func.count(), func.count().filter(CheckoutAttempt.outcome == Outcome.DECLINED)).where(
+        CheckoutAttempt.shop_id == shop_id,
+        CheckoutAttempt.fingerprint_hash == fp,
+        CheckoutAttempt.ts > func.now() - window,
+    )
+    attempts, declines = (await session.execute(q)).one()
+    return attempts, declines
+
+
+def device_over_limit(
+    attempts: int, declines: int, has_token: bool, lim: DeviceLimits = DEVICE_LIMITS
+) -> bool:
+    if has_token:
+        return attempts >= lim.attempts_with_token or declines >= lim.declines_with_token
+    return attempts >= lim.attempts or declines >= lim.declines
+
+
+def device_past_token_limit(attempts: int, declines: int, lim: DeviceLimits = DEVICE_LIMITS) -> bool:
+    """Even a challenge token would not let this device through: block instead of offering a challenge
+    that cannot succeed (the shopper would loop on it)."""
+    return attempts >= lim.attempts_with_token or declines >= lim.declines_with_token
+
+
 async def check(session: AsyncSession, ctx: GuardContext) -> GuardVerdict:
     st = await _state(session, ctx.shop_id)
     if st.kill_switch:
         return GuardVerdict(Decision.ALLOW, "guard_disabled")
     if ctx.fingerprint_hash in st.blocked:
         return GuardVerdict(Decision.BLOCK, "fingerprint_blocked", st.incident_id)
-    if ctx.sku in st.held_skus and not challenge_token_valid(ctx.challenge_token, ctx.fingerprint_hash):
+    has_token = challenge_token_valid(ctx.challenge_token, ctx.fingerprint_hash)
+    attempts, declines = await _device_activity(
+        session, ctx.shop_id, ctx.fingerprint_hash, DEVICE_LIMITS.window
+    )
+    if device_past_token_limit(attempts, declines):
+        return GuardVerdict(Decision.BLOCK, "device_velocity_limit", st.incident_id)
+    if device_over_limit(attempts, declines, has_token):
+        return GuardVerdict(Decision.CHALLENGE, "device_velocity", st.incident_id)
+    if ctx.sku in st.held_skus and not has_token:
         if not await _is_known_customer(session, ctx.shop_id, ctx.fingerprint_hash, st.updated_at):
             return GuardVerdict(Decision.CHALLENGE, "sku_on_hold", st.incident_id)
     if st.mode == GuardMode.SCA_ALL and ctx.method == Method.CARD:
