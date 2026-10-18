@@ -286,3 +286,17 @@ async def test_stale_in_process_key_rejection_yields_to_the_shared_table(db, fak
     models = fake(m1=['{"ok": true}'])
     await call()
     assert models.calls == ["m1"]
+
+
+async def test_every_request_is_recorded_for_the_usage_audit(fake):
+    models = fake(m1=[overloaded()], m2=["not json"], m3=['{"ok": true}'])
+    with gemini.track_usage() as calls:
+        await call()
+    assert models.calls == ["m1", "m2", "m3"]
+    assert [(c["model"], c["ok"]) for c in calls] == [("m1", False), ("m2-001", True), ("m3-001", True)]
+    assert "ServerError" in calls[0]["error"] and "error" not in calls[1]  # m2 answered (billed), once
+    assert set(calls[2]) >= {"prompt_tokens", "output_tokens", "thinking_tokens", "total_tokens"}
+
+    fake(m1=['{"ok": true}'], m2=['{"ok": true}'], m3=['{"ok": true}'])  # m1 may still be paused
+    await call()  # outside track_usage: logged only, nothing collected
+    assert len(calls) == 3

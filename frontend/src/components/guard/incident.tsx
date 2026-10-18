@@ -62,6 +62,12 @@ export function VerdictCard({ incident }: { incident: IncidentDetail }) {
           {incident.ai_available ? incident.model_id : "AI unavailable: rule-based fallback"}
         </span>
       </div>
+      {incident.ai_available && incident.ai_refresh_failed_at && (
+        <p className="text-xs text-amber-700">
+          AI re-check failed {timeAgo(incident.ai_refresh_failed_at)} ({incident.ai_refresh_failures}×). Keeping the verdict from{" "}
+          {incident.verdict_at ? timeAgo(incident.verdict_at) : "earlier"}; new refunds wait for your approval if this persists.
+        </p>
+      )}
       <p className="text-[15px] leading-relaxed text-slate-800">{v.summary}</p>
       {v.evidence.length > 0 && (
         <div>

@@ -72,6 +72,8 @@ export type IncidentSummary = {
   summary: string | null;
   triggers: string[];
   ai_available: boolean;
+  // Last AI re-check failed and the previous AI verdict was kept (the badge keeps showing that model).
+  ai_refresh_failed_at: string | null;
 };
 
 export type GuardStatus = "quiet" | "under_attack" | "busy_genuine_rush" | "paypal_issue" | "investigating" | "recovering";
@@ -141,6 +143,8 @@ export type IncidentDetail = IncidentSummary & {
   signature: { top_sku?: string | null; fingerprints?: string[]; new_email_domains?: string[]; window_start?: string };
   model_id: string | null;
   prompt_version: string | null;
+  verdict_at: string | null;
+  ai_refresh_failures: number;
   actions: ActionRow[];
   report: { alert_text: string | null; report_md: string | null; evidence_md: string | null; model_id: string | null; generated_at: string } | null;
   timeline: { ts: string; actor: string; event: string; data: Record<string, unknown> }[];

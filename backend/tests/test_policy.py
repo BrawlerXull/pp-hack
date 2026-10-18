@@ -60,3 +60,16 @@ def test_refunds_need_high_confidence():
 def test_autopilot_off_queues_refunds_for_approval():
     refund = next(a for a in decide(inp(autopilot=False)) if a.type == ActionType.REFUND)
     assert refund.needs_approval
+
+
+def test_stale_verdict_keeps_blocks_but_queues_refunds_for_the_owner():
+    actions = decide(inp(verdict_stale=True))
+    assert types(actions) == [
+        ActionType.SCA_ON,
+        ActionType.BLOCK_FP,
+        ActionType.HOLD_SKU,
+        ActionType.REFUND,
+        ActionType.NOTIFY,
+    ]
+    refund = next(a for a in actions if a.type == ActionType.REFUND)
+    assert refund.needs_approval and refund.rule == "R5_stale_verdict_needs_owner"

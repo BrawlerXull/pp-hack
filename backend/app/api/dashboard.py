@@ -7,7 +7,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -179,6 +179,8 @@ async def incident_detail(incident_id: str, shop_id: OwnerShop, session: Session
         "signature": inc.signature,
         "model_id": inc.model_id,
         "prompt_version": inc.prompt_version,
+        "verdict_at": inc.verdict_at,
+        "ai_refresh_failures": inc.ai_refresh_failures,
         "actions": [action_event(a) for a in actions],
         "report": {
             "alert_text": report.alert_text,
@@ -250,14 +252,37 @@ async def close_incident(
 ) -> dict[str, Any]:
     """Owner stands the guard down manually (restores the checkout to normal)."""
     inc = await _incident_or_404(session, shop_id, incident_id)
+    # Locked and re-read: the detector may be closing it too, or applying a verdict that just came back.
+    await session.refresh(inc, with_for_update=True)
     if inc.status == IncidentStatus.CLOSED:
         raise HTTPException(409, "already closed")
+    audit(session, "owner", "incident.closed_by_owner", inc.id)
+    # close() commits the restored checkout before writing the report, so the request never holds the
+    # GuardState lock while Gemini drafts.
     await IncidentService(session, paypal, timedelta(seconds=settings.reassess_interval_s)).close(
         inc, "owner_closed"
     )
-    audit(session, "owner", "incident.closed_by_owner", inc.id)
-    await session.commit()
     return incident_event(inc)
+
+
+REGENERATE_MIN_INTERVAL = timedelta(seconds=60)  # each regenerate is a Gemini call on the shared quota
+
+
+async def claim_regenerate_slot(session: AsyncSession, incident_id: str) -> bool:
+    """Atomic check-and-set of Report.generated_at before Gemini is called, so two concurrent regenerates
+    (double click, two tabs) cannot both pass the limit: the second one's UPDATE waits for the first's
+    row lock, then sees the fresh timestamp. No report yet means the first one is still being written."""
+    res = await session.execute(
+        update(Report)
+        .where(
+            Report.incident_id == incident_id,
+            Report.generated_at < func.now() - REGENERATE_MIN_INTERVAL,
+        )
+        .values(generated_at=func.now())
+        .returning(Report.incident_id)
+        .execution_options(synchronize_session=False)
+    )
+    return res.scalar_one_or_none() is not None
 
 
 @router.post("/incidents/{incident_id}/report/regenerate")
@@ -269,10 +294,23 @@ async def regenerate_report(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict[str, Any]:
     inc = await _incident_or_404(session, shop_id, incident_id)
+    if not await claim_regenerate_slot(session, inc.id):
+        current = await session.get(Report, inc.id, populate_existing=True)
+        if current is None:
+            raise HTTPException(409, "the first report is still being written")
+        wait = current.generated_at + REGENERATE_MIN_INTERVAL - datetime.now(UTC)
+        seconds = max(int(wait.total_seconds()) + 1, 1)
+        raise HTTPException(
+            429,
+            f"report was written moments ago; try again in {seconds} s",
+            headers={"Retry-After": str(seconds)},
+        )
+    await session.commit()
     report = await IncidentService(
         session, paypal, timedelta(seconds=settings.reassess_interval_s)
     ).write_report(inc)
-    await session.commit()
+    if report is None:
+        raise HTTPException(409, "the incident was closed meanwhile; its final report is being written")
     return {"alert_text": report.alert_text, "model_id": report.model_id}
 
 

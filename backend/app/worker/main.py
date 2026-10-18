@@ -15,7 +15,7 @@ from app.ai import breaker
 from app.config import get_settings
 from app.db.bootstrap import ensure_shop
 from app.db.session import get_engine, get_sessionmaker
-from app.incidents.service import IncidentService
+from app.incidents.service import IncidentService, release_assessment_claims
 from app.incidents.webhook_processor import process_pending
 from app.log_config import configure_logging
 from app.paypal.client import PayPalClient
@@ -41,6 +41,7 @@ async def run() -> None:
         log.info("worker_started", shop=settings.shop_id, interval_s=settings.detect_interval_s)
         async with sessions() as s:
             await ensure_shop(s, settings.shop_id)
+            await release_assessment_claims(s)
         await breaker.reset_until_restart()
 
         while not stop.is_set():

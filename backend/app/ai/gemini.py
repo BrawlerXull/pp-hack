@@ -2,9 +2,13 @@
 
 Callers get `(parsed_model, model_id)` or an `AIUnavailable` they must handle with a deterministic fallback.
 Models paused by the breaker (app/ai/breaker.py) are skipped; when all are paused no call is made at all.
+Every call made inside `track_usage()` is recorded with its token counts, so callers can audit the cost.
 """
 
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
@@ -29,6 +33,35 @@ class AIUnavailable(RuntimeError):
 
 _breaker = brk.Breaker()
 store: brk.BreakerStore = brk.DbStore()
+_usage: ContextVar[list[dict[str, Any]] | None] = ContextVar("gemini_usage", default=None)
+
+
+@contextmanager
+def track_usage() -> Iterator[list[dict[str, Any]]]:
+    """Collects one record per Gemini request made inside the block (failed ones too: they cost quota)."""
+    calls: list[dict[str, Any]] = []
+    token = _usage.set(calls)
+    try:
+        yield calls
+    finally:
+        _usage.reset(token)
+
+
+def _record_usage(model: str, res: Any = None, error: str | None = None) -> None:
+    meta = getattr(res, "usage_metadata", None)
+    entry = {
+        "model": getattr(res, "model_version", None) or model,
+        "ok": error is None,
+        "prompt_tokens": getattr(meta, "prompt_token_count", None),
+        "output_tokens": getattr(meta, "candidates_token_count", None),
+        "thinking_tokens": getattr(meta, "thoughts_token_count", None),
+        "total_tokens": getattr(meta, "total_token_count", None),
+    }
+    if error is not None:
+        entry["error"] = error[:120]
+    log.info("gemini_usage", **entry)
+    if (calls := _usage.get()) is not None:
+        calls.append(entry)
 
 
 def _now() -> datetime:
@@ -127,6 +160,7 @@ async def generate_json[T: BaseModel](
     last_error: Exception | None = None
     tripped: list[brk.Cooldown] = []
     for model in usable:
+        res = None
         try:
             res = await asyncio.wait_for(
                 _client().aio.models.generate_content(
@@ -142,6 +176,7 @@ async def generate_json[T: BaseModel](
                 ),
                 timeout=settings.ai_timeout_s,
             )
+            _record_usage(model, res)  # billed even if the JSON below turns out unusable
             parsed = (
                 res.parsed if isinstance(res.parsed, schema) else schema.model_validate_json(res.text or "")
             )
@@ -153,6 +188,8 @@ async def generate_json[T: BaseModel](
         except Exception as exc:  # timeout, quota, bad JSON…: log, maybe pause the model, try the next one
             last_error = exc
             error = f"{type(exc).__name__}: {str(exc)[:200]}"
+            if res is None:  # no response at all (timeout, quota, 5xx); a bad-JSON reply is already recorded
+                _record_usage(model, error=error)
             trip = brk.classify(exc)
             log.warning("gemini_call_failed", model=model, error=error, pause=trip and trip.reason)
             if trip is None:

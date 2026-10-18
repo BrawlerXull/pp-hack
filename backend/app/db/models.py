@@ -224,6 +224,17 @@ class Incident(Base):
     model_id: Mapped[str | None] = mapped_column(String(60))
     prompt_version: Mapped[str | None] = mapped_column(String(20))
     ai_available: Mapped[bool] = mapped_column(Boolean, default=True)
+    # When the current classification was decided (AI or rules fallback). last_assessed_at moves on every
+    # assessment, including a failed re-check that kept this verdict, so staleness is measured from here.
+    verdict_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # A re-check failed but the last real AI verdict was kept: separate from ai_available so the badge
+    # doesn't flip to "rules fallback" mid-attack. Failures count consecutive AI misses (reset on success).
+    ai_refresh_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ai_refresh_failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # In-flight claim: set (and committed) before the analyst call, so a second assessor skips the incident.
+    assessing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # What the last assessment saw (app/incidents/cadence.py): decides whether a new AI call is worth it.
+    assessment_context: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
     previous_guard_state: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
 
 

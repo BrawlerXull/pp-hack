@@ -17,14 +17,19 @@ export default function IncidentPage() {
   const [tab, setTab] = useState<"report" | "evidence" | "timeline">("report");
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (!inc) return <div className="h-40 animate-pulse rounded-2xl bg-slate-100" />;
 
   async function act(label: string, path: string) {
     setBusy(label);
+    setError(null);
     try {
       await api(path, { method: "POST" });
       await mutate();
+    } catch (e) {
+      // e.g. 429: the report was regenerated moments ago (each regenerate is a Gemini call).
+      setError(e instanceof Error ? e.message : "Request failed");
     } finally {
       setBusy(null);
     }
@@ -55,6 +60,7 @@ export default function IncidentPage() {
           )}
         </div>
       </div>
+      {error && <p className="text-sm text-amber-700">{error}</p>}
 
       <div className="grid gap-6 xl:grid-cols-3">
         <Card title="AI analyst verdict" className="xl:col-span-2">

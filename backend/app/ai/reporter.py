@@ -161,15 +161,13 @@ related to this incident be reviewed with this context.
     return ReportDraft(alert=alert, report_md=report, evidence_md=evidence)
 
 
-async def write(
-    session: AsyncSession, incident: Incident, skip_ai: bool = False
-) -> tuple[dict[str, str], str]:
-    """skip_ai: the analyst's call just failed in this tick, so another Gemini call would only add latency
+async def compose(
+    incident: Incident, facts: dict[str, Any], skip_ai: bool = False
+) -> tuple[ReportDraft, str]:
+    """The model writes wording only; no database access, so callers run it with no transaction open.
+    skip_ai: the analyst's call just failed in this tick, so another Gemini call would only add latency
     to the owner's alert. Also skipped when this process saw every model paused by the breaker."""
-    facts = await gather_facts(session, incident)
     fallback = template(facts)
-    model_id = "template"
-    draft = fallback
     try:
         if skip_ai or await gemini.cooling_down():
             raise AIUnavailable("skipped: Gemini unavailable this tick")
@@ -189,20 +187,28 @@ async def write(
         ai_draft, model_id = await generate_json(
             system=SYSTEM, prompt=prompt, schema=ReportDraft, temperature=0.3
         )
-        draft = ReportDraft(
-            alert=fallback.alert if has_stray_numbers(ai_draft.alert) else ai_draft.alert,
-            report_md=fallback.report_md if has_stray_numbers(ai_draft.report_md) else ai_draft.report_md,
-            evidence_md=fallback.evidence_md
-            if has_stray_numbers(ai_draft.evidence_md)
-            else ai_draft.evidence_md,
-        )
     except AIUnavailable:
-        model_id = "template"
-    return (
-        {
-            "alert_text": fill(draft.alert, facts)[:400],
-            "report_md": fill(draft.report_md, facts),
-            "evidence_md": fill(draft.evidence_md, facts),
-        },
-        model_id,
-    )
+        return fallback, "template"
+    return ReportDraft(
+        alert=fallback.alert if has_stray_numbers(ai_draft.alert) else ai_draft.alert,
+        report_md=fallback.report_md if has_stray_numbers(ai_draft.report_md) else ai_draft.report_md,
+        evidence_md=fallback.evidence_md if has_stray_numbers(ai_draft.evidence_md) else ai_draft.evidence_md,
+    ), model_id
+
+
+def render(draft: ReportDraft, facts: dict[str, Any]) -> dict[str, str]:
+    return {
+        "alert_text": fill(draft.alert, facts)[:400],
+        "report_md": fill(draft.report_md, facts),
+        "evidence_md": fill(draft.evidence_md, facts),
+    }
+
+
+async def write(
+    session: AsyncSession, incident: Incident, skip_ai: bool = False
+) -> tuple[dict[str, str], str]:
+    """gather_facts + compose + render in one go. IncidentService.write_report runs the three steps with
+    a commit in between instead, so no transaction stays open while Gemini writes."""
+    facts = await gather_facts(session, incident)
+    draft, model_id = await compose(incident, facts, skip_ai=skip_ai)
+    return render(draft, facts), model_id

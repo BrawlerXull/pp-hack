@@ -10,7 +10,9 @@ The AI's verdict is an input; it never moves money or changes the checkout on it
      … but during an owner-announced sale → 3-D Secure + notify only (no blocking)
   R5 refunds of matched attack captures  → only with confidence ≥ 0.85, outside a sale window;
                                            executed automatically under the caps when autopilot is
-                                           on, otherwise queued for owner approval
+                                           on, otherwise queued for owner approval; also queued
+                                           while the verdict is stale (AI re-checks keep failing), so
+                                           blocks and holds continue but no new money moves unseen
 """
 
 from dataclasses import dataclass, field
@@ -40,6 +42,8 @@ class PolicyInput:
     sale_window_active: bool
     attack_fingerprints: list[str]
     attack_sku: str | None
+    # The verdict is a kept one that the AI could not re-confirm for a while (app/incidents/cadence.py).
+    verdict_stale: bool = False
 
 
 def decide(p: PolicyInput) -> list[PlannedAction]:
@@ -64,6 +68,13 @@ def decide(p: PolicyInput) -> list[PlannedAction]:
     if p.attack_sku:
         actions.append(PlannedAction(ActionType.HOLD_SKU, "R4_attack", {"sku": p.attack_sku}))
     if p.confidence >= CONFIDENCE_REFUND:
-        actions.append(PlannedAction(ActionType.REFUND, "R5_refund_matched", needs_approval=not p.autopilot))
+        if p.verdict_stale:
+            actions.append(
+                PlannedAction(ActionType.REFUND, "R5_stale_verdict_needs_owner", needs_approval=True)
+            )
+        else:
+            actions.append(
+                PlannedAction(ActionType.REFUND, "R5_refund_matched", needs_approval=not p.autopilot)
+            )
     actions.append(notify)
     return actions

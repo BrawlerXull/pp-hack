@@ -1,24 +1,45 @@
-"""Incident lifecycle: detect → judge (AI) → decide (policy) → act → explain → stand down."""
+"""Incident lifecycle: detect → judge (AI) → decide (policy) → act → explain → stand down.
+
+Transactions: nothing here holds a transaction or a row lock across a Gemini or PayPal call. A new incident
+is committed (visible on the dashboard) before the analyst runs; the analyst runs with no transaction open
+and its verdict is applied in a fresh one; Executor.apply commits guard changes before any refund; reports
+are drafted between two short transactions. The price is that state can change while the AI thinks (the
+owner closes the incident, flips the kill switch), so everything is re-read after the call.
+"""
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.actions.executor import Executor
-from app.ai import analyst, reporter
+from app.ai import analyst, gemini, reporter
 from app.db.audit import audit
-from app.db.models import Action, ActionType, GuardState, Incident, IncidentStatus, MerchantSettings, Report
+from app.db.models import (
+    Action,
+    ActionType,
+    GuardState,
+    Incident,
+    IncidentStatus,
+    MerchantSettings,
+    Outcome,
+    Report,
+)
 from app.detection import baseline as baseline_mod
 from app.detection import features as feat
 from app.detection import triggers as trig
 from app.events import publish
+from app.incidents import cadence
 from app.paypal.client import PayPalClient
 from app.policy.engine import PlannedAction, PolicyInput, decide
 
 log = structlog.get_logger()
+# An in-flight claim older than this was left by a crashed assessor (the analyst's worst case is two
+# rounds of three models at 20 s each).
+ASSESS_LEASE = timedelta(minutes=3)
 
 
 def active_sale_window(ms: MerchantSettings, now: datetime) -> dict[str, Any] | None:
@@ -32,19 +53,38 @@ def active_sale_window(ms: MerchantSettings, now: datetime) -> dict[str, Any] | 
     return None
 
 
-async def open_incident(session: AsyncSession, shop_id: str) -> Incident | None:
+async def open_incident(session: AsyncSession, shop_id: str, lock: bool = False) -> Incident | None:
     q = select(Incident).where(Incident.shop_id == shop_id, Incident.status == IncidentStatus.OPEN)
-    return (await session.execute(q.order_by(Incident.opened_at.desc()).limit(1))).scalar_one_or_none()
+    q = q.order_by(Incident.opened_at.desc()).limit(1)
+    if lock:  # the detector vs an owner close: one waits for the other's (short) transaction
+        q = q.with_for_update().execution_options(populate_existing=True)
+    return (await session.execute(q)).scalar_one_or_none()
+
+
+async def release_assessment_claims(session: AsyncSession) -> None:
+    """Worker start: it holds the advisory lock, so any claim still set was left by a crashed assessor.
+    Those incidents are re-assessed on the next tick (cadence: never assessed, or due as usual)."""
+    await session.execute(
+        update(Incident).where(Incident.assessing_since.is_not(None)).values(assessing_since=None)
+    )
+    await session.commit()
 
 
 class IncidentService:
-    def __init__(self, session: AsyncSession, paypal: PayPalClient | None, reassess_after: timedelta):
+    def __init__(
+        self,
+        session: AsyncSession,
+        paypal: PayPalClient | None,
+        reassess_after: timedelta,
+        verdict_max_age: timedelta = cadence.VERDICT_MAX_AGE,
+    ):
         self.s = session
         self.paypal = paypal
-        self.reassess_after = reassess_after
+        self.reassess_after = reassess_after  # base interval; also the AI-failure backoff unit
+        self.verdict_max_age = verdict_max_age
 
     async def tick(self, shop_id: str, now: datetime | None = None) -> Incident | None:
-        """One detector pass for a shop. Safe to call repeatedly."""
+        """One detector pass for a shop. Safe to call repeatedly. Commits (several times)."""
         now = now or datetime.now(UTC)
         ms = await self.s.get(MerchantSettings, shop_id)
         if ms is None:
@@ -53,7 +93,7 @@ class IncidentService:
         base = await baseline_mod.load_baseline(self.s, shop_id, now)
         features = feat.compute_all(rows, now, base)
         fired = trig.evaluate(features, base)
-        incident = await open_incident(self.s, shop_id)
+        incident = await open_incident(self.s, shop_id, lock=True)
 
         if incident is None:
             if not fired:
@@ -62,8 +102,10 @@ class IncidentService:
             self.s.add(incident)
             await self.s.flush()
             audit(self.s, "detector", "incident.opened", incident.id, triggers=fired)
+            await publish(self.s, "incident.opened", incident_event(incident))
+            await self.s.commit()  # on the dashboard ("investigating") before the AI has answered
             log.info("incident_opened", incident=incident.id, triggers=fired)
-            await self._assess(incident, ms, rows, base, features, fired, now, first=True)
+            await self._assess(incident, ms, rows, base, features, fired, now, reason="first_verdict")
         else:
             if fired:
                 incident.last_signal_at = now
@@ -73,10 +115,18 @@ class IncidentService:
                 rows, now, ms.deescalate_after_min
             ):
                 await self.close(incident, "auto_deescalate_quiet")
-            elif fired and (
-                incident.last_assessed_at is None or now - incident.last_assessed_at >= self.reassess_after
+            elif reason := cadence.reassess_reason(
+                incident,
+                now=now,
+                fired=bool(fired),
+                sale_active=active_sale_window(ms, now) is not None,
+                attempts_15m=features[15].attempts,
+                new_captures=incident.last_assessed_at is not None
+                and any(r.outcome == Outcome.CAPTURED and r.ts > incident.last_assessed_at for r in rows),
+                base=self.reassess_after,
+                max_age=self.verdict_max_age,
             ):
-                await self._assess(incident, ms, rows, base, features, fired, now, first=False)
+                await self._assess(incident, ms, rows, base, features, fired, now, reason=reason)
             else:
                 await self._enforce(incident, ms, rows, base, now)
         await self.s.commit()
@@ -94,6 +144,7 @@ class IncidentService:
                 sale_window_active=active_sale_window(ms, now) is not None,
                 attack_fingerprints=sig.fingerprints,
                 attack_sku=sig.top_sku,
+                verdict_stale=cadence.verdict_stale(incident, now),
             )
         )
 
@@ -118,6 +169,31 @@ class IncidentService:
                 self.s, "policy", "enforced", incident.id, actions=[f"{a.type}:{a.status}" for a in executed]
             )
 
+    async def _claim(self, incident: Incident, now: datetime) -> bool:
+        """Compare-and-set the in-flight flag, so two assessors never ask the AI about one incident."""
+        res = await self.s.execute(
+            update(Incident)
+            .where(
+                Incident.id == incident.id,
+                Incident.status == IncidentStatus.OPEN,
+                or_(Incident.assessing_since.is_(None), Incident.assessing_since < now - ASSESS_LEASE),
+            )
+            .values(assessing_since=now)
+            .returning(Incident.id)
+            .execution_options(synchronize_session=False)
+        )
+        return res.scalar_one_or_none() is not None
+
+    async def _release(self, incident_id: str) -> None:
+        await self.s.rollback()
+        await self.s.execute(
+            update(Incident)
+            .where(Incident.id == incident_id)
+            .values(assessing_since=None)
+            .execution_options(synchronize_session=False)
+        )
+        await self.s.commit()
+
     async def _assess(
         self,
         incident: Incident,
@@ -127,8 +203,9 @@ class IncidentService:
         features: dict[int, feat.Features],
         fired: list[str],
         now: datetime,
-        first: bool,
+        reason: str,
     ) -> None:
+        first = reason == "first_verdict"
         gs = await self.s.get(GuardState, incident.shop_id)
         assert gs is not None
         sale = active_sale_window(ms, now)
@@ -138,7 +215,7 @@ class IncidentService:
         analyst_input = analyst.build_input(
             features=features,
             baseline=base,
-            triggers=fired,
+            triggers=fired or list(incident.triggers or []),
             sale_window=sale,
             guard_state={
                 "mode": gs.mode,
@@ -148,63 +225,194 @@ class IncidentService:
             actions_so_far=sorted(set(prior)),
             sample=[r for r in rows if r.ts > now - timedelta(minutes=15)],
         )
-        result = await analyst.analyse(analyst_input, features)
-        v = result.verdict
+        if not await self._claim(incident, now):
+            log.info("assessment_already_in_flight", incident=incident.id)
+            await self._enforce(incident, ms, rows, base, now)
+            return
+        await self.s.commit()  # no transaction, no row lock while Gemini thinks
 
-        incident.features = {f"{m}m": f.as_dict() for m, f in features.items()} | {"baseline": base.public()}
-        incident.signature = sig.as_dict()
-        incident.verdict = v.model_dump()
-        incident.classification = v.classification
-        incident.confidence = v.confidence
-        incident.model_id = result.model_id
-        incident.prompt_version = analyst.PROMPT_VERSION
-        incident.ai_available = result.ai_available
-        incident.last_assessed_at = now
-        audit(
-            self.s,
-            "ai",
-            "verdict",
-            incident.id,
-            classification=v.classification,
-            confidence=v.confidence,
-            model=result.model_id,
-            dropped_evidence=result.dropped_evidence,
-            first=first,
-        )
+        try:
+            with gemini.track_usage() as calls:
+                result = await analyst.analyse(analyst_input, features)
+            executed = await self._apply_verdict(
+                incident, ms, result, calls, features, base, sig, now, reason
+            )
+        except BaseException:
+            # Until the verdict commit lands, the claim is only cleared in memory: any failure (the AI call,
+            # a lock timeout in the guard update) would otherwise leave it set for the whole lease, and an
+            # incident with no verdict yet would get no defences at all until it expired.
+            await self._release(incident.id)
+            raise
+        if executed is None:
+            return
 
-        planned = self._plan(incident, ms, sig, now)
-        audit(self.s, "policy", "decided", incident.id, actions=[f"{p.type}:{p.rule}" for p in planned])
-        executed = await Executor(self.s, self.paypal).apply(incident, planned)
-        await publish(
-            self.s, "incident.updated" if not first else "incident.opened", incident_event(incident)
-        )
+        # The refunds ran in their own transactions with no incident lock: the owner may have closed it.
+        await self.s.refresh(incident)
+        if incident.status != IncidentStatus.OPEN:
+            return
+        await publish(self.s, "incident.updated", incident_event(incident))
+        await self.s.commit()
 
         # Notify the owner on the first verdict and whenever new defences were switched on.
         if first or any(a.type != ActionType.REFUND for a in executed):
             await self.write_report(incident, skip_ai=not result.ai_available)
 
-    async def write_report(self, incident: Incident, skip_ai: bool = False) -> Report:
-        texts, model_id = await reporter.write(self.s, incident, skip_ai=skip_ai)
-        report = await self.s.get(Report, incident.id)
-        if report is None:
-            report = Report(incident_id=incident.id, **texts, model_id=model_id)
-            self.s.add(report)
+    async def _apply_verdict(
+        self,
+        incident: Incident,
+        ms: MerchantSettings,
+        result: analyst.AnalystResult,
+        calls: list[dict[str, Any]],
+        features: dict[int, feat.Features],
+        base: feat.Baseline,
+        sig: trig.Signature,
+        now: datetime,
+        reason: str,
+    ) -> list[Action] | None:
+        """Commits (inside Executor.apply). None when the verdict was discarded."""
+        # Re-read what may have changed during the call: the owner may have closed the incident or
+        # changed settings (kill switch, autopilot, sale windows).
+        await self.s.refresh(incident, with_for_update=True)
+        await self.s.refresh(ms)
+        incident.assessing_since = None
+        if calls:
+            audit(self.s, "ai", "ai.usage", incident.id, purpose="analyst", calls=calls)
+        if incident.status != IncidentStatus.OPEN:
+            audit(self.s, "ai", "ai.verdict_discarded", incident.id, why="incident closed during the call")
+            await self.s.commit()
+            return None
+
+        self._record_verdict(
+            incident, result, features, base, sig, now, reason, active_sale_window(ms, now) is not None
+        )
+        planned = self._plan(incident, ms, sig, now)
+        audit(self.s, "policy", "decided", incident.id, actions=[f"{p.type}:{p.rule}" for p in planned])
+        return await Executor(self.s, self.paypal).apply(incident, planned)
+
+    def _record_verdict(
+        self,
+        incident: Incident,
+        result: analyst.AnalystResult,
+        features: dict[int, feat.Features],
+        base: feat.Baseline,
+        sig: trig.Signature,
+        now: datetime,
+        reason: str,
+        sale_active: bool,
+    ) -> None:
+        """Store the analyst's answer, or keep the last real AI verdict when a re-check failed: one 429
+        mid-attack must not drop blocks and refunds to the rules fallback ("unclear", soft defences only)."""
+        incident.features = {f"{m}m": f.as_dict() for m, f in features.items()} | {"baseline": base.public()}
+        incident.signature = sig.as_dict()
+        incident.last_assessed_at = now
+        triggers = list(incident.triggers or [])
+        verdict_triggers = (incident.assessment_context or {}).get("verdict_triggers", triggers)
+
+        keep = not result.ai_available and cadence.has_real_verdict(incident)
+        if keep and (new := cadence.contradicting_triggers(incident)):
+            # Guard 1: a kept verdict must not outlive new signals that contradict it.
+            audit(
+                self.s,
+                "ai",
+                "ai.kept_verdict_dropped",
+                incident.id,
+                kept=incident.classification,
+                new_triggers=sorted(new),
+            )
+            keep = False
+
+        if keep:
+            incident.ai_refresh_failed_at = now
+            incident.ai_refresh_failures += 1
+            audit(
+                self.s,
+                "ai",
+                "ai.refresh_failed",
+                incident.id,
+                kept=incident.classification,
+                confidence=incident.confidence,
+                failures=incident.ai_refresh_failures,
+                why=result.verdict.uncertainty_notes,
+                reask=reason,
+            )
         else:
-            for k, v in texts.items():
-                setattr(report, k, v)
-            report.model_id = model_id
-        await self.s.flush()
+            v = result.verdict
+            incident.verdict = v.model_dump()
+            incident.classification = v.classification
+            incident.confidence = v.confidence
+            incident.model_id = result.model_id
+            incident.prompt_version = analyst.PROMPT_VERSION
+            incident.ai_available = result.ai_available
+            incident.verdict_at = now
+            incident.ai_refresh_failed_at = None
+            incident.ai_refresh_failures = 0 if result.ai_available else incident.ai_refresh_failures + 1
+            verdict_triggers = triggers
+            audit(
+                self.s,
+                "ai",
+                "verdict",
+                incident.id,
+                classification=v.classification,
+                confidence=v.confidence,
+                model=result.model_id,
+                dropped_evidence=result.dropped_evidence,
+                first=reason == "first_verdict",
+                reask=reason,
+            )
+        incident.assessment_context = cadence.context(
+            triggers=triggers,
+            sale_window=sale_active,
+            attempts_15m=features[15].attempts,
+            verdict_triggers=verdict_triggers,
+        )
+
+    async def write_report(self, incident: Incident, skip_ai: bool = False) -> Report | None:
+        """Commits twice: facts are read in one transaction, Gemini drafts with none open, and the report
+        is upserted in another (an upsert: the worker and the owner's regenerate can race). None when the
+        incident was closed while drafting: the close writes the final report."""
+        await self.s.refresh(
+            incident
+        )  # expire_on_commit=False: the owner may have closed it since we read it
+        was_open = incident.status == IncidentStatus.OPEN
+        facts = await reporter.gather_facts(self.s, incident)
+        await self.s.commit()
+        with gemini.track_usage() as calls:
+            draft, model_id = await reporter.compose(incident, facts, skip_ai=skip_ai)
+        values = {**reporter.render(draft, facts), "model_id": model_id, "generated_at": datetime.now(UTC)}
+        # Locked so an owner close waits for this upsert, then writes the final report after it.
+        await self.s.refresh(incident, with_for_update=True)
+        if was_open and incident.status != IncidentStatus.OPEN:
+            # Closed while we drafted: the close wrote (or is writing) the final report; ours says
+            # "still being handled" and must not replace it.
+            if calls:
+                audit(self.s, "ai", "ai.usage", incident.id, purpose="report", calls=calls)
+            audit(self.s, "ai", "report.discarded", incident.id, why="incident closed while drafting")
+            await self.s.commit()
+            return None
+        await self.s.execute(
+            insert(Report)
+            .values(incident_id=incident.id, **values)
+            .on_conflict_do_update(index_elements=[Report.incident_id], set_=values)
+        )
+        if calls:
+            audit(self.s, "ai", "ai.usage", incident.id, purpose="report", calls=calls)
+        report = await self.s.get(Report, incident.id, populate_existing=True)
+        assert report is not None
         await publish(self.s, "alert", {"incident_id": incident.id, "text": report.alert_text})
+        await self.s.commit()
         return report
 
     async def close(self, incident: Incident, rule: str) -> None:
+        """Commits: the checkout is restored (and the GuardState lock released) before the report is
+        written, which may wait on Gemini."""
         await Executor(self.s, self.paypal).deescalate(incident, rule)
         incident.status = IncidentStatus.CLOSED
         incident.closed_at = datetime.now(UTC)
         audit(self.s, "system", "incident.closed", incident.id, rule=rule)
-        await self.write_report(incident)
         await publish(self.s, "incident.closed", incident_event(incident))
+        await self.s.commit()
         log.info("incident_closed", incident=incident.id, rule=rule)
+        await self.write_report(incident)
 
 
 def incident_event(i: Incident) -> dict[str, Any]:
@@ -218,4 +426,5 @@ def incident_event(i: Incident) -> dict[str, Any]:
         "summary": (i.verdict or {}).get("summary"),
         "triggers": i.triggers,
         "ai_available": i.ai_available,
+        "ai_refresh_failed_at": i.ai_refresh_failed_at,
     }

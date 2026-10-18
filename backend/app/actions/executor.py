@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.audit import audit
@@ -18,6 +18,7 @@ from app.db.models import (
     GuardMode,
     GuardState,
     Incident,
+    IncidentStatus,
     MerchantSettings,
     Outcome,
 )
@@ -64,7 +65,19 @@ class Executor:
         return action
 
     async def apply(self, incident: Incident, planned: list[PlannedAction]) -> list[Action]:
-        gs = await self.s.get(GuardState, incident.shop_id, with_for_update=True)
+        """Commits. Guard-state changes go first and are committed at once, so 3-D Secure, blocks and holds
+        are live (and the GuardState row lock released: owner reset, close) before any PayPal refund call.
+        Refunds then run one short transaction per capture."""
+        done = await self._apply_guard(incident, [p for p in planned if p.type != ActionType.REFUND])
+        await self.s.commit()
+        invalidate_cache(incident.shop_id)
+        for p in planned:
+            if p.type == ActionType.REFUND:
+                done.extend(await self.refund_matched(incident, p))
+        return done
+
+    async def _apply_guard(self, incident: Incident, planned: list[PlannedAction]) -> list[Action]:
+        gs = await self.s.get(GuardState, incident.shop_id, with_for_update=True, populate_existing=True)
         assert gs is not None
         if incident.previous_guard_state is None:
             incident.previous_guard_state = snapshot(gs)
@@ -88,15 +101,22 @@ class Executor:
                 done.append(
                     await self._record(incident, p.type, p.rule, ActionStatus.EXECUTED, params=p.params)
                 )
-            elif p.type == ActionType.REFUND:
-                done.extend(await self.refund_matched(incident, p))
 
         gs.set_by_incident = incident.id
         gs.updated_at = datetime.now(UTC)
-        invalidate_cache(incident.shop_id)
         return done
 
-    async def _matched_captures(self, incident: Incident) -> list[CheckoutAttempt]:
+    @staticmethod
+    def _claimed(incident: Incident) -> Select[tuple[str | None]]:
+        """Attempt ids this incident already has a refund action for (any status)."""
+        return select(Action.params["attempt_id"].as_string()).where(
+            Action.incident_id == incident.id,
+            Action.type == ActionType.REFUND,
+            Action.params["attempt_id"].as_string().is_not(None),
+        )
+
+    async def _matched_capture_ids(self, incident: Incident) -> list[str]:
+        """Candidates only, unlocked: each one is locked and re-checked in its own transaction."""
         sig = incident.signature or {}
         if not sig.get("top_sku"):
             return []
@@ -107,13 +127,8 @@ class Executor:
             conds.append(CheckoutAttempt.email_domain.in_(sig["new_email_domains"]))
         if not conds:
             return []
-        already = select(Action.params["attempt_id"].as_string()).where(
-            Action.incident_id == incident.id,
-            Action.type == ActionType.REFUND,
-            Action.params["attempt_id"].as_string().is_not(None),
-        )
         q = (
-            select(CheckoutAttempt)
+            select(CheckoutAttempt.id)
             .where(
                 CheckoutAttempt.shop_id == incident.shop_id,
                 CheckoutAttempt.outcome == Outcome.CAPTURED,
@@ -121,13 +136,9 @@ class Executor:
                 CheckoutAttempt.ts >= incident.opened_at - REFUND_LOOKBACK,
                 CheckoutAttempt.sku == sig["top_sku"],
                 or_(*conds),
-                CheckoutAttempt.id.not_in(already),
+                CheckoutAttempt.id.not_in(self._claimed(incident)),
             )
             .order_by(CheckoutAttempt.ts)
-            # Locked (in ts order) until the tick commits: an owner approve or another incident refunding
-            # the same capture waits, then sees REFUNDED, so only one action ever claims the refund.
-            .with_for_update()
-            .execution_options(populate_existing=True)
         )
         return list((await self.s.execute(q)).scalars())
 
@@ -142,11 +153,41 @@ class Executor:
         return sum((Decimal(a) for a in rows.scalars() if a), Decimal("0"))
 
     async def refund_matched(self, incident: Incident, p: PlannedAction) -> list[Action]:
-        ms = await self.s.get(MerchantSettings, incident.shop_id)
-        assert ms is not None
-        total = await self._refunded_total(incident)
+        """Commits after each capture. The capture row is locked and re-read first: an owner approve or
+        another incident refunding the same capture waits, then sees REFUNDED, so only one action ever
+        claims it. A crash mid-way keeps the refunds already made on record; the next run re-sends the
+        same refund key, which PayPal treats as a repeat."""
         out: list[Action] = []
-        for attempt in await self._matched_captures(incident):
+        for attempt_id in await self._matched_capture_ids(incident):
+            # Re-read per capture: the guard commit released the incident lock, so the owner may have closed
+            # the incident or flipped the kill switch / autopilot since the policy decided. The incident is
+            # share-locked until this capture's commit, so an owner close waits for at most one refund and
+            # never reports "closed" while refunds keep landing.
+            status = (
+                await self.s.execute(
+                    select(Incident.status).where(Incident.id == incident.id).with_for_update(read=True)
+                )
+            ).scalar_one()
+            ms = await self.s.get(MerchantSettings, incident.shop_id, populate_existing=True)
+            assert ms is not None
+            if status != IncidentStatus.OPEN or ms.kill_switch:
+                audit(
+                    self.s,
+                    "executor",
+                    "refunds.stopped",
+                    incident.id,
+                    why="incident closed" if status != IncidentStatus.OPEN else "kill switch on",
+                )
+                await self.s.commit()
+                break
+            attempt = await self.s.get(
+                CheckoutAttempt, attempt_id, with_for_update=True, populate_existing=True
+            )
+            claimed = (await self.s.execute(self._claimed(incident))).scalars()
+            if attempt is None or attempt.outcome != Outcome.CAPTURED or attempt_id in set(claimed):
+                await self.s.commit()
+                continue
+            total = await self._refunded_total(incident)
             params = {
                 "attempt_id": attempt.id,
                 "capture_id": attempt.capture_id,
@@ -156,18 +197,17 @@ class Executor:
                 attempt.amount > ms.max_auto_refund_per_txn
                 or total + attempt.amount > ms.max_auto_refund_per_incident
             )
-            if p.needs_approval or over_cap:
-                rule = p.rule if p.needs_approval else "R5_over_cap_needs_owner"
+            needs_owner = p.needs_approval or not ms.autopilot  # autopilot may have been turned off since
+            if needs_owner or over_cap:
+                rule = p.rule if needs_owner else "R5_over_cap_needs_owner"
                 out.append(
                     await self._record(
                         incident, ActionType.REFUND, rule, ActionStatus.AWAITING_APPROVAL, params=params
                     )
                 )
-                continue
-            action = await self.execute_refund(incident, attempt, params, p.rule, approved_by="auto")
-            if action.status == ActionStatus.EXECUTED:
-                total += attempt.amount
-            out.append(action)
+            else:
+                out.append(await self.execute_refund(incident, attempt, params, p.rule, approved_by="auto"))
+            await self.s.commit()
         return out
 
     async def execute_refund(
