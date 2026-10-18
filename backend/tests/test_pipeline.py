@@ -138,7 +138,10 @@ async def test_flash_sale_gets_no_defences(db, mock_ai):
 
 
 async def test_ai_outage_falls_back_to_soft_defences(db, monkeypatch):
-    async def down(**_):
+    calls: list[type] = []
+
+    async def down(**kw):
+        calls.append(kw["schema"])
         raise analyst.AIUnavailable("quota")
 
     monkeypatch.setattr("app.ai.analyst.generate_json", down)
@@ -148,6 +151,8 @@ async def test_ai_outage_falls_back_to_soft_defences(db, monkeypatch):
 
     incident = await IncidentService(db, None, timedelta(minutes=2)).tick(SHOP)
     assert incident.classification == "unclear" and not incident.ai_available
+    assert calls == [Verdict]  # the reporter did not try Gemini again in the same tick
+    assert (await db.get(Report, incident.id)).model_id == "template"
     gs = await db.get(GuardState, SHOP, populate_existing=True)
     assert gs.mode == "sca_all" and gs.blocked_fingerprints == []
     assert not (await db.execute(select(Action).where(Action.type == ActionType.REFUND))).scalars().all()

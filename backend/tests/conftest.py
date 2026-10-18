@@ -1,6 +1,13 @@
+import ipaddress
 import os
+import socket
+from urllib.parse import urlsplit
 
-# Point everything at the test database before any app module reads settings.
+# Before any app module reads settings: never load the repo .env (it holds real Gemini/PayPal credentials),
+# blank every credential an exported shell variable could still supply, and use the test database.
+os.environ["CHECKOUT_GUARD_NO_ENV_FILE"] = "1"
+for _var in ("GEMINI_API_KEY", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "PAYPAL_WEBHOOK_ID"):
+    os.environ[_var] = ""
 os.environ["DATABASE_URL"] = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+asyncpg://localhost:5432/checkout_guard_test"
 )
@@ -10,6 +17,7 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 import respx  # noqa: E402
 
+from app.ai import breaker, gemini  # noqa: E402
 from app.config import SANDBOX_API_BASE, Settings, get_settings  # noqa: E402
 from app.db import session as db_session  # noqa: E402
 from app.db.bootstrap import ensure_shop  # noqa: E402
@@ -22,9 +30,66 @@ get_settings.cache_clear()
 SHOP = get_settings().shop_id
 
 
+def _db_addresses() -> set[str]:
+    host = urlsplit(os.environ["DATABASE_URL"]).hostname or "localhost"
+    try:
+        return {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except OSError:
+        return set()
+
+
+_DB_ADDRESSES = _db_addresses()
+
+
+def _local(address: object) -> bool:
+    if not isinstance(address, tuple):  # AF_UNIX path
+        return True
+    host = str(address[0])
+    if host in _DB_ADDRESSES or host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.split("%")[0]).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Fail any test that reaches the internet or the real Gemini client. Mocked HTTP (respx) never opens a
+    socket, so it is unaffected; the Postgres test database is local. Attempts are recorded and failed at
+    teardown too, because app code that catches errors (AI fallback, PayPal retries) would hide them."""
+    leaks: list[str] = []
+    real_connect, real_connect_ex = socket.socket.connect, socket.socket.connect_ex
+
+    def guard(real):
+        def connect(self, address):
+            if not _local(address):
+                leaks.append(f"outbound connection to {address!r}")
+                raise OSError(f"tests must not use the network (tried {address!r}); mock it with respx")
+            return real(self, address)
+
+        return connect
+
+    def no_gemini():
+        leaks.append("real Gemini client requested")
+        raise RuntimeError("unmocked Gemini call: patch app.ai.gemini._client or generate_json")
+
+    monkeypatch.setattr(socket.socket, "connect", guard(real_connect))
+    monkeypatch.setattr(socket.socket, "connect_ex", guard(real_connect_ex))
+    monkeypatch.setattr(gemini, "_client", no_gemini)
+    # Breaker state is process-global: start each test clean, in memory unless a test opts into the DB store.
+    monkeypatch.setattr(gemini, "_breaker", breaker.Breaker())
+    monkeypatch.setattr(gemini, "store", breaker.MemoryStore())
+    yield leaks
+    if leaks:
+        pytest.fail("; ".join(leaks))
+
+
 @pytest.fixture
 async def db():
-    """Fresh schema per test on the real Postgres test database."""
+    """Fresh schema per test on the real Postgres test database. It drops and recreates the schema, so two
+    pytest runs must not share one database at the same time: give a parallel run its own via
+    TEST_DATABASE_URL (e.g. .../checkout_guard_test_2)."""
     db_session.get_engine.cache_clear()
     db_session.get_sessionmaker.cache_clear()
     engine = db_session.get_engine()

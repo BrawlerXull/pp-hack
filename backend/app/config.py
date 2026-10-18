@@ -1,13 +1,17 @@
+import os
 from functools import lru_cache
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SANDBOX_API_BASE = "https://api-m.sandbox.paypal.com"
+# The test suite sets CHECKOUT_GUARD_NO_ENV_FILE=1: the repo .env holds real Gemini/PayPal credentials and a
+# test that forgot a mock must fail, not quietly call the real APIs.
+ENV_FILES = None if os.environ.get("CHECKOUT_GUARD_NO_ENV_FILE") else (".env", "../.env")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILES, extra="ignore")
 
     # PayPal sandbox REST app
     paypal_client_id: str = ""

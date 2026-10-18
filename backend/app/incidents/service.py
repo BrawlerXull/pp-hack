@@ -181,10 +181,10 @@ class IncidentService:
 
         # Notify the owner on the first verdict and whenever new defences were switched on.
         if first or any(a.type != ActionType.REFUND for a in executed):
-            await self.write_report(incident)
+            await self.write_report(incident, skip_ai=not result.ai_available)
 
-    async def write_report(self, incident: Incident) -> Report:
-        texts, model_id = await reporter.write(self.s, incident)
+    async def write_report(self, incident: Incident, skip_ai: bool = False) -> Report:
+        texts, model_id = await reporter.write(self.s, incident, skip_ai=skip_ai)
         report = await self.s.get(Report, incident.id)
         if report is None:
             report = Report(incident_id=incident.id, **texts, model_id=model_id)

@@ -11,6 +11,7 @@ from datetime import timedelta
 import structlog
 from sqlalchemy import text
 
+from app.ai import breaker
 from app.config import get_settings
 from app.db.bootstrap import ensure_shop
 from app.db.session import get_engine, get_sessionmaker
@@ -40,6 +41,7 @@ async def run() -> None:
         log.info("worker_started", shop=settings.shop_id, interval_s=settings.detect_interval_s)
         async with sessions() as s:
             await ensure_shop(s, settings.shop_id)
+        await breaker.reset_until_restart()
 
         while not stop.is_set():
             try:

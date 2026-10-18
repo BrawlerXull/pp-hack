@@ -1,11 +1,13 @@
-from typing import Literal
+import math
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.detection.features import FeatureKey
 
 Classification = Literal["card_testing", "account_testing", "genuine_rush", "paypal_outage", "unclear"]
 ATTACK_CLASSES = {"card_testing", "account_testing"}
+CONFIDENCE_SLACK = 0.05  # rounding overshoot tolerated around [0, 1]
 
 RecommendedAction = Literal["SCA_ON", "BLOCK_FP", "HOLD_SKU", "REFUND_MATCHED", "NOTIFY", "NONE"]
 FeatureName = Literal[tuple(k.value for k in FeatureKey)]  # type: ignore[valid-type]
@@ -27,6 +29,19 @@ class Verdict(BaseModel):
     recommended_actions: list[RecommendedAction]
     trend: Literal["escalating", "stable", "subsiding"] = "stable"
     uncertainty_notes: str = ""
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _clamp_confidence(cls, v: Any) -> Any:
+        # Models occasionally answer 1.02 or -0.01: clamp that rounding overshoot instead of failing the call.
+        # Anything further out (72 meaning 72%, garbage) stays invalid so the chain falls back: clamping it to
+        # 1.0 would clear the act/refund thresholds on a confidence the model never expressed.
+        if isinstance(v, int | float) and not isinstance(v, bool) and not math.isnan(v):
+            if -CONFIDENCE_SLACK <= v < 0:
+                return 0.0
+            if 1 < v <= 1 + CONFIDENCE_SLACK:
+                return 1.0
+        return v
 
 
 class ReportDraft(BaseModel):

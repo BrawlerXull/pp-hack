@@ -101,6 +101,17 @@ class ActionStatus(StrEnum):
     FAILED = "failed"
 
 
+class CooldownReason(StrEnum):
+    """Why the Gemini circuit breaker paused a model (app/ai/breaker.py)."""
+
+    QUOTA = "quota"  # 429 RESOURCE_EXHAUSTED, per-minute limits
+    DAILY_QUOTA = "daily_quota"  # 429 naming a per-day quota: retrying in a minute is pointless
+    OVERLOADED = "overloaded"  # 5xx
+    TIMEOUT = "timeout"  # our timeout or a network error
+    BAD_REQUEST = "bad_request"  # other 4xx (unknown model, unsupported config): fails every time
+    BAD_KEY = "bad_key"  # 401/403/invalid key: every model is down until the process restarts
+
+
 # ---- tables ------------------------------------------------------------------------------------
 
 
@@ -250,3 +261,22 @@ class AuditLog(Base):
     incident_id: Mapped[str | None] = mapped_column(String(16), index=True)
     event: Mapped[str] = mapped_column(String(80))
     data: Mapped[dict[str, Any]] = mapped_column(JsonB, default=dict)
+
+
+class AIModelState(Base):
+    """Circuit-breaker state per Gemini model, shared by the API process and the worker.
+
+    model "*" means every model (the key itself was rejected). Rows are scoped by key_id so state learned
+    with an old key never blocks a new one. until NULL = paused until the next process restart.
+    """
+
+    __tablename__ = "ai_model_state"
+    model: Mapped[str] = mapped_column(String(80), primary_key=True)
+    key_id: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str] = mapped_column(String(20))
+    until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failures: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

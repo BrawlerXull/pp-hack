@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import breaker, gemini
 from app.api import auth, dashboard, demo, guard, settings, shop, webhooks
 from app.api.deps import get_paypal
 from app.config import get_settings
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.broadcaster = Broadcaster()
     async with get_sessionmaker()() as s:
         await ensure_shop(s, cfg.shop_id)
+    await breaker.reset_until_restart()
     await app.state.broadcaster.start()
     yield
     await app.state.broadcaster.stop()
@@ -68,5 +70,13 @@ async def healthz(
         checks["paypal"] = "ok"
     except Exception as exc:
         checks["paypal"], checks["status"] = f"error: {exc.__class__.__name__}", "degraded"
-    checks["ai"] = "configured" if get_settings().gemini_api_key else "missing GEMINI_API_KEY"
+    # Read from the shared breaker table, so this reflects what the worker's calls have seen too. Coarse on
+    # purpose: /healthz is public (ngrok), so the model chain and cooldown timings stay on the owner-only
+    # /dashboard/summary rather than telling a visitor when the guard is on its rules fallback.
+    ai = await gemini.status()
+    checks["ai"] = {"ok": "configured", "not_configured": "missing GEMINI_API_KEY"}.get(
+        ai["state"], ai["state"]
+    )
+    if ai["state"] in ("cooling_down", "key_rejected"):
+        checks["status"] = "degraded"
     return checks

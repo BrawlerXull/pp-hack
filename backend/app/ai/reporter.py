@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import gemini
 from app.ai.gemini import AIUnavailable, generate_json
 from app.ai.schemas import ReportDraft
 from app.db.models import Action, ActionStatus, ActionType, CheckoutAttempt, Incident, Outcome
@@ -160,12 +161,18 @@ related to this incident be reviewed with this context.
     return ReportDraft(alert=alert, report_md=report, evidence_md=evidence)
 
 
-async def write(session: AsyncSession, incident: Incident) -> tuple[dict[str, str], str]:
+async def write(
+    session: AsyncSession, incident: Incident, skip_ai: bool = False
+) -> tuple[dict[str, str], str]:
+    """skip_ai: the analyst's call just failed in this tick, so another Gemini call would only add latency
+    to the owner's alert. Also skipped when this process saw every model paused by the breaker."""
     facts = await gather_facts(session, incident)
     fallback = template(facts)
     model_id = "template"
     draft = fallback
     try:
+        if skip_ai or await gemini.cooling_down():
+            raise AIUnavailable("skipped: Gemini unavailable this tick")
         context = {k: facts[k] for k in ("classification", "defences", "targeted_item")} | {
             "incident_status": "closed: the attack has stopped and extra checks were switched off"
             if incident.closed_at

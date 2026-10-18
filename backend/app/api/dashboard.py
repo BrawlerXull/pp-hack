@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.actions.executor import Executor, action_event
+from app.ai import gemini
 from app.api.deps import OwnerShop, get_broadcaster, get_paypal
 from app.config import Settings, get_settings
 from app.db.audit import audit
@@ -86,6 +87,8 @@ async def summary(shop_id: OwnerShop, session: Session) -> dict[str, Any]:
     return {
         "status": status,
         "open_incident": incident_event(inc) if inc else None,
+        # Gemini circuit-breaker state (shared with the worker), so "AI unavailable" has a visible cause.
+        "ai": await gemini.status(),
         "guard_state": {
             "mode": gs.mode if gs else GuardMode.NORMAL,
             "blocked_devices": len(gs.blocked_fingerprints or []) if gs else 0,

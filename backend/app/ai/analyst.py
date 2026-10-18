@@ -105,6 +105,8 @@ def validate_evidence(verdict: Verdict, features: dict[int, Features]) -> tuple[
 
 
 def _friendly(exc: Exception) -> str:
+    if reason := getattr(exc, "reason", None):  # set by app/ai/gemini.py from the breaker's classification
+        return reason
     msg = str(exc)
     if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
         return "Gemini quota exhausted"
