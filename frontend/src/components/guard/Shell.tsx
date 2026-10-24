@@ -7,6 +7,7 @@ import { Suspense, useEffect } from "react";
 import useSWR, { SWRConfig } from "swr";
 import { api, ApiError, fetcher } from "@/lib/api";
 import { useLiveUpdates } from "@/lib/live";
+import { SystemPills } from "./SystemPills";
 
 const NAV = [
   { href: "/guard", label: "War Room", icon: LayoutDashboard },
@@ -69,10 +70,6 @@ function Shell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
         <div className="space-y-1 border-t border-slate-100 p-3">
-          <p className="flex items-center gap-2 px-3 py-1.5 text-xs text-slate-500">
-            <span className={`size-2 rounded-full ${live === "live" ? "bg-green-500" : live === "connecting" ? "bg-amber-400" : "bg-slate-300"}`} />
-            {live === "live" ? "Live updates on" : live === "connecting" ? "Connecting…" : "Live updates paused"}
-          </p>
           <Link href="/" className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-50">
             <Store className="size-4" /> View shop
           </Link>
@@ -96,6 +93,10 @@ function Shell({ children }: { children: React.ReactNode }) {
             ))}
           </nav>
         </header>
+        {/* System pills on every page, phones included: AI, detector, PayPal, live updates. */}
+        <div className="border-b border-slate-200 bg-white/80 px-4 py-2 sm:px-6 lg:px-8">
+          <SystemPills live={live} />
+        </div>
         <main className="mx-auto w-full max-w-7xl flex-1 space-y-6 p-4 sm:p-6 lg:p-8">
           {backendDown && (
             <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800">

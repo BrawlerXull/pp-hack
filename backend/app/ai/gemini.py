@@ -34,6 +34,12 @@ class AIUnavailable(RuntimeError):
 _breaker = brk.Breaker()
 store: brk.BreakerStore = brk.DbStore()
 _usage: ContextVar[list[dict[str, Any]] | None] = ContextVar("gemini_usage", default=None)
+# This process's last Gemini answer and last failure, for the worker heartbeat (dashboard AI pill).
+_last: dict[str, Any] = {"model": None, "at": None, "error": None, "error_at": None}
+
+
+def last_outcome() -> dict[str, Any]:
+    return dict(_last)
 
 
 @contextmanager
@@ -182,6 +188,7 @@ async def generate_json[T: BaseModel](
             )
             if _breaker.clear(model):
                 await store.clear(key, model)
+            _last.update(model=res.model_version or model, at=_now())
             return parsed, res.model_version or model
         except AIUnavailable:
             raise
@@ -191,6 +198,9 @@ async def generate_json[T: BaseModel](
             if res is None:  # no response at all (timeout, quota, 5xx); a bad-JSON reply is already recorded
                 _record_usage(model, error=error)
             trip = brk.classify(exc)
+            # Shown on the dashboard: the classified reason only, never the raw SDK text (URLs, project ids).
+            shown = brk.FRIENDLY[trip.reason] if trip else f"unusable answer ({type(exc).__name__})"
+            _last.update(error=f"{model}: {shown}", error_at=_now())
             log.warning("gemini_call_failed", model=model, error=error, pause=trip and trip.reason)
             if trip is None:
                 continue

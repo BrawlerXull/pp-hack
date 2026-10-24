@@ -1,4 +1,4 @@
-import type { Classification, GuardStatus, Outcome, RulesHint } from "./api";
+import type { Classification, GuardStatus, Outcome, RulesHint, TriggerTier } from "./api";
 
 export const money = (v: string | number) => `$${Number(v).toFixed(2)}`;
 
@@ -12,6 +12,11 @@ export function timeAgo(iso: string): string {
 
 export const clock = (iso: string) =>
   new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+export const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+// "×12 vs normal"; one decimal below 10.
+export const times = (m: number) => `×${m >= 10 ? Math.round(m) : m.toFixed(1)}`;
 
 export const CLASSIFICATION_LABEL: Record<Classification, string> = {
   card_testing: "Card-testing attack",
@@ -114,4 +119,42 @@ export const SKU_NAME: Record<string, string> = {
   "SKU-TEALIGHT-3": "Tea-light pack",
   "SKU-PILLAR-18": "Amber pillar",
   "SKU-GIFTSET-42": "Evening gift set",
+};
+
+export const TRIGGER_LABEL: Record<string, string> = {
+  velocity_spike: "Traffic spike",
+  sku_concentration: "One item targeted",
+  decline_spike: "Decline spike",
+  fraud_declines: "Bank fraud codes",
+  cheap_sku_card_cycling: "Cards cycling on cheapest item",
+  processor_errors: "PayPal errors",
+  blocked_activity: "Blocked devices still trying",
+};
+
+export const TIER_META: Record<TriggerTier, { label: string; tone: Tone }> = {
+  fraud: { label: "fraud", tone: "bad" },
+  volume: { label: "volume", tone: "info" },
+  ops: { label: "ops", tone: "warn" },
+  holding: { label: "holding", tone: "neutral" },
+};
+
+// Why the guard decided what it did for one checkout (backend app/guard/check.py).
+export const GUARD_REASON_LABEL: Record<string, string> = {
+  normal: "Normal checks",
+  guard_disabled: "Kill switch on: guard off",
+  fingerprint_blocked: "Device blocked",
+  device_velocity_limit: "Too many tries from this device",
+  device_velocity: "Fast retries: challenged",
+  sku_on_hold: "Item on hold for new shoppers",
+  sca_mode: "3-D Secure on for every card",
+};
+
+export const ACTION_SHORT: Record<string, string> = {
+  SCA_ON: "3-D Secure",
+  BLOCK_FP: "Block devices",
+  HOLD_SKU: "Hold item",
+  REFUND: "Refund",
+  NOTIFY: "Notify owner",
+  DEESCALATE: "Stand down",
+  RELAX: "Relax checks",
 };

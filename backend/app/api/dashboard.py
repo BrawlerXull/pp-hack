@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -28,16 +28,22 @@ from app.db.models import (
     GuardState,
     Incident,
     IncidentStatus,
+    MerchantSettings,
+    Method,
     Outcome,
     Report,
+    Source,
+    SystemStatus,
 )
 from app.db.session import get_session
+from app.detection import normal
 from app.events import Broadcaster, publish
 from app.guard import devices
 from app.guard.check import invalidate_cache
-from app.incidents.service import IncidentService, incident_event, open_incident
+from app.incidents.service import IncidentService, active_sale_window, incident_event, open_incident
 from app.paypal.client import PayPalClient
 from app.shop.service import attempt_event
+from app.worker import heartbeat
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 Session = Annotated[AsyncSession, Depends(get_session)]
@@ -50,8 +56,27 @@ async def _incident_or_404(session: AsyncSession, shop_id: str, incident_id: str
     return inc
 
 
+CARD_EVIDENCE_WINDOW = timedelta(days=7)
+
+
+async def _card_capture_seen(session: AsyncSession, shop_id: str, now: datetime) -> bool:
+    """A real sandbox card payment was captured lately (simulated rows have paypal_live=False)."""
+    q = select(
+        exists().where(
+            CheckoutAttempt.shop_id == shop_id,
+            CheckoutAttempt.paypal_live.is_(True),
+            CheckoutAttempt.method == Method.CARD,
+            CheckoutAttempt.capture_id.is_not(None),
+            CheckoutAttempt.ts > now - CARD_EVIDENCE_WINDOW,
+        )
+    )
+    return bool((await session.execute(q)).scalar())
+
+
 @router.get("/summary")
-async def summary(shop_id: OwnerShop, session: Session) -> dict[str, Any]:
+async def summary(
+    shop_id: OwnerShop, session: Session, settings: Annotated[Settings, Depends(get_settings)]
+) -> dict[str, Any]:
     since = datetime.now(UTC) - timedelta(hours=24)
     counts = dict(
         (
@@ -76,6 +101,7 @@ async def summary(shop_id: OwnerShop, session: Session) -> dict[str, Any]:
         )
     ).scalars()
     gs = await session.get(GuardState, shop_id)
+    ms = await session.get(MerchantSettings, shop_id)
     inc = await open_incident(session, shop_id)
     if inc is None:
         status = "recovering" if gs and gs.mode != GuardMode.NORMAL else "quiet"
@@ -87,11 +113,27 @@ async def summary(shop_id: OwnerShop, session: Session) -> dict[str, Any]:
             "paypal_outage": "paypal_issue",
         }.get(inc.classification or "", "investigating")
     stopped = sum(counts.get(o, 0) for o in (Outcome.BLOCKED, Outcome.CHALLENGED, Outcome.SCA_REQUIRED))
+    now = datetime.now(UTC)
+    ai = await gemini.status()
+    sale = active_sale_window(ms, now) if ms else None
     return {
         "status": status,
         "open_incident": incident_event(inc) if inc else None,
         # Gemini circuit-breaker state (shared with the worker), so "AI unavailable" has a visible cause.
-        "ai": await gemini.status(),
+        "ai": ai,
+        "system": heartbeat.system_block(
+            await session.get(SystemStatus, heartbeat.WORKER, populate_existing=True),
+            ai,
+            settings,
+            now,
+            card_capture_seen=await _card_capture_seen(session, shop_id, now),
+            assessing=inc is not None and inc.assessing_since is not None,
+        ),
+        "switches": {
+            "kill_switch": bool(ms and ms.kill_switch),
+            "autopilot": bool(ms and ms.autopilot),
+        },
+        "sale_window": {"end": sale.get("end"), "note": sale.get("note") or ""} if sale else None,
         "guard_state": {
             "mode": gs.mode if gs else GuardMode.NORMAL,
             "blocked_devices": await devices.count_blocked(session, shop_id),
@@ -129,12 +171,23 @@ async def attempts(
     ]
 
 
+BUCKET_ORIGIN = datetime(2000, 1, 1, tzinfo=UTC)
+MAX_BUCKETS = 1440
+
+
 @router.get("/timeseries")
 async def timeseries(
-    shop_id: OwnerShop, session: Session, minutes: Annotated[int, Query(ge=5, le=1440)] = 60
+    shop_id: OwnerShop,
+    session: Session,
+    minutes: Annotated[int, Query(ge=5, le=1440)] = 60,
+    bucket_s: Annotated[int, Query(ge=5, le=3600)] = 60,
 ) -> list[dict[str, Any]]:
-    """Per-minute counts by outcome, for the War Room charts."""
-    bucket = func.date_trunc("minute", CheckoutAttempt.ts)
+    """Counts by outcome per bucket (default a minute; the War Room uses 10 s to show an attack's first
+    seconds). Buckets start on multiples of bucket_s since a fixed UTC origin, so the frontend can rebuild
+    the empty ones. Each point carries its bucket start as `t` (and `minute`, the older name)."""
+    if minutes * 60 // bucket_s > MAX_BUCKETS:
+        raise HTTPException(422, f"too many buckets: at most {MAX_BUCKETS} per request")
+    bucket = func.date_bin(timedelta(seconds=bucket_s), CheckoutAttempt.ts, BUCKET_ORIGIN)
     rows = (
         await session.execute(
             select(bucket, CheckoutAttempt.outcome, func.count())
@@ -148,8 +201,8 @@ async def timeseries(
         )
     ).all()
     series: dict[datetime, dict[str, Any]] = {}
-    for minute, outcome, n in rows:
-        series.setdefault(minute, {"minute": minute})[outcome] = n
+    for t, outcome, n in rows:
+        series.setdefault(t, {"t": t, "minute": t})[outcome] = n
     return list(series.values())
 
 
@@ -168,18 +221,21 @@ async def incidents(shop_id: OwnerShop, session: Session, limit: int = 50) -> li
 
 @router.get("/alerts")
 async def alerts(
-    shop_id: OwnerShop, session: Session, limit: Annotated[int, Query(ge=1, le=500)] = 50
+    shop_id: OwnerShop,
+    session: Session,
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+    incident_id: Annotated[str | None, Query(max_length=16)] = None,
 ) -> list[dict[str, Any]]:
-    """Alert history, newest first: every alert the owner was sent (audit `alert.sent`), with its text."""
-    rows = (
-        await session.execute(
-            select(AuditLog)
-            .join(Incident, Incident.id == AuditLog.incident_id)
-            .where(AuditLog.event == "alert.sent", Incident.shop_id == shop_id)
-            .order_by(AuditLog.id.desc())
-            .limit(limit)
-        )
-    ).scalars()
+    """Alert history, newest first: every alert the owner was sent (audit `alert.sent`), with its text.
+    incident_id narrows it to one incident (the incident page's phone)."""
+    q = (
+        select(AuditLog)
+        .join(Incident, Incident.id == AuditLog.incident_id)
+        .where(AuditLog.event == "alert.sent", Incident.shop_id == shop_id)
+    )
+    if incident_id:
+        q = q.where(AuditLog.incident_id == incident_id)
+    rows = (await session.execute(q.order_by(AuditLog.id.desc()).limit(limit))).scalars()
     return [
         {
             "id": r.id,
@@ -190,6 +246,35 @@ async def alerts(
         }
         for r in rows
     ]
+
+
+DETECTION_LOOKBACK = timedelta(minutes=5)  # the velocity trigger's window: a burst starts within it
+
+
+async def detection_delay_s(session: AsyncSession, inc: Incident) -> int | None:
+    """Seconds from the burst's first attempt to the incident opening. The first attempt is the earliest
+    one from a device flagged in the signature within DETECTION_LOOKBACK before opening; with no flagged
+    device (a rush, an outage) the earliest attempt in that window. Seeded history never counts."""
+    sig = inc.signature or {}
+    flagged = sorted(set(sig.get("fingerprints") or []) | set(sig.get("weak_fingerprints") or []))
+    window = (
+        CheckoutAttempt.shop_id == inc.shop_id,
+        CheckoutAttempt.source != Source.SEED,
+        CheckoutAttempt.ts >= inc.opened_at - DETECTION_LOOKBACK,
+        CheckoutAttempt.ts <= inc.opened_at,
+    )
+    first = None
+    if flagged:
+        first = (
+            await session.execute(
+                select(func.min(CheckoutAttempt.ts)).where(
+                    *window, CheckoutAttempt.fingerprint_hash.in_(flagged)
+                )
+            )
+        ).scalar()
+    if first is None:
+        first = (await session.execute(select(func.min(CheckoutAttempt.ts)).where(*window))).scalar()
+    return None if first is None else int((inc.opened_at - first).total_seconds())
 
 
 @router.get("/incidents/{incident_id}")
@@ -210,6 +295,10 @@ async def incident_detail(incident_id: str, shop_id: OwnerShop, session: Session
         "prompt_version": inc.prompt_version,
         "verdict_at": inc.verdict_at,
         "ai_refresh_failures": inc.ai_refresh_failures,
+        # ×N vs normal for each evidence item, from our stored features and baseline (never the AI's).
+        # Uses the features the verdict was checked against: `features` moves on with every re-check.
+        "evidence_vs_normal": normal.evidence_vs_normal(inc.verdict, inc.verdict_features or {}),
+        "detected_in_s": await detection_delay_s(session, inc),
         "actions": [action_event(a) for a in actions],
         "report": {
             "alert_text": report.alert_text,

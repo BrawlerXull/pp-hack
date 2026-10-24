@@ -5,15 +5,17 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
 import useSWR from "swr";
+import { DecisionStrip } from "@/components/guard/DecisionStrip";
 import { ActionsList, AlertPhone, Markdown, VerdictCard } from "@/components/guard/incident";
 import { Badge, Button, Card } from "@/components/guard/ui";
-import { api, type IncidentDetail } from "@/lib/api";
+import { api, type AlertRow, type IncidentDetail } from "@/lib/api";
 import { CLASSIFICATION_LABEL, clock } from "@/lib/format";
 
 export default function IncidentPage() {
   const { id } = useParams<{ id: string }>();
   const key = `/dashboard/incidents/${id}`;
   const { data: inc, mutate } = useSWR<IncidentDetail>(key);
+  const { data: alerts } = useSWR<AlertRow[]>(`/dashboard/alerts?limit=10&incident_id=${encodeURIComponent(id)}`);
   const [tab, setTab] = useState<"report" | "evidence" | "timeline">("report");
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -62,6 +64,8 @@ export default function IncidentPage() {
       </div>
       {error && <p className="text-sm text-amber-700">{error}</p>}
 
+      <DecisionStrip incident={inc} />
+
       <div className="grid gap-6 xl:grid-cols-3">
         <Card title="AI analyst verdict" className="xl:col-span-2">
           <VerdictCard incident={inc} />
@@ -70,8 +74,8 @@ export default function IncidentPage() {
           <Card title="What Checkout Guard did">
             <ActionsList incident={inc} onChange={() => mutate()} />
           </Card>
-          <Card title="Owner alert">
-            <AlertPhone text={inc.report?.alert_text} at={inc.report?.generated_at} />
+          <Card title="Owner alerts">
+            <AlertPhone text={inc.report?.alert_text} at={inc.report?.generated_at} history={alerts} />
           </Card>
         </div>
       </div>

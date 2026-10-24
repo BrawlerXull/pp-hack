@@ -3,7 +3,7 @@
 import { Bug, Loader2, PartyPopper, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { useSWRConfig } from "swr";
-import { api, type MerchantSettings } from "@/lib/api";
+import { api } from "@/lib/api";
 import { Button } from "./ui";
 
 /** One-click demo controls. Everything they create is tagged as simulated in the data and the UI. */
@@ -29,20 +29,9 @@ export function QuickRun() {
   const attack = () =>
     api("/demo/run/card_testing", { method: "POST", json: { mode: "offline", count: 120, speed: 3 } });
 
-  const flashSale = async () => {
-    const s = await api<MerchantSettings>("/settings");
-    const now = Date.now();
-    await api("/settings", {
-      method: "PUT",
-      json: {
-        ...s,
-        sale_windows: [
-          { start: new Date(now - 5 * 60_000).toISOString(), end: new Date(now + 2 * 3600_000).toISOString(), note: "Autumn sale announced on Instagram" },
-        ],
-      },
-    });
-    return api("/demo/run/flash_sale", { method: "POST", json: { mode: "offline", count: 60, speed: 3 } });
-  };
+  // The backend announces the 2-hour sale window itself, and only if the run is accepted (no 409 left over).
+  const flashSale = () =>
+    api("/demo/run/flash_sale", { method: "POST", json: { mode: "offline", count: 60, speed: 3, announce_sale: true } });
 
   return (
     <div className="flex flex-wrap items-center gap-2">

@@ -31,6 +31,7 @@ from app.db.models import (
 )
 from app.detection import baseline as baseline_mod
 from app.detection import features as feat
+from app.detection import normal
 from app.detection import triggers as trig
 from app.events import publish
 from app.guard import devices
@@ -84,6 +85,8 @@ class IncidentService:
         self.paypal = paypal
         self.reassess_after = reassess_after  # base interval; also the AI-failure backoff unit
         self.verdict_max_age = verdict_max_age
+        # The last tick's 5/15-minute numbers and normal, for the worker heartbeat (dashboard live tiles).
+        self.live: dict[str, Any] | None = None
 
     async def tick(self, shop_id: str, now: datetime | None = None) -> Incident | None:
         """One detector pass for a shop. Safe to call repeatedly. Commits (several times)."""
@@ -94,6 +97,7 @@ class IncidentService:
         rows = await baseline_mod.recent_rows(self.s, shop_id, now - timedelta(minutes=60))
         base = await baseline_mod.load_baseline(self.s, shop_id, now)
         features = feat.compute_all(rows, now, base)
+        self.live = normal.live_snapshot(features, base) | {"at": now.isoformat()}
         fired = trig.evaluate(features, base)
         incident = await open_incident(self.s, shop_id, lock=True)
 
@@ -391,6 +395,7 @@ class IncidentService:
             )
             keep = False
 
+        incident.ai_fallback_reason = None if result.ai_available else result.fallback_reason
         if keep:
             incident.ai_refresh_failed_at = now
             incident.ai_refresh_failures += 1
@@ -414,6 +419,8 @@ class IncidentService:
             incident.prompt_version = analyst.PROMPT_VERSION
             incident.ai_available = result.ai_available
             incident.verdict_at = now
+            incident.dropped_evidence = result.dropped_evidence
+            incident.verdict_features = incident.features
             incident.ai_refresh_failed_at = None
             incident.ai_refresh_failures = 0 if result.ai_available else incident.ai_refresh_failures + 1
             verdict_triggers = triggers
@@ -507,4 +514,10 @@ def incident_event(i: Incident) -> dict[str, Any]:
         "ai_available": i.ai_available,
         "ai_refresh_failed_at": i.ai_refresh_failed_at,
         "rules_hint": i.rules_hint,
+        "trigger_tiers": {t: trig.TRIGGER_TIER[t] for t in i.triggers or [] if t in trig.TRIGGER_TIER},
+        # AI evidence items that did not match our numbers and were dropped (the verdict on record).
+        "dropped_evidence": i.dropped_evidence or 0,
+        "ai_fallback_reason": i.ai_fallback_reason,
+        "model_id": i.model_id,
+        "verdict_at": i.verdict_at,
     }

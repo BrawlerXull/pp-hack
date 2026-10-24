@@ -286,6 +286,8 @@ def attempt_event(a: CheckoutAttempt) -> dict[str, Any]:
         "fingerprint": (a.fingerprint_hash or "")[:8],
         "email_domain": a.email_domain,
         "decision": a.guard_decision,
+        # Why the guard decided that (app/guard/check.py), for the War Room's "Why" column.
+        "guard_reason": a.guard_reason,
         "outcome": a.outcome,
         "decline_code": a.decline_code,
         "decline_category": a.decline_category,

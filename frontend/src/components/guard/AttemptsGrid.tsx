@@ -4,7 +4,7 @@ import { AllCommunityModule, ModuleRegistry, themeQuartz, type ColDef, type ICel
 import { AgGridReact } from "ag-grid-react";
 import { useMemo } from "react";
 import type { Attempt } from "@/lib/api";
-import { OUTCOME_META, SKU_NAME, clock } from "@/lib/format";
+import { GUARD_REASON_LABEL, OUTCOME_META, SKU_NAME, clock } from "@/lib/format";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -40,6 +40,13 @@ function SourceCell({ data }: ICellRendererParams<Attempt>) {
   );
 }
 
+/** The guard's reason for its decision, and PayPal's decline code when it got that far. */
+function whyText(a: Attempt): string {
+  const guard = a.guard_reason ? (GUARD_REASON_LABEL[a.guard_reason] ?? a.guard_reason) : "";
+  if (a.decline_code) return a.guard_reason && a.guard_reason !== "normal" ? `${guard} · PayPal: ${a.decline_code}` : `PayPal: ${a.decline_code}`;
+  return guard;
+}
+
 export default function AttemptsGrid({ rows, height = 420 }: { rows: Attempt[]; height?: number }) {
   const columns = useMemo<ColDef<Attempt>[]>(
     () => [
@@ -50,7 +57,7 @@ export default function AttemptsGrid({ rows, height = 420 }: { rows: Attempt[]; 
       { field: "method", headerName: "Method", width: 90, valueFormatter: (p) => (p.value === "wallet" ? "PayPal" : "Card") },
       { field: "email_domain", headerName: "Email domain", flex: 1, minWidth: 150, filter: true },
       { field: "fingerprint", headerName: "Device", width: 100, cellClass: "font-mono text-xs" },
-      { field: "decline_code", headerName: "Reason", width: 170, valueFormatter: (p) => p.value ?? "" },
+      { colId: "why", headerName: "Why", width: 230, valueGetter: (p) => (p.data ? whyText(p.data) : ""), tooltipValueGetter: (p) => (p.data ? whyText(p.data) : ""), filter: true },
       { field: "source", headerName: "Source", width: 140, cellRenderer: SourceCell },
     ],
     [],

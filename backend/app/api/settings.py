@@ -10,6 +10,7 @@ from app.api.deps import OwnerShop
 from app.db.audit import audit
 from app.db.models import MerchantSettings
 from app.db.session import get_session
+from app.events import publish
 from app.guard.check import invalidate_cache
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -70,6 +71,30 @@ async def put_settings(
     ms.deescalate_after_min = body.deescalate_after_min
     ms.sale_windows = [w.model_dump(mode="json") for w in body.sale_windows]
     audit(session, "owner", "settings.updated", **body.model_dump(mode="json"))
+    await session.commit()
+    invalidate_cache(shop_id)
+    return _out(ms)
+
+
+class SwitchesBody(BaseModel):
+    """The War Room toggles: change one switch without re-sending (and racing) the whole settings form."""
+
+    autopilot: bool | None = None
+    kill_switch: bool | None = None
+
+
+@router.patch("/switches")
+async def patch_switches(
+    body: SwitchesBody, shop_id: OwnerShop, session: Annotated[AsyncSession, Depends(get_session)]
+) -> SettingsBody:
+    ms = await session.get(MerchantSettings, shop_id, with_for_update=True)
+    assert ms is not None
+    changed = body.model_dump(exclude_none=True)
+    for field, value in changed.items():
+        setattr(ms, field, value)
+    if changed:
+        audit(session, "owner", "settings.switches", **changed)
+        await publish(session, "settings.updated", changed)
     await session.commit()
     invalidate_cache(shop_id)
     return _out(ms)

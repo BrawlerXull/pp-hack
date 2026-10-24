@@ -27,19 +27,21 @@ All endpoints are FastAPI routes. The OpenAPI schema is exported at build time, 
 ### Dashboard (`app/api/dashboard.py`, cookie auth)
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/dashboard/summary` | Status (quiet / under attack / recovering), today's counts, $ protected |
+| GET | `/dashboard/summary` | Status (quiet / under attack / recovering), today's counts, $ protected; `system` (worker heartbeat alive if < 15 s; detector running / slow after 30 s without a finished pass / stalled after 150 s / failing when the last pass raised, AI live / cooling down until / rules only + reason, PayPal sandbox + card processing seen or unknown, simulator flag, the detector's last 5/15-min numbers with ×N vs normal), `switches` (kill switch, autopilot), running `sale_window` |
+| GET | `/dashboard/timeseries?minutes&bucket_s` | Counts by outcome per bucket (`date_bin`, default 60 s; the War Room uses 10 s) |
 | GET | `/dashboard/attempts?from&to` | Rows for the AG Grid table and AG Studio data source |
-| GET | `/dashboard/incidents`, `/dashboard/incidents/{id}` | Verdict, evidence, actions, timeline |
+| GET | `/dashboard/incidents`, `/dashboard/incidents/{id}` | Verdict, evidence, actions, timeline; trigger tiers, `dropped_evidence` (AI claims that didn't match our numbers), `ai_fallback_reason`, `evidence_vs_normal` (×N from our stored baseline, never the AI's), `detected_in_s` |
 | GET | `/dashboard/incidents/{id}/report`, `/evidence` | Markdown (+ PDF) |
 | POST | `/dashboard/incidents/{id}/actions/{action_id}/approve` | Owner approval of a queued refund. 409 `{code: "disputed"}` for a disputed payment (a refund on top of a chargeback pays the buyer twice) unless the body is `{"override_dispute": true}` |
 | POST | `/dashboard/incidents/{id}/actions/{action_id}/reject` | Owner "Keep": the payment is never refunded by this or any later incident |
-| GET | `/dashboard/alerts?limit=` | Alert history, newest first (audit `alert.sent`: incident, time, text) |
+| GET | `/dashboard/alerts?limit=&incident_id=` | Alert history, newest first (audit `alert.sent`: incident, time, text) |
 | GET | `/dashboard/devices` | Blocked and owner-trusted devices in force, with reason, incident and expiry |
 | POST | `/dashboard/devices/{fingerprint}/unblock` | Release the block and trust the device (left out of the attack signature and refund matching, so enforcement does not re-block it) |
 | POST | `/dashboard/incidents/{id}/undo` | Turn SCA off, unblock, end incident |
 | GET | `/dashboard/stream` | SSE: `attempt`, `incident.opened/updated/closed`, `action`, `alert` |
 | GET/PUT | `/settings` | Caps, approval threshold, sale windows, autopilot, kill switch |
-| POST | `/demo/reset`, `/demo/run/{scenario}` | Demo controls (judge mode) |
+| PATCH | `/settings/switches` | War Room toggles: `{kill_switch?, autopilot?}`, one flag without re-sending the form |
+| POST | `/demo/reset`, `/demo/run/{scenario}` | Demo controls (judge mode). Reset also sets kill switch off and autopilot on; a second run while one is active is refused with 409 `{code: "run_active"}`; `announce_sale: true` sets a 2-hour sale window server-side, only once the run is accepted |
 
 ### Agent (`app/api/agent.py`)
 | Method | Path | Purpose |

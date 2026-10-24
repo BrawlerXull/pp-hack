@@ -1,10 +1,17 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { api, type DeviceRow, type Devices } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 import { Badge, Button, Empty } from "./ui";
+
+/** Blocked count for the card title, from the same request as the list. */
+export function useDeviceCounts() {
+  const { data } = useSWR<Devices>("/dashboard/devices", { refreshInterval: 15_000 });
+  return data ? { blocked: data.blocked.length, trusted: data.trusted.length } : null;
+}
 
 // Blocks expire on their own (24 h). "Unblock" also trusts the device, so the guard does not block it
 // again a few seconds later and never refunds its payments while the trust lasts.
@@ -54,6 +61,14 @@ function DeviceItem({ device, blocked = false, onChange }: { device: DeviceRow; 
         </p>
         <p className="mt-0.5 text-xs text-slate-500">
           {device.reason ?? "no reason recorded"} · {timeAgo(device.created_at)} · until {expires}
+          {device.incident_id && (
+            <>
+              {" · "}
+              <Link href={`/guard/incidents/${device.incident_id}`} className="text-guard hover:underline">
+                incident
+              </Link>
+            </>
+          )}
         </p>
         {error && <p className="text-xs text-red-700">{error}</p>}
       </div>

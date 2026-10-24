@@ -66,6 +66,8 @@ class AnalystResult:
     dropped_evidence: int = 0
     # Texts whose numbers matched no computed feature and were replaced or cut (number_guard).
     numbers_replaced: int = 0
+    # Owner-facing reason the AI could not answer (quota, timeout…), with ai_available=False.
+    fallback_reason: str | None = None
 
 
 def build_input(
@@ -248,7 +250,10 @@ async def analyse(analyst_input: dict[str, Any], features: dict[int, Features]) 
         try:
             verdict, model_id = await generate_json(system=SYSTEM, prompt=prompt, schema=Verdict)
         except AIUnavailable as exc:
-            return AnalystResult(fallback_verdict(_friendly(exc)), "rules-fallback", ai_available=False)
+            reason = _friendly(exc)
+            return AnalystResult(
+                fallback_verdict(reason), "rules-fallback", ai_available=False, fallback_reason=reason
+            )
 
         kept, dropped = validate_evidence(verdict, features)
         if kept or verdict.classification == "unclear" or attempt == 1:

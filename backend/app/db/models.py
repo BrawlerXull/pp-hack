@@ -269,6 +269,15 @@ class Incident(Base):
     # What the triggers alone suggest (app/policy/engine.rules_hint), kept apart from `classification` so a
     # rules guess is never presented as the AI's verdict.
     rules_hint: Mapped[str | None] = mapped_column(String(40))
+    # Evidence items the analyst cited that did not match our computed numbers (dropped before display), for
+    # the verdict on record; shown as "N AI claims dropped" so the owner sees the check working.
+    dropped_evidence: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Why the last assessment could not use the AI (quota, timeout…), set with a rules fallback or a kept
+    # verdict, cleared when the AI answers again.
+    ai_fallback_reason: Mapped[str | None] = mapped_column(String(120))
+    # The features the verdict on record was validated against. `features` moves on with every assessment,
+    # including a failed re-check that keeps the verdict; "×N vs normal" next to the verdict must use these.
+    verdict_features: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
 
 
 class Action(Base):
@@ -369,3 +378,24 @@ class AIModelState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class SystemStatus(Base):
+    """Liveness of background components, written by the worker (app/worker/heartbeat.py) every few seconds
+    and read by the dashboard's header pills. One row per component ("worker")."""
+
+    __tablename__ = "system_status"
+    component: Mapped[str] = mapped_column(String(20), primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Last finished detector pass: a fresh heartbeat with an old tick means busy (waiting on an AI call).
+    last_tick_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Last failed detector pass (exception type only): a failing detector must not look busy or healthy.
+    last_tick_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_tick_error: Mapped[str | None] = mapped_column(String(120))
+    last_ai_model: Mapped[str | None] = mapped_column(String(80))
+    last_ai_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_ai_error: Mapped[str | None] = mapped_column(Text)
+    last_ai_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Detector numbers from the last pass (5 and 15 min windows and the shop's normal), for the live tiles.
+    live: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
