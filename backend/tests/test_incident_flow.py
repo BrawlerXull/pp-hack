@@ -213,6 +213,23 @@ async def test_stale_kept_verdict_queues_new_refunds_but_keeps_blocking(db, monk
     ]
 
 
+async def test_ai_switched_off_mid_incident_drops_the_kept_verdict(db, monkeypatch):
+    # AI_ENABLED=false is not a failed re-check: the old Gemini verdict must not keep driving refunds.
+    incident = await attack(db, monkeypatch)
+    fp, late_id = await new_bot_device(db)
+    await age_verdict(db, incident, 11)
+    off = get_settings().model_copy(update={"ai_enabled": False})
+    monkeypatch.setattr(analyst, "get_settings", lambda: off)
+
+    await IncidentService(db, None, REASSESS).tick(SHOP)
+    await db.refresh(incident)
+    assert "ai.refresh_failed" not in await events(db, incident.id)
+    assert incident.classification == "unclear" and incident.model_id == "rules-fallback"
+    assert incident.ai_fallback_reason == gemini.AI_DISABLED and not incident.ai_available
+    late = await db.get(CheckoutAttempt, late_id, populate_existing=True)
+    assert late.outcome == Outcome.CAPTURED  # no automatic refund without a live AI verdict
+
+
 async def test_successful_recheck_clears_the_failure_state(db, monkeypatch):
     incident = await attack(db, monkeypatch)
     await age_verdict(db, incident, 11)

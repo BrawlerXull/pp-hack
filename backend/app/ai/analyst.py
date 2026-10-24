@@ -12,8 +12,9 @@ from typing import Any
 
 import structlog
 
-from app.ai.gemini import AIUnavailable, generate_json
+from app.ai.gemini import AI_DISABLED, AIUnavailable, generate_json
 from app.ai.schemas import Evidence, Verdict
+from app.config import get_settings
 from app.detection.features import WINDOWS_MIN, AttemptRow, Baseline, FeatureKey, Features, lookup
 
 PROMPT_VERSION = "analyst-v3"
@@ -240,20 +241,27 @@ def fallback_verdict(reason: str) -> Verdict:
         summary="Unusual checkout activity detected. AI analysis is unavailable, so fixed safety rules apply.",  # noqa: E501
         evidence=[],
         recommended_actions=["SCA_ON", "NOTIFY"],
-        uncertainty_notes=f"AI unavailable ({reason}). It will retry on the next assessment.",
+        uncertainty_notes="AI analysis is switched off (AI_ENABLED=false)."
+        if reason == AI_DISABLED
+        else f"AI unavailable ({reason}). It will retry on the next assessment.",
+    )
+
+
+def _fallback(reason: str) -> AnalystResult:
+    return AnalystResult(
+        fallback_verdict(reason), "rules-fallback", ai_available=False, fallback_reason=reason
     )
 
 
 async def analyse(analyst_input: dict[str, Any], features: dict[int, Features]) -> AnalystResult:
+    if not get_settings().ai_enabled:
+        return _fallback(AI_DISABLED)  # switched off on purpose: no call, no quota, the rules decide
     prompt = "Classify this checkout activity.\n\n" + json.dumps(analyst_input, default=str)
     for attempt in range(2):
         try:
             verdict, model_id = await generate_json(system=SYSTEM, prompt=prompt, schema=Verdict)
         except AIUnavailable as exc:
-            reason = _friendly(exc)
-            return AnalystResult(
-                fallback_verdict(reason), "rules-fallback", ai_available=False, fallback_reason=reason
-            )
+            return _fallback(_friendly(exc))
 
         kept, dropped = validate_evidence(verdict, features)
         if kept or verdict.classification == "unclear" or attempt == 1:

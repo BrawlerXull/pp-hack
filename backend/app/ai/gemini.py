@@ -25,6 +25,9 @@ from app.db.models import CooldownReason
 log = structlog.get_logger()
 
 
+AI_DISABLED = "AI disabled"  # owner-facing reason when AI_ENABLED=false
+
+
 class AIUnavailable(RuntimeError):
     def __init__(self, message: str, reason: str | None = None):
         super().__init__(message)
@@ -100,7 +103,10 @@ def models(settings: Settings | None = None) -> list[str]:
 
 async def cooling_down() -> bool:
     """True when every model is paused, per the shared table (one SELECT). Re-reading it matters in the API
-    process: a stale in-memory "key rejected" (until restart) would otherwise outlive the worker's reset."""
+    process: a stale in-memory "key rejected" (until restart) would otherwise outlive the worker's reset.
+    Also true when AI_ENABLED=false: no model will answer."""
+    if not get_settings().ai_enabled:
+        return True
     key = get_settings().gemini_api_key
     if key:
         await _sync_from_store(key)
@@ -124,6 +130,8 @@ async def _sync_from_store(key: str) -> None:
 async def status() -> dict[str, Any]:
     """Breaker state for /healthz and the dashboard, read from the shared table (worker + API agree)."""
     settings = get_settings()
+    if not settings.ai_enabled:
+        return {"state": "disabled", "detail": f"{AI_DISABLED} (AI_ENABLED=false)", "models": []}
     if not settings.gemini_api_key:
         return {"state": "not_configured", "detail": "missing GEMINI_API_KEY", "models": []}
     await _sync_from_store(settings.gemini_api_key)
@@ -152,6 +160,8 @@ async def generate_json[T: BaseModel](
     *, system: str, prompt: str, schema: type[T], temperature: float = 0.1
 ) -> tuple[T, str]:
     settings = get_settings()
+    if not settings.ai_enabled:
+        raise AIUnavailable("AI_ENABLED=false", AI_DISABLED)
     key = settings.gemini_api_key
     if not key:
         raise AIUnavailable("GEMINI_API_KEY not set", "no Gemini API key configured")

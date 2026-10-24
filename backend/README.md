@@ -7,7 +7,7 @@ The backend has two processes:
 | Process | Command | Does |
 |---|---|---|
 | API | `uv run uvicorn app.main:app --port 8000` | Shop order API, guard check, PayPal webhooks, dashboard API + live stream, demo controls |
-| Worker | `uv run python -m app.worker.main` | Every 5 s: applies verified webhooks, runs the detector, asks the AI, enforces the policy, de-escalates |
+| Worker | `uv run python -m app.worker.main` | Every 5 s (`DETECT_INTERVAL_S`): applies verified webhooks, expires device blocks, re-sends refunds left in flight, runs the detector, asks the AI, enforces the policy, de-escalates. Beats a heartbeat the dashboard shows as the "Detector" pill |
 
 ## How a checkout is protected
 
@@ -26,10 +26,13 @@ worker: features (1/5/15/60 min) ─► triggers ─► Gemini verdict ─► po
 - **No invented numbers.**
   - Every number the AI cites as evidence is checked against our own computed features; mismatches are dropped.
   - Reports use `{{placeholders}}` that are filled from the database.
-- **Fallbacks.** If Gemini is down or over quota, the next model is tried. If all of them fail, a rule-based "unclear" verdict applies soft defences only (3-D Secure, no refunds or blocks).
+- **Rules first.** A fraud-tier trigger switches 3-D Secure on (policy R0) before the AI is asked, so a slow or failing Gemini never leaves a burst undefended.
+- **Fallbacks.** If Gemini is down or over quota, the next model is tried; a per-model circuit breaker (shared through Postgres) skips paused models. If none answers, the verdict is the labelled rules fallback ("unclear") and the policy's R3 family decides: 3-D Secure; with a fraud signal, no sale and PayPal working, also blocking only unmistakable bot devices and holding the targeted item (R3b); notify only for a returning-customer rush (R3c) or PayPal errors (R3d). Never a refund. `AI_ENABLED=false` gives the same fallback without any call, labelled "AI disabled".
 - **Privacy.** The AI sees aggregated features plus 20 masked rows: email domain, 8-character device prefix, SKU and outcome. It never sees card numbers, names, emails or credentials.
 
 ## Setup
+
+With Docker, `docker compose up --build` at the repo root runs Postgres, the API (migrations first), the worker and the frontend (see the [top-level README](../README.md#run-it)). By hand:
 
 ```bash
 cp ../.env.example ../.env        # fill PAYPAL_CLIENT_ID/SECRET and GEMINI_API_KEY
@@ -87,6 +90,37 @@ curl -b /tmp/cg localhost:8000/dashboard/summary
 
 **Controls:** `POST /demo/reset` clears demo activity and keeps seeded history. Interactive API docs are at http://localhost:8000/docs.
 
+### Attacker terminal
+
+`scripts/attack.py` does the login and the run above, then tails the run: one line per attempt as its outcome lands (time, method, item, amount, device prefix, email domain, outcome, decline code or guard reason, `[simulated]` or `[LIVE sandbox]`), and a `>> GUARD:` line when the defender changes something (status, 3-D Secure, blocked devices, held items, refunds). It polls `/demo/runs`, `/dashboard/attempts` and `/dashboard/summary`; Ctrl-C stops the run on the server. It imports nothing from `app`, so it can point at a deployment. `flash_sale` announces a 2-hour sale window first, like the War Room button (`--no-announce-sale` to skip it).
+
+```bash
+uv run python scripts/attack.py card_testing --count 120 --speed 3
+uv run python scripts/attack.py card_testing --mode live --count 20
+uv run python scripts/attack.py flash_sale --url https://<frontend-host>/api --password <judge password>   # or ADMIN_PASSWORD=...
+```
+
+## Configuration
+
+All settings are environment variables (or `.env` at the repo root); [.env.example](../.env.example) lists them. The ones that change behaviour:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ENVIRONMENT` | `development` | `production` refuses to start with the demo `ADMIN_PASSWORD`, `SHOP_API_KEY`, or a `SESSION_SECRET` that is a known placeholder or shorter than 32 characters |
+| `AI_ENABLED` | `true` | `false`: no Gemini call at all; incidents get the rules fallback labelled "AI disabled", reports use templates, the AI pill says "Rules only · AI disabled" |
+| `DETECT_INTERVAL_S` / `REASSESS_INTERVAL_S` | `5` / `120` | Detector pass interval; minimum age of a verdict before a material change re-asks the AI (retries after failures back off 1x, 2x, 4x) |
+| `NOTIFY_WEBHOOK_URL` | empty | Also push each owner alert to a Slack incoming webhook or an ntfy topic URL (best effort) |
+| `SIMULATOR_ENABLED` | `true` | Mounts `/demo/*` |
+
+## Health
+
+| Endpoint | Answers | Used by |
+|---|---|---|
+| `GET /livez` | 200 while the process runs and the database answers, else 503 | Render `healthCheckPath`, the compose healthcheck |
+| `GET /healthz` | `{"status": "ok" \| "degraded", "db", "paypal", "ai", "stream"}`; **503** when degraded (database or PayPal OAuth failing, every Gemini model paused or the key rejected, or the live stream reconnecting). `ai: "disabled"` is not degraded | The daily GitHub Action (`.github/workflows/healthcheck.yml`), people |
+
+`stream` is the API's Postgres LISTEN connection behind the dashboard's live updates (`app/events.py`). A termination listener and a 30-second ping notice a lost connection; it reconnects with backoff (1 s doubling to 30 s) and sends dashboards a `stream.resumed` event so they refetch what they missed.
+
 ## Tests and evaluation
 
 ```bash
@@ -112,4 +146,8 @@ The pipeline tests need a local database: `createdb checkout_guard_test`.
 | `app/incidents/` | Incident lifecycle, webhook processor |
 | `app/worker/main.py` | Background loop (single instance via a Postgres advisory lock) |
 | `app/simulator/` | Labelled attack/control scenarios and seeded history |
+| `app/events.py` | Live event bus (Postgres LISTEN/NOTIFY → SSE), with reconnect |
+| `app/notify.py` | Optional alert push (`NOTIFY_WEBHOOK_URL`) |
+| `scripts/` | `attack.py` (attacker terminal), `register_webhook.py`, `eval_ai.py` (live AI eval), `spike.py` (raw sandbox behaviour) |
 | `migrations/` | Alembic |
+| `Dockerfile` | One image for the API (default command) and the worker (`python -m app.worker.main`) |

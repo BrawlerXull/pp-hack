@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: checkout_guard
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      # Tests never read .env and never call Gemini or PayPal (tests/conftest.py fails any outbound call).
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/checkout_guard_test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/checkout_guard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - name: Create the test database
+        run: PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE checkout_guard_test"
+      - name: Migrations apply and match the models
+        run: uv run alembic upgrade head && uv run alembic check
+      - run: uv run pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4  # version from package.json "packageManager"
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm lint .
+      - run: pnpm build

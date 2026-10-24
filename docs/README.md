@@ -2,7 +2,9 @@
 
 *The night guard for your PayPal checkout.* Entry for the PayPal AI Hackathon 2026. Submissions close **Nov 12, 2026, 12:00 PM PT**, and the demo must keep working until **Dec 15, 2026**.
 
-These docs are the team's source of truth until we start building. They draw on two input documents: *Checkout Guard: Idea in Simple Words* ("Idea") and *PayPal AI Hackathon: Rules & Requirements* ("Rules"). Facts we checked on PayPal, Devpost and sponsor sites on Oct 11, 2026 are marked "(Web)".
+These are the planning docs, written before we built Checkout Guard; the code has since been built and is now the source of truth. For what exists today (click path, real vs simulated, APIs, AI, policy, run and deploy) read the [top-level README](../README.md) and [backend/README.md](../backend/README.md). Where a plan below differs from the code, the code wins; [02-architecture.md](02-architecture.md) marks what is **built** and what is **planned**.
+
+The docs draw on two input documents: *Checkout Guard: Idea in Simple Words* ("Idea") and *PayPal AI Hackathon: Rules & Requirements* ("Rules"). Facts we checked on PayPal, Devpost and sponsor sites on Oct 11, 2026 are marked "(Web)".
 
 | # | Doc | What's in it |
 |---|---|---|
@@ -33,8 +35,5 @@ These docs are the team's source of truth until we start building. They draw on 
 - Message format between AG Studio's `clientToolRunner` and a Python server → P1 spike (C+B, Oct 15)
 - Team size and roles → team (today)
 
-## Note on existing code
-`checkout-guard/` already holds a Next.js scaffold, a TypeScript spike script (`scripts/spike.ts`) and a Next.js webhook route. Under the new architecture:
-- the scaffold moves to `frontend/`
-- the spike and webhook logic are rewritten in Python under `backend/` (see [05-roadmap.md](05-roadmap.md), P1)
-- the TypeScript versions will be deleted when that happens
+## Note on the original scaffold
+The first Next.js scaffold now lives in `frontend/`. The TypeScript spike and webhook route were rewritten in Python under `backend/` (`scripts/spike.py`, `app/api/webhooks.py`) and deleted.

@@ -9,7 +9,7 @@ import { fetcher, type Product } from "@/lib/api";
 
 export default function ShopPage() {
   const { data: products, error } = useSWR<Product[]>("/shop/products", fetcher);
-  const { data: config } = useSWR<{ paypal_client_id: string }>("/shop/config", fetcher);
+  const { data: config, error: configError } = useSWR<{ paypal_client_id: string }>("/shop/config", fetcher);
   const [selected, setSelected] = useState<Product | null>(null);
 
   return (
@@ -74,7 +74,13 @@ export default function ShopPage() {
       </footer>
 
       {selected && (
-        <CheckoutSheet product={selected} clientId={config?.paypal_client_id ?? null} onClose={() => setSelected(null)} />
+        <CheckoutSheet
+          product={selected}
+          // undefined while /shop/config loads; "" when the backend has no PAYPAL_CLIENT_ID.
+          clientId={config?.paypal_client_id}
+          configFailed={Boolean(configError)}
+          onClose={() => setSelected(null)}
+        />
       )}
     </div>
   );

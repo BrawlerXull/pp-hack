@@ -382,7 +382,10 @@ class IncidentService:
         triggers = list(incident.triggers or [])
         verdict_triggers = (incident.assessment_context or {}).get("verdict_triggers", triggers)
 
-        keep = not result.ai_available and cadence.has_real_verdict(incident)
+        # AI_ENABLED=false is the owner switching the AI off, not a failed re-check: the rules take over now,
+        # so blocks and refunds stop riding on a verdict the owner chose not to trust.
+        switched_off = result.fallback_reason == gemini.AI_DISABLED
+        keep = not result.ai_available and not switched_off and cadence.has_real_verdict(incident)
         if keep and (new := cadence.contradicting_triggers(incident)):
             # Guard 1: a kept verdict must not outlive new signals that contradict it.
             audit(

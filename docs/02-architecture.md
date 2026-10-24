@@ -1,16 +1,16 @@
 # 02 · Architecture
 
 ## 1. Shape of the system [R]
-There are two separately deployed apps plus a worker:
+There are two separately deployed apps plus a worker. **Status** says what the code does today (**built**) and what is still only a plan (**planned**); the [top-level README](../README.md) describes the built system.
 
-| Part | Tech | Job |
-|---|---|---|
-| **frontend/** | Next.js 16 (App Router) + TypeScript + Tailwind, AG Studio React, AG Grid, PayPal JS SDK v6 | **UI only:** the demo shop "Wick & Wax" (pages + PayPal buttons/Card Fields) and the owner dashboard (War Room, incidents, reports, settings). No PayPal secrets, no business logic. |
-| **backend/** (API) | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 (async) + Alembic, httpx, Google Gen AI SDK (`google-genai`) | Everything else: shop order API, guard check, webhooks, PayPal client, AI analyst, policy engine, action executor, reports, dashboard API + live stream, Studio agent endpoint |
-| **backend/worker** | Same Python package, separate process | Detector loop, incident re-assessment, webhook processing, de-escalation, baseline refresh (Transaction Search) |
-| **simulator/** | Python CLI (Typer) | Labelled-simulation attacker and scenarios (card testing, account testing, slow drip, flash sale, outage, normal night) |
-| **eval/** | Python (pytest-style harness) | Replays scenarios and scores detector + AI |
-| Postgres | Render Postgres (paid) | The single store; no Redis needed for the MVP |
+| Part | Tech | Job | Status |
+|---|---|---|---|
+| **frontend/** | Next.js 16 (App Router) + TypeScript + Tailwind, AG Grid + AG Charts (Community), PayPal JS SDK v6 | **UI only:** the demo shop "Wick & Wax" and the owner dashboard (War Room, incidents, reports, settings, Demo lab). No PayPal secrets, no business logic | **Built** with the PayPal button (wallet). **Planned:** Card Fields in the shop, AG Studio |
+| **backend/** (API) | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 (async) + Alembic, httpx, Google Gen AI SDK (`google-genai`) | Shop order API, guard check (also public as `POST /v1/guard/check`), webhooks, PayPal client, AI analyst, policy engine, action executor, reports, dashboard API + live stream (Postgres LISTEN/NOTIFY → SSE) | **Built.** **Planned:** Studio agent endpoint |
+| **backend/worker** | Same Python package, separate process (`python -m app.worker.main`) | Webhook processing, detector loop, incident re-assessment, de-escalation, device-block expiry, in-flight refund sweeper, heartbeat | **Built.** The baseline comes from the shop's own attempts (seeded history in the demo). **Planned:** baseline refresh from Transaction Search |
+| **Simulator** | Inside the backend (`app/simulator/`), driven from the Demo lab, `/demo/*` and `scripts/attack.py` (Typer) | Labelled attacker and control scenarios: card testing, account testing, slow drip, flash sale, outage, normal night | **Built** (offline, and live sandbox for card scenarios) |
+| **Evaluation** | `scripts/eval_ai.py` + the pytest suite | Scores the live analyst on attack vs rush vs outage; the tests replay the pipeline end to end with PayPal and Gemini mocked | **Built** |
+| Postgres | Render Postgres (paid) | The single store; no Redis | **Built** (docker compose locally, `render.yaml` for Render) |
 
 **Why a separate Python backend:**
 - It keeps the product (the guard) apart from the UI.
@@ -214,13 +214,20 @@ checkout-guard/
   - The flash-sale scenario is a required test.
 
 ## 8. Real vs simulated (state this in the README and video)
-- **Real (sandbox):**
-  - PayPal orders, captures, declines (`CCREJECT-*` triggers), 3DS, refunds, webhooks, Transaction Search, sandbox disputes
-  - Gemini calls
-  - AG Studio
-  - Render
-- **Simulated, labelled on screen:**
+- **Real (sandbox) — built:**
+  - PayPal OAuth, orders and captures (Orders v2), declines (`CCREJECT-*` triggers, live simulation mode), 3-D Secure (`SCA_ALWAYS`), refunds, webhooks with signature verification
+  - Sandbox disputes: `CUSTOMER.DISPUTE.*` webhooks are handled (a disputed capture is never refunded automatically)
+  - Gemini calls (analyst and report writer)
+  - Render (Blueprint in `render.yaml`)
+- **Real — planned, not built:**
+  - Transaction Search (the baseline uses the shop's own attempts and seeded history)
+  - The Disputes API (we only consume dispute webhooks)
+  - PayPal Card Fields in the shop (card attempts come from the simulator)
+  - AG Studio and the Studio agent (the dashboard uses AG Grid + AG Charts Community)
+- **Simulated, labelled on screen (SIM badge, `source=simulator` / `seed`):**
   - the attacker
-  - "stolen" credentials (sandbox test cards and buyer accounts)
+  - "stolen" credentials (sandbox test cards and synthetic buyers)
+  - offline mode: no PayPal call, synthesised outcomes (`paypal_live=false`)
   - the outage scenario (injected errors)
   - seeded baseline history
+  - the owner's phone on the War Room (a mock-up showing the real alert texts; `NOTIFY_WEBHOOK_URL` pushes them to Slack or ntfy for real)
