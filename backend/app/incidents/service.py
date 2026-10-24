@@ -15,6 +15,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import notify
 from app.actions.executor import Executor
 from app.ai import analyst, gemini, reporter
 from app.db.audit import audit
@@ -425,6 +426,7 @@ class IncidentService:
                 confidence=v.confidence,
                 model=result.model_id,
                 dropped_evidence=result.dropped_evidence,
+                numbers_replaced=result.numbers_replaced,
                 first=reason == "first_verdict",
                 reask=reason,
             )
@@ -435,10 +437,13 @@ class IncidentService:
             verdict_triggers=verdict_triggers,
         )
 
-    async def write_report(self, incident: Incident, skip_ai: bool = False) -> Report | None:
+    async def write_report(
+        self, incident: Incident, skip_ai: bool = False, notify_owner: bool = True
+    ) -> Report | None:
         """Commits twice: facts are read in one transaction, Gemini drafts with none open, and the report
         is upserted in another (an upsert: the worker and the owner's regenerate can race). None when the
-        incident was closed while drafting: the close writes the final report."""
+        incident was closed while drafting: the close writes the final report. notify_owner=False (the
+        owner's own regenerate) neither records an alert in the history nor pushes it to the webhook."""
         await self.s.refresh(
             incident
         )  # expire_on_commit=False: the owner may have closed it since we read it
@@ -467,8 +472,13 @@ class IncidentService:
             audit(self.s, "ai", "ai.usage", incident.id, purpose="report", calls=calls)
         report = await self.s.get(Report, incident.id, populate_existing=True)
         assert report is not None
+        if notify_owner:
+            # The alert history (GET /dashboard/alerts): every alert the owner was sent, with its text.
+            audit(self.s, "system", "alert.sent", incident.id, text=report.alert_text, model_id=model_id)
         await publish(self.s, "alert", {"incident_id": incident.id, "text": report.alert_text})
         await self.s.commit()
+        if notify_owner:
+            notify.send(report.alert_text or "", incident.id)  # after commit, in the background
         return report
 
     async def close(self, incident: Incident, rule: str) -> None:

@@ -33,6 +33,7 @@ All endpoints are FastAPI routes. The OpenAPI schema is exported at build time, 
 | GET | `/dashboard/incidents/{id}/report`, `/evidence` | Markdown (+ PDF) |
 | POST | `/dashboard/incidents/{id}/actions/{action_id}/approve` | Owner approval of a queued refund. 409 `{code: "disputed"}` for a disputed payment (a refund on top of a chargeback pays the buyer twice) unless the body is `{"override_dispute": true}` |
 | POST | `/dashboard/incidents/{id}/actions/{action_id}/reject` | Owner "Keep": the payment is never refunded by this or any later incident |
+| GET | `/dashboard/alerts?limit=` | Alert history, newest first (audit `alert.sent`: incident, time, text) |
 | GET | `/dashboard/devices` | Blocked and owner-trusted devices in force, with reason, incident and expiry |
 | POST | `/dashboard/devices/{fingerprint}/unblock` | Release the block and trust the device (left out of the attack signature and refund matching, so enforcement does not re-block it) |
 | POST | `/dashboard/incidents/{id}/undo` | Turn SCA off, unblock, end incident |

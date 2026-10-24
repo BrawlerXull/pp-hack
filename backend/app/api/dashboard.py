@@ -166,6 +166,32 @@ async def incidents(shop_id: OwnerShop, session: Session, limit: int = 50) -> li
     return [incident_event(i) for i in rows]
 
 
+@router.get("/alerts")
+async def alerts(
+    shop_id: OwnerShop, session: Session, limit: Annotated[int, Query(ge=1, le=500)] = 50
+) -> list[dict[str, Any]]:
+    """Alert history, newest first: every alert the owner was sent (audit `alert.sent`), with its text."""
+    rows = (
+        await session.execute(
+            select(AuditLog)
+            .join(Incident, Incident.id == AuditLog.incident_id)
+            .where(AuditLog.event == "alert.sent", Incident.shop_id == shop_id)
+            .order_by(AuditLog.id.desc())
+            .limit(limit)
+        )
+    ).scalars()
+    return [
+        {
+            "id": r.id,
+            "ts": r.ts,
+            "incident_id": r.incident_id,
+            "text": r.data.get("text"),
+            "model_id": r.data.get("model_id"),
+        }
+        for r in rows
+    ]
+
+
 @router.get("/incidents/{incident_id}")
 async def incident_detail(incident_id: str, shop_id: OwnerShop, session: Session) -> dict[str, Any]:
     inc = await _incident_or_404(session, shop_id, incident_id)
@@ -327,7 +353,7 @@ async def regenerate_report(
     await session.commit()
     report = await IncidentService(
         session, paypal, timedelta(seconds=settings.reassess_interval_s)
-    ).write_report(inc)
+    ).write_report(inc, notify_owner=False)  # the owner asked: no push, not a new alert
     if report is None:
         raise HTTPException(409, "the incident was closed meanwhile; its final report is being written")
     return {"alert_text": report.alert_text, "model_id": report.model_id}

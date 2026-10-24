@@ -642,8 +642,9 @@ async def test_the_report_never_says_no_action_needed_while_a_refund_is_unconfir
 
     assert model_id == "template" and "No action needed" not in texts["alert_text"]
     assert "1 refunds were not confirmed by PayPal" in texts["alert_text"]
-    assert f"| {b.capture_id} | $3.10 | not refunded (check in PayPal) |" in texts["evidence_md"]
+    # Offline-simulated captures are labelled as such in the evidence pack's transactions table.
+    assert f"| {b.capture_id} (simulated) | $3.10 | not refunded (check in PayPal) |" in texts["evidence_md"]
     assert (
-        f"| {a.capture_id} | $3.10 | refunded | device used several cards or accounts |"
+        f"| {a.capture_id} (simulated) | $3.10 | refunded | device used several cards or accounts |"
         in texts["evidence_md"]
     )

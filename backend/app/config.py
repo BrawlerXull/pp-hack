@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     detect_interval_s: float = 5.0
     reassess_interval_s: float = 120.0
 
+    # Optional: also push each owner alert to a Slack incoming webhook or an ntfy topic URL (app/notify.py).
+    notify_webhook_url: str = ""
+    notify_timeout_s: float = 3.0
+
     spike_output_dir: str = "spike-output"
 
     @field_validator("database_url")
