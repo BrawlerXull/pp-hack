@@ -16,7 +16,7 @@ Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox*
 
 ### Click path (about 5 minutes)
 
-1. **Shop** (`/`): the demo store "Wick & Wax". *Buy now* opens a real PayPal sandbox checkout (JS SDK v6 PayPal button). Log in with the sandbox buyer above. The backend runs the guard check before it creates the order.
+1. **Shop** (`/`): the demo store "Wick & Wax". *Buy now* opens a real PayPal sandbox checkout (JS SDK v6): the PayPal button (log in with the sandbox buyer above) or **Pay by card** (PayPal-hosted card fields; the sheet lists sandbox test cards). The backend runs the guard check before it creates the order. After an attack has switched 3-D Secure on, pay by card with `4868719166101368` (the bank challenge passes and the payment goes through) and with `4868719181895556` (the challenge fails: not charged, and the War Room shows **3-D Secure failed**).
 2. **Shop owner → log in** with the judge password. You land on the **War Room**.
 3. If the War Room has no normal history to compare against, open **Demo lab → Seed 28 days of normal history** once.
 4. **War Room → Simulate card-testing attack** (120 offline attempts at 3x speed). Watch:
@@ -39,7 +39,7 @@ Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox*
 | Real (PayPal sandbox, live services) | Simulated, and labelled on screen |
 |---|---|
 | PayPal OAuth, order creation and capture (Orders v2), 3-D Secure (`SCA_ALWAYS`) on card orders while the guard is in 3-D Secure mode, refunds (Payments v2), webhook signature verification | The attacker: scenario scripts in `backend/app/simulator/`, rows tagged `source=simulator` and shown with a **SIM** badge |
-| Shop checkout with the PayPal button (sandbox buyer accounts) | "Stolen" credentials: sandbox test cards and synthetic buyers |
+| Shop checkout with the PayPal button (sandbox buyer accounts) or **Pay by card** (PayPal-hosted Card Fields, sandbox test cards; the bank's 3-D Secure result is checked on our server before capture) | "Stolen" credentials: sandbox test cards and synthetic buyers |
 | **Live** simulation mode: real sandbox orders with sandbox test cards; declines come from PayPal's `CCREJECT-*` name triggers | **Offline** simulation mode: no PayPal call, the outcome is synthesised and stored with `paypal_live=false` (the default mode, and the War Room buttons use it) |
 | Gemini calls (explanations, tie-break second opinions, report writer) | The PayPal outage scenario (injected processor errors; offline only) |
 | Postgres, worker, live dashboard (server-sent events) | 28 days of seeded "normal" history (`source=seed`) |
@@ -53,8 +53,9 @@ All calls go to `https://api-m.sandbox.paypal.com`. The backend refuses to start
 | API | Endpoint | Used for |
 |---|---|---|
 | OAuth 2.0 | `POST /v1/oauth2/token` | Server access token, cached until it expires |
-| Client token (JS SDK v6) | `POST /v1/oauth2/token` with `response_type=client_token` | Browser-safe token for the shop's PayPal button (`/shop/client-token`) |
-| Orders v2 | `POST /v2/checkout/orders`, `POST /v2/checkout/orders/{id}/capture`, `GET /v2/checkout/orders/{id}` | Every checkout. We send `PayPal-Request-Id` for idempotency, a `custom_id` that links webhooks to attempts, and 3-D Secure `SCA_ALWAYS` on card orders while the guard is in 3-D Secure mode |
+| Client token (JS SDK v6) | `POST /v1/oauth2/token` with `response_type=client_token` | Browser-safe token that loads the shop's PayPal button and Card Fields (`/shop/client-token`). Without it the PayPal button still loads with the public client id and card payments are switched off |
+| JS SDK v6 Card Fields | `components: ["paypal-payments", "card-fields"]`, `usePayPalCardFieldsOneTimePaymentSession().submit(orderId)` | **Pay by card** in the shop. PayPal hosts the number, expiry and CVV inputs (iframes) and runs the bank's 3-D Secure window; the card number goes from the browser to PayPal and never reaches our server |
+| Orders v2 | `POST /v2/checkout/orders`, `POST /v2/checkout/orders/{id}/capture`, `GET /v2/checkout/orders/{id}` | Every checkout. We send `PayPal-Request-Id` for idempotency, a `custom_id` that links webhooks to attempts, and on card orders `payment_source.card.attributes.verification.method`: `SCA_ALWAYS` while the guard is in 3-D Secure mode (and for the simulator's cards then), else `SCA_WHEN_REQUIRED` for browser cards. A browser card order carries no card data. Before capturing it we `GET` the order and read `payment_source.card.authentication_result` (liability shift, 3-D Secure enrollment and authentication status) plus the brand, last 4 and BIN |
 | Payments v2 refunds | `POST /v2/payments/captures/{id}/refund` | Capped refunds of matched attack captures. Each refund has a stable `PayPal-Request-Id`, so a re-send after a crash is made exactly once |
 | Webhooks | `POST /v1/notifications/verify-webhook-signature` | Every incoming event is verified against the raw request body. Unverified events are stored but never acted on |
 | Webhook management | `GET/POST/PATCH /v1/notifications/webhooks` | `scripts/register_webhook.py` only, at setup time |
@@ -208,7 +209,7 @@ uv run python scripts/attack.py flash_sale --url https://<frontend-host>/api --p
 | Dashboard on AG Grid + AG Charts (Community) | **Built** |
 | Docker compose, Render Blueprint, CI, daily health check, attacker terminal | **Built** |
 | Transaction Search (baseline from real PayPal history instead of the seeded one) | Planned |
-| PayPal Card Fields in the shop (card payments today come only from the simulator) | Planned |
+| PayPal Card Fields in the shop with server-checked 3-D Secure (`sca_failed` outcome) | **Built**, covered by tests against the sandbox double; the real-browser sandbox run is still to do ([docs/sandbox-findings.md](docs/sandbox-findings.md)) |
 | AG Studio dashboard and the Studio agent | Planned |
 | Device/payer graph clustering, and a small trained model once there is labelled real attack data (none today) | Planned |
 

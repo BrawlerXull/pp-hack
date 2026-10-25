@@ -45,6 +45,7 @@ export const OUTCOME_META: Record<Outcome, { label: string; tone: Tone; color: s
   blocked: { label: "Blocked", tone: "bad", color: "#dc2626" },
   challenged: { label: "Challenged", tone: "bad", color: "#f97316" },
   sca_required: { label: "3-D Secure", tone: "info", color: "#2563eb" },
+  sca_failed: { label: "3-D Secure failed", tone: "bad", color: "#1e3a8a" },
   refunded: { label: "Refunded", tone: "info", color: "#0891b2" },
 };
 

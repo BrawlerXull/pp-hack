@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.paypal.client import PayPalClient, PayPalResponse
+from app.paypal.three_ds import CardInfo, parse_card
 
 
 @dataclass
@@ -25,9 +26,13 @@ def order_payload(
     custom_id: str,
     card: CardDetails | None = None,
     force_sca: bool = False,
+    card_fields: bool = False,
     return_url: str | None = None,
     cancel_url: str | None = None,
 ) -> dict[str, Any]:
+    """`card_fields`: a browser card order. It carries no card data (PayPal's hosted Card Fields send the
+    number straight to PayPal on submit), only the 3-D Secure method: SCA_ALWAYS while the guard requires
+    it, else SCA_WHEN_REQUIRED (the bank decides)."""
     payload: dict[str, Any] = {
         "intent": "CAPTURE",
         "purchase_units": [
@@ -47,7 +52,13 @@ def order_payload(
             "security_code": card.security_code,
             "name": card.name,
         }
-    if force_sca:
+    if card_fields:
+        card_source = {
+            "attributes": {"verification": {"method": "SCA_ALWAYS" if force_sca else "SCA_WHEN_REQUIRED"}}
+        }
+        if return_url and cancel_url:
+            card_source["experience_context"] = {"return_url": return_url, "cancel_url": cancel_url}
+    elif force_sca:
         # Per-order 3-D Secure: SCA_ALWAYS asks the issuer to authenticate every eligible card.
         card_source = card_source or {}
         card_source["attributes"] = {"verification": {"method": "SCA_ALWAYS"}}
@@ -71,6 +82,8 @@ class OrderResult:
     latency_ms: int
     payer_action_url: str | None = None
     processor_code: str | None = None  # processor_response.response_code of a declined capture
+    # payment_source.card: brand, last 4, BIN and the 3-D Secure result (never the number).
+    card: CardInfo | None = None
 
 
 def parse_order(res: PayPalResponse) -> OrderResult:
@@ -96,6 +109,7 @@ def parse_order(res: PayPalResponse) -> OrderResult:
             (link["href"] for link in body.get("links", []) if link.get("rel") == "payer-action"), None
         ),
         processor_code=processor_code,
+        card=parse_card(body.get("payment_source")),
     )
 
 

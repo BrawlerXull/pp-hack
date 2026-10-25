@@ -77,13 +77,21 @@ class FeatureKey(StrEnum):
     SLOW_DECLINE_CUSUM = "slow_decline_cusum"
 
 
-def card_key(bin6: str | None, last4: str | None, expiry: str | None) -> str | None:
+# Outcomes that mean "stopped by 3-D Secure" (the sca_required feature).
+SCA_STOPPED = frozenset({Outcome.SCA_REQUIRED, Outcome.SCA_FAILED})
+
+
+def card_key(bin6: str | None, last4: str | None, expiry: str | None, brand: str | None = None) -> str | None:
     """Identity of a card for unique-card counts. Expiry is part of it on purpose: card testers try
     many expiry dates against one number, and each guess is a separate credential to the issuer.
-    A shopper whose card is reissued counts as a new card once, which is harmless."""
-    if not bin6 or not last4:
+    A shopper whose card is reissued counts as a new card once, which is harmless.
+    A browser card (Card Fields) is known only by what PayPal returns: when PayPal sends no BIN, the brand
+    stands in for it. Two cards of one brand sharing the last 4 then count as one, which only ever
+    under-counts cards (never invents card cycling)."""
+    prefix = bin6 or (f"{brand}*" if brand else None)
+    if not prefix or not last4:
         return None
-    return f"{bin6}{last4}:{expiry}" if expiry else f"{bin6}{last4}"
+    return f"{prefix}{last4}:{expiry}" if expiry else f"{prefix}{last4}"
 
 
 def card_number(key: str) -> str:
@@ -100,7 +108,7 @@ class AttemptRow:
     method: str
     fingerprint_hash: str
     email_domain: str | None
-    card_key: str | None  # card_key(): bin6+last4+expiry, never the full number
+    card_key: str | None  # card_key(): bin6 (or brand)+last4+expiry, never the full number
     payer_id_hash: str | None
     outcome: str
     decline_code: str | None
@@ -332,7 +340,9 @@ def compute(rows: list[AttemptRow], window_min: int, now: datetime, baseline: Ba
     f.captured = len(captured)
     f.captured_amount = sum(r.amount for r in captured)
     f.blocked_or_challenged = sum(r.outcome in {Outcome.BLOCKED, Outcome.CHALLENGED} for r in w)
-    f.sca_required = sum(r.outcome == Outcome.SCA_REQUIRED for r in w)
+    # Stopped by 3-D Secure: a bot's card order left waiting for the bank's check, or a browser card whose
+    # check failed or was cancelled. Not a decline (a real shopper meets both), and never flags a device.
+    f.sca_required = sum(r.outcome in SCA_STOPPED for r in w)
 
     fps = Counter(r.fingerprint_hash for r in w)
     f.unique_fingerprints = len(fps)

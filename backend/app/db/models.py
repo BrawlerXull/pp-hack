@@ -63,6 +63,9 @@ class Outcome(StrEnum):
     BLOCKED = "blocked"  # stopped by the guard before reaching PayPal
     CHALLENGED = "challenged"
     SCA_REQUIRED = "sca_required"  # 3DS step-up required; bots never complete it
+    # A browser card order whose 3-D Secure check did not pass (failed, cancelled, or no liability shift when
+    # the guard required it): not captured. app/paypal/three_ds.py decides.
+    SCA_FAILED = "sca_failed"
     REFUNDED = "refunded"
 
 
@@ -189,6 +192,13 @@ class CheckoutAttempt(Base):
     card_last4: Mapped[str | None] = mapped_column(String(4))
     # YYYY-MM. Part of the card key, so expiry guessing on one card number counts as new cards.
     card_expiry: Mapped[str | None] = mapped_column(String(7))
+    # From PayPal's answer for browser card orders (Card Fields): the number itself never reaches us.
+    card_brand: Mapped[str | None] = mapped_column(String(20))
+    # PayPal's payment_source.card.authentication_result: liability_shift (YES/POSSIBLE/NO/UNKNOWN) and the
+    # 3-D Secure enrollment_status / authentication_status letters. NULL when 3-D Secure did not run.
+    sca_liability_shift: Mapped[str | None] = mapped_column(String(10))
+    sca_enrollment: Mapped[str | None] = mapped_column(String(2))
+    sca_auth_status: Mapped[str | None] = mapped_column(String(2))
     guard_decision: Mapped[str] = mapped_column(String(20))
     guard_reason: Mapped[str | None] = mapped_column(String(60))
     paypal_order_id: Mapped[str | None] = mapped_column(String(40), index=True)

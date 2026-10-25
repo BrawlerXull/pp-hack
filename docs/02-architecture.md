@@ -5,7 +5,7 @@ There are two separately deployed apps plus a worker. **Status** says what the c
 
 | Part | Tech | Job | Status |
 |---|---|---|---|
-| **frontend/** | Next.js 16 (App Router) + TypeScript + Tailwind, AG Grid + AG Charts (Community), PayPal JS SDK v6 | **UI only:** the demo shop "Wick & Wax" and the owner dashboard (War Room, incidents, reports, settings, Demo lab). No PayPal secrets, no business logic | **Built** with the PayPal button (wallet). **Planned:** Card Fields in the shop, AG Studio |
+| **frontend/** | Next.js 16 (App Router) + TypeScript + Tailwind, AG Grid + AG Charts (Community), PayPal JS SDK v6 | **UI only:** the demo shop "Wick & Wax" and the owner dashboard (War Room, incidents, reports, settings, Demo lab). No PayPal secrets, no business logic | **Built** with the PayPal button (wallet) and PayPal-hosted Card Fields (Pay by card, 3-D Secure checked on our server; real-browser sandbox run still to do). **Planned:** AG Studio |
 | **backend/** (API) | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 (async) + Alembic, httpx, Google Gen AI SDK (`google-genai`) | Shop order API, guard check (also public as `POST /v1/guard/check`), webhooks, PayPal client, scorecard classifier, AI explainer, policy engine, action executor, reports, dashboard API + live stream (Postgres LISTEN/NOTIFY → SSE) | **Built.** **Planned:** Studio agent endpoint |
 | **backend/worker** | Same Python package, separate process (`python -m app.worker.main`) | Webhook processing, detector loop, incident re-assessment, de-escalation, device-block expiry, in-flight refund sweeper, heartbeat | **Built.** The baseline comes from the shop's own attempts (seeded history in the demo). **Planned:** baseline refresh from Transaction Search |
 | **Simulator** | Inside the backend (`app/simulator/`), driven from the Demo lab, `/demo/*` and `scripts/attack.py` (Typer) | Labelled attacker and control scenarios: card testing, account testing, slow drip, flash sale, outage, normal night | **Built** (offline, and live sandbox for card scenarios) |
@@ -102,8 +102,8 @@ flowchart LR
    - `allow_with_sca`
    - `challenge`
    - `block`
-3. On `allow_with_sca`, the shop sets `payment_source.card.attributes.verification.method = "SCA_ALWAYS"` on the order (Web). On `block` or `challenge`, it returns 403/428 to the browser.
-4. The shop creates and captures through PayPal, then writes a `checkout_attempts` row with the outcome and decline code.
+3. On `allow_with_sca`, the shop sets `payment_source.card.attributes.verification.method = "SCA_ALWAYS"` on the order (Web); other browser card orders get `SCA_WHEN_REQUIRED`. On `block` or `challenge`, it returns 403/428 to the browser.
+4. The shop creates and captures through PayPal, then writes a `checkout_attempts` row with the outcome and decline code. A browser card order (Card Fields) is captured only after our server read the bank's 3-D Secure result from the order (`app/paypal/three_ds.py`); a failed or cancelled check is stored as `sca_failed` and never captured.
    - **Our own logs are the main signal**, because decline webhooks are unconfirmed (Web).
 
 ### 3.2 Webhook
@@ -205,7 +205,7 @@ checkout-guard/
   - Refund caps (per transaction and per incident) apply; above them the owner must approve. A kill switch exists.
   - Refunds only for captures that match the incident's deterministic signature.
 - **Card data:**
-  - Real checkouts use PayPal-hosted Card Fields, so card numbers never touch our servers.
+  - Real card checkouts use PayPal-hosted Card Fields, so card numbers never touch our servers: the order we create carries only the 3-D Secure method, and we store the brand, last 4 and BIN that PayPal returns.
   - Only the **simulator** sends *sandbox test* card numbers server-side, and the backend rejects that path unless the base URL contains `sandbox`.
 - **False positives:**
   - Soft first (3DS), then challenge, then block.
@@ -216,13 +216,13 @@ checkout-guard/
 ## 8. Real vs simulated (state this in the README and video)
 - **Real (sandbox) — built:**
   - PayPal OAuth, orders and captures (Orders v2), declines (`CCREJECT-*` triggers, live simulation mode), 3-D Secure (`SCA_ALWAYS`), refunds, webhooks with signature verification
+  - Shop card payments through PayPal-hosted Card Fields (JS SDK v6) with the 3-D Secure result checked server-side before capture (tested against the sandbox double; the real-browser sandbox run is still to do)
   - Sandbox disputes: `CUSTOMER.DISPUTE.*` webhooks are handled (a disputed capture is never refunded automatically)
   - Gemini calls (explanations, tie-breaks, report writer)
   - Render (Blueprint in `render.yaml`)
 - **Real — planned, not built:**
   - Transaction Search (the baseline uses the shop's own attempts and seeded history)
   - The Disputes API (we only consume dispute webhooks)
-  - PayPal Card Fields in the shop (card attempts come from the simulator)
   - AG Studio and the Studio agent (the dashboard uses AG Grid + AG Charts Community)
 - **Simulated, labelled on screen (SIM badge, `source=simulator` / `seed`):**
   - the attacker

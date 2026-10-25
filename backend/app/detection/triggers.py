@@ -242,6 +242,6 @@ def signature(
 def quiet_since(rows: list[AttemptRow], now: datetime, minutes: int) -> bool:
     """True when there are no suspicious events in the last `minutes` (used for de-escalation)."""
     start = now - timedelta(minutes=minutes)
-    bad = {Outcome.DECLINED, Outcome.BLOCKED, Outcome.CHALLENGED, Outcome.SCA_REQUIRED}
+    bad = {Outcome.DECLINED, Outcome.BLOCKED, Outcome.CHALLENGED, Outcome.SCA_REQUIRED, Outcome.SCA_FAILED}
     recent_bad = sum(1 for r in rows if r.ts > start and r.outcome in bad)
     return recent_bad <= 1

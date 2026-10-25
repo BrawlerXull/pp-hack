@@ -272,7 +272,13 @@ async def gather_facts(session: AsyncSession, incident: Incident) -> dict[str, A
     attempts = sum(counts.values())
     stopped = sum(
         counts.get(o, 0)
-        for o in (Outcome.BLOCKED, Outcome.CHALLENGED, Outcome.SCA_REQUIRED, Outcome.DECLINED)
+        for o in (
+            Outcome.BLOCKED,
+            Outcome.CHALLENGED,
+            Outcome.SCA_REQUIRED,
+            Outcome.SCA_FAILED,
+            Outcome.DECLINED,
+        )
     )
     status = ai_status(incident)
     return {
@@ -290,7 +296,8 @@ async def gather_facts(session: AsyncSession, incident: Incident) -> dict[str, A
         "stopped": str(stopped),
         "declined": str(counts.get(Outcome.DECLINED, 0)),
         "blocked": str(counts.get(Outcome.BLOCKED, 0) + counts.get(Outcome.CHALLENGED, 0)),
-        "sca_required": str(counts.get(Outcome.SCA_REQUIRED, 0)),
+        # Stopped by 3-D Secure: bot orders left at the bank's check, and browser cards that failed it.
+        "sca_required": str(counts.get(Outcome.SCA_REQUIRED, 0) + counts.get(Outcome.SCA_FAILED, 0)),
         "got_through": str(counts.get(Outcome.CAPTURED, 0) + counts.get(Outcome.REFUNDED, 0)),
         "refunded_count": str(len(refunds)),
         "refunded_total": f"${refunded_total:.2f}",
@@ -649,7 +656,8 @@ async def compose(
             if incident.closed_at
             else "ongoing: defences are active right now",
             "outcome_definitions": "declined = refused by the bank; blocked = stopped by Checkout Guard "
-            "before reaching PayPal; sca_required = stopped by the 3-D Secure check",
+            "before reaching PayPal; sca_required = stopped by the 3-D Secure check (never verified, or "
+            "the bank's verification failed or was cancelled)",
             "recommended_only": facts["recommended_only"] or "none",
             "disputes": "some payments have an open dispute"
             if _nonzero(facts, "disputed_count")

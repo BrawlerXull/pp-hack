@@ -59,6 +59,7 @@ export type Outcome =
   | "blocked"
   | "challenged"
   | "sca_required"
+  | "sca_failed"
   | "refunded";
 
 export type CheckoutResult = {
@@ -70,6 +71,17 @@ export type CheckoutResult = {
   order_status: string | null;
   capture_id: string | null;
   decline_code: string | null;
+};
+
+// POST /shop/orders/{id}/capture. liability_shift: the bank's 3-D Secure answer for a card (YES, POSSIBLE,
+// NO, UNKNOWN), null when 3-D Secure did not run.
+export type CaptureResult = {
+  order_id: string;
+  outcome: Outcome;
+  capture_id: string | null;
+  decline_code: string | null;
+  decline_category: string | null;
+  liability_shift: string | null;
 };
 
 export type Classification = "card_testing" | "account_testing" | "genuine_rush" | "paypal_outage" | "unclear";
@@ -217,6 +229,8 @@ export type Attempt = {
   capture_id?: string | null;
   refund_id?: string | null;
   card_last4?: string | null;
+  card_brand?: string | null;
+  sca_liability_shift?: string | null;
 };
 
 // t: bucket start (bucket_s wide). minute: the same, older name.

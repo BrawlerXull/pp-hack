@@ -43,8 +43,19 @@ function SourceCell({ data }: ICellRendererParams<Attempt>) {
 /** The guard's reason for its decision, and PayPal's decline code when it got that far. */
 function whyText(a: Attempt): string {
   const guard = a.guard_reason ? (GUARD_REASON_LABEL[a.guard_reason] ?? a.guard_reason) : "";
+  if (a.outcome === "sca_failed") {
+    const bank = `Bank check failed${a.sca_liability_shift ? ` (liability shift ${a.sca_liability_shift})` : ""}`;
+    return a.guard_reason && a.guard_reason !== "normal" ? `${guard} · ${bank}` : bank;
+  }
   if (a.decline_code) return a.guard_reason && a.guard_reason !== "normal" ? `${guard} · PayPal: ${a.decline_code}` : `PayPal: ${a.decline_code}`;
   return guard;
+}
+
+/** "Card · VISA 1368" when PayPal told us the brand and last 4 (never the number). */
+function methodText(a: Attempt | undefined): string {
+  if (!a) return "";
+  if (a.method === "wallet") return "PayPal";
+  return [a.card_brand, a.card_last4].some(Boolean) ? `Card · ${[a.card_brand, a.card_last4].filter(Boolean).join(" ")}` : "Card";
 }
 
 export default function AttemptsGrid({ rows, height = 420 }: { rows: Attempt[]; height?: number }) {
@@ -54,7 +65,7 @@ export default function AttemptsGrid({ rows, height = 420 }: { rows: Attempt[]; 
       { field: "outcome", headerName: "Outcome", width: 135, cellRenderer: OutcomeCell, filter: true },
       { field: "sku", headerName: "Item", width: 140, valueFormatter: (p) => SKU_NAME[p.value] ?? p.value, filter: true },
       { field: "amount", headerName: "Amount", width: 90, valueFormatter: (p) => `$${p.value}`, type: "rightAligned" },
-      { field: "method", headerName: "Method", width: 90, valueFormatter: (p) => (p.value === "wallet" ? "PayPal" : "Card") },
+      { field: "method", headerName: "Method", width: 140, valueGetter: (p) => methodText(p.data) },
       { field: "email_domain", headerName: "Email domain", flex: 1, minWidth: 150, filter: true },
       { field: "fingerprint", headerName: "Device", width: 100, cellClass: "font-mono text-xs" },
       { colId: "why", headerName: "Why", width: 230, valueGetter: (p) => (p.data ? whyText(p.data) : ""), tooltipValueGetter: (p) => (p.data ? whyText(p.data) : ""), filter: true },

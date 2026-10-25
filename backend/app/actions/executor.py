@@ -303,7 +303,13 @@ class Executor:
                 await self.s.commit()
                 continue
             total = await self._refunded_total(incident)
-            sca_passed = attempt.guard_decision == Decision.ALLOW_WITH_SCA
+            # Passed 3-D Secure: captured under the guard's SCA_ALWAYS, or a browser card whose cardholder the
+            # bank verified (liability YES) in normal mode. A bot can't pass the bank's challenge, so these
+            # are never auto-refunded. POSSIBLE is not enough here: it usually means attempts processing
+            # (issuer not participating, nobody challenged), which a bot with a stolen card can reach.
+            sca_passed = (
+                attempt.guard_decision == Decision.ALLOW_WITH_SCA or attempt.sca_liability_shift == "YES"
+            )
             params = {
                 "attempt_id": attempt.id,
                 "capture_id": attempt.capture_id,

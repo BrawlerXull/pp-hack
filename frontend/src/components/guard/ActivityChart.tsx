@@ -8,7 +8,7 @@ import { OUTCOME_META } from "@/lib/format";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
-const SERIES: Outcome[] = ["captured", "declined", "sca_required", "challenged", "blocked", "error", "refunded"];
+const SERIES: Outcome[] = ["captured", "declined", "sca_required", "sca_failed", "challenged", "blocked", "error", "refunded"];
 
 // A moment worth a vertical line on the chart: incident opened, 3-D Secure on, devices blocked.
 // Callers memoize the array: a new one each render redraws the chart.
