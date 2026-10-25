@@ -28,7 +28,8 @@ from app.db.models import (
     Incident,
     Outcome,
 )
-from app.incidents.cadence import RULES_FALLBACK
+from app.incidents.cadence import RULES_FALLBACK, TEMPLATE
+from app.incidents.decision import DECIDED_BY_AGREE, DECIDED_BY_DISAGREE
 from app.shop.catalog import PRODUCTS
 
 LABELS = {
@@ -44,7 +45,7 @@ DEFENCE_TEXT = {
     ActionType.BLOCK_FP: "blocked the devices showing card-testing behaviour",
     ActionType.HOLD_SKU: "paused first-time checkouts of the targeted item",
     # Also planned for a confident paypal_outage verdict, so it must not claim the shoppers were genuine.
-    ActionType.RELAX: "switched the extra checks off again once the AI judged it was not fraud",
+    ActionType.RELAX: "switched the extra checks off again once Checkout Guard judged it was not fraud",
 }
 NO_DEFENCES = "no defences were needed"
 # The alert's wording when the full DEFENCE_TEXT would not fit a phone notification.
@@ -65,10 +66,10 @@ RECOMMENDED_TEXT = {
 # told "no action needed".
 STRONG_DEFENCES = {ActionType.BLOCK_FP, ActionType.HOLD_SKU}
 AI_STATUS = {
-    "live": "live AI verdict",
-    "kept": "kept previous verdict: the AI's latest re-check failed",
-    "rules": "rules only: the AI was unavailable, so fixed safety rules decided",
-    "none": "no AI verdict yet: the incident ended before the first analysis",
+    "live": "decided by the scorecard (fixed, explainable rules)",
+    "kept": "kept the verdict the AI second opinion confirmed: the AI's latest re-check failed",
+    "rules": "the scorecard was unsure and the AI second opinion was unavailable, so fixed safety rules decided",
+    "none": "no verdict yet: the incident ended before the first assessment",
 }
 ALERT_MAX = 400
 # Lists and tables have no place in a phone notification: they can push the sentences the owner must see
@@ -106,6 +107,7 @@ PLACEHOLDERS = (
     "defences",
     "recommended_only",
     "ai_status",
+    "decision_path",
     "ai_summary",
     "incident_id",
 )
@@ -120,14 +122,41 @@ anything in {{recommended_only}} was NOT done. Never tell the owner "no action n
 
 
 def ai_status(incident: Incident) -> str:
-    """live / kept / rules / none: whether the classification behind this report is a fresh AI answer.
-    "none" is an incident closed before its first verdict landed: the AI never failed, so it is not
-    "rules"."""
+    """live / kept / rules / none: how the classification behind this report was reached.
+    live: a fresh scorecard verdict (with or without a Gemini tie-break or explanation). kept: an agreed
+    tie-break the AI could not re-confirm. rules: the scorecard was unsure and no AI second opinion was
+    available (policy R3b/R3d territory). "none" is an incident closed before its first assessment."""
     if incident.classification is None:
         return "none"
-    if not incident.ai_available or incident.model_id == RULES_FALLBACK:
+    if incident.ai_refresh_failed_at is not None:
+        return "kept"
+    if incident.classification == "unclear" and (
+        not incident.ai_available or incident.model_id == RULES_FALLBACK
+    ):
         return "rules"
-    return "kept" if incident.ai_refresh_failed_at is not None else "live"
+    return "live"
+
+
+def decision_path(incident: Incident) -> str:
+    """Who decided and who wrote the words, e.g. "scorecard-v1, confirmed by the AI second opinion;
+    explained by gemini-2.5-flash"."""
+    if incident.classification is None:
+        return "no verdict yet"
+    if incident.classifier_version is None:
+        return "the AI analyst (an incident from before the scorecard)"
+    tiebreak = (incident.scorecard or {}).get("tiebreak") or {}
+    who = incident.classifier_version
+    if incident.decided_by == DECIDED_BY_AGREE:
+        who += ", confirmed by the AI second opinion"
+    elif incident.decided_by == DECIDED_BY_DISAGREE:
+        who += "; the AI second opinion disagreed, so it stays unclear"
+    elif tiebreak.get("outcome") == "unverified":
+        who += " (the AI second opinion's evidence did not match our numbers, so it was ignored)"
+    elif tiebreak.get("outcome") == "unavailable":
+        who += " (the AI second opinion was unavailable)"
+    ai_words = incident.model_id not in (None, TEMPLATE, RULES_FALLBACK)
+    words = incident.model_id if ai_words else "Checkout Guard's own template"
+    return f"{who}; explained by {words}"
 
 
 async def _planned_types(session: AsyncSession, incident: Incident, actions: list[Action]) -> set[str]:
@@ -279,6 +308,7 @@ async def gather_facts(session: AsyncSession, incident: Incident) -> dict[str, A
         "defences": "; ".join(defences) if defences else NO_DEFENCES,
         "recommended_only": _recommended_only(incident, await _planned_types(session, incident, actions)),
         "ai_status": AI_STATUS[status],
+        "decision_path": decision_path(incident),
         "ai_summary": (incident.verdict or {}).get("summary", ""),
         "incident_id": incident.id,
         # Template-only: what decides the alert's wording.
@@ -400,7 +430,7 @@ def _nonzero(facts: dict[str, Any], key: str) -> bool:
 
 def all_clear(facts: dict[str, Any]) -> bool:
     """Whether the owner may be told "no action needed": an attack met by real defences (not 3-D Secure
-    alone), on a fresh AI verdict, outside a sale, with nothing waiting on the owner or on PayPal and no
+    alone), on a fresh verdict (not a kept AI-confirmed one), outside a sale, with nothing waiting on the owner or on PayPal and no
     recommendation left unapplied."""
     return (
         "attack" in facts["classification"]
@@ -452,11 +482,11 @@ def _alert(facts: dict[str, Any]) -> str:
     optional: list[str] = []
     ai = facts.get("_ai", "live")
     if ai == "rules":
-        must.append("The AI was unavailable, so fixed safety rules decided.")
+        must.append("The scorecard was unsure and the AI was unavailable, so fixed safety rules decided.")
     elif ai == "kept":
         must.append("The AI's re-check failed, so its last verdict stands.")
     elif ai == "none":
-        must.append("It ended before the AI gave a verdict.")
+        must.append("It ended before a verdict was reached.")
     if facts.get("recommended_only"):
         must.append("Not applied: {{recommended_only}}.")
     if facts.get("_sale"):
@@ -535,6 +565,8 @@ def template(facts: dict[str, Any]) -> ReportDraft:
 {not_applied}
 **Analysis:** {{{{ai_status}}}}.
 
+**Decided by:** {{{{decision_path}}}}.
+
 **Why:** {{{{ai_summary}}}}
 
 The extra checks are switched off again once the attack stops, so real customers aren't slowed down.
@@ -544,6 +576,7 @@ The extra checks are switched off again once the attack stops, so real customers
 - **Merchant:** {{{{shop_name}}}}
 - **Incident ID:** {{{{incident_id}}}}
 - **Type:** {{{{classification}}}} (confidence {{{{confidence_pct}}}}; {{{{ai_status}}}})
+- **Decided by:** {{{{decision_path}}}}
 - **Window:** {{{{date}}}}, {{{{time_range}}}}
 - **Targeted item:** {{{{targeted_item}}}}
 - **Attempts:** {{{{attempts}}}}; declined {{{{declined}}}}; stopped by 3-D Secure {{{{sca_required}}}}; blocked {{{{blocked}}}}

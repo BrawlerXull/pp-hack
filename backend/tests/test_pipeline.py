@@ -1,5 +1,6 @@
-"""End-to-end on the real test database: offline-simulated traffic → guard → detector → (mocked) AI →
-policy → actions → reports. The AI is mocked here so the test is deterministic; see eval/ for live AI."""
+"""End-to-end on the real test database: offline-simulated traffic → guard → detector → scorecard (with a
+mocked Gemini explaining or breaking ties) → policy → actions → reports. Gemini is mocked so the test is
+deterministic; scripts/eval_detection.py evaluates the scorecard, scripts/eval_ai.py the live AI."""
 
 import json
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from app.db.models import (
     Outcome,
     Report,
 )
+from app.detection import classifier
 from app.guard.check import invalidate_cache
 from app.incidents.service import IncidentService
 from app.shop.service import place_order
@@ -45,6 +47,34 @@ def fake_ai(classification: str, confidence: float):
         raise analyst.AIUnavailable("reports use the template in tests")
 
     return _generate_json
+
+
+def force_scorecard(
+    monkeypatch, classification: str, confidence: float, margin: float = 0.6, top: str | None = None
+) -> None:
+    """Make the scorecard return this verdict (its reasons still come from the real features). For tests of
+    what happens AFTER a classification (policy, tie-breaks, keeping), not of the scorecard itself.
+    margin < classifier.MARGIN_TIEBREAK asks Gemini for a second opinion; "unclear" needs `top`."""
+    real = classifier.classify
+
+    def fake(features, baseline, *, sale_active):
+        r = real(features, baseline, sale_active=sale_active)
+        top_class = top or classification
+        second = next(c for c in classifier.CLASSES if c != top_class)
+        rest = [c for c in classifier.CLASSES if c not in (top_class, second)]
+        probs = {top_class: confidence, second: max(0.0, confidence - margin)}
+        leftover = max(0.0, 1 - sum(probs.values()))
+        probs |= {c: leftover / len(rest) for c in rest}
+        r.classification, r.confidence, r.top_class, r.runner_up = (
+            classification,
+            confidence,
+            top_class,
+            second,
+        )
+        r.margin, r.probabilities = margin, probs
+        return r
+
+    monkeypatch.setattr("app.incidents.service.classifier.classify", fake)
 
 
 @pytest.fixture
@@ -137,11 +167,7 @@ async def test_flash_sale_gets_no_defences(db, mock_ai):
     assert ActionType.REFUND not in acts and ActionType.BLOCK_FP not in acts
 
 
-async def test_ai_outage_falls_back_to_rules_only_defences(db, monkeypatch):
-    """Used to assert "soft defences only, no blocks". That left an AI outage with no real defence: 3-D
-    Secure is card-only and the web shop is wallet-only. Now (policy R0 + R3b) fraud-tier triggers get
-    3-D Secure before the AI is asked, and with the AI down the strongest bot fingerprints are blocked and
-    the targeted item held. Still never a refund, and the classification stays "unclear"."""
+def gemini_down(monkeypatch) -> list[type]:
     calls: list[type] = []
 
     async def down(**kw):
@@ -150,11 +176,43 @@ async def test_ai_outage_falls_back_to_rules_only_defences(db, monkeypatch):
 
     monkeypatch.setattr("app.ai.analyst.generate_json", down)
     monkeypatch.setattr("app.ai.reporter.generate_json", down)
+    return calls
+
+
+async def test_gemini_outage_changes_nothing_but_the_words(db, monkeypatch):
+    """P9: the scorecard decides, so a Gemini outage no longer drops a clear card-testing attack to the rules
+    fallback. Same blocks, holds and refunds as with the AI up; the text is our own template."""
+    calls = gemini_down(monkeypatch)
+    await seed_history(db, SHOP, days=7)
+    await run_scenario(db, card_testing, 60)
+
+    incident = await IncidentService(db, None, timedelta(minutes=2)).tick(SHOP)
+    assert incident.classification == "card_testing" and incident.confidence >= 0.85
+    assert incident.decided_by == "scorecard" and incident.classifier_version == "scorecard-v1"
+    assert not incident.ai_available and incident.model_id == "template"
+    assert incident.verdict["evidence"] and incident.verdict["summary"].startswith("This looks like bots")
+    assert calls == [Verdict]  # the explanation was tried once; the reporter did not retry Gemini
+    gs = await db.get(GuardState, SHOP, populate_existing=True)
+    assert gs.mode == "sca_all" and gs.held_skus == ["SKU-TEALIGHT-3"] and len(await blocked(db)) == 4
+    refunds = (await db.execute(select(Action).where(Action.type == ActionType.REFUND))).scalars().all()
+    assert refunds and all(r.status == ActionStatus.EXECUTED for r in refunds)
+    report = await db.get(Report, incident.id)
+    assert report.model_id == "template" and "card-testing attack" in report.alert_text
+
+
+async def test_ai_outage_falls_back_to_rules_only_defences(db, monkeypatch):
+    """When the scorecard is unsure and Gemini is down (no second opinion), policy R0 + R3b apply: 3-D
+    Secure before anything else, the strongest bot fingerprints blocked and the targeted item held. Still
+    never a refund, and the classification stays "unclear". (The scorecard is forced to "unclear" here:
+    real card-testing traffic is clear-cut to it, see test_gemini_outage_changes_nothing_but_the_words.)"""
+    calls = gemini_down(monkeypatch)
+    force_scorecard(monkeypatch, "unclear", 0.5, margin=0.05, top="card_testing")
     await seed_history(db, SHOP, days=7)
     await run_scenario(db, card_testing, 60)
 
     incident = await IncidentService(db, None, timedelta(minutes=2)).tick(SHOP)
     assert incident.classification == "unclear" and not incident.ai_available
+    assert incident.scorecard["tiebreak"]["outcome"] == "unavailable"
     assert calls == [Verdict]  # the reporter did not try Gemini again in the same tick
     assert (await db.get(Report, incident.id)).model_id == "template"
     assert incident.rules_hint == "fraud_signals"
@@ -163,7 +221,7 @@ async def test_ai_outage_falls_back_to_rules_only_defences(db, monkeypatch):
     assert await blocked(db) == incident.signature["strong_fingerprints"]
     assert len(await blocked(db)) == 4  # the bot farm: a new card on every attempt
     rules = (await db.execute(select(Action.policy_rule).where(Action.incident_id == incident.id))).scalars()
-    assert set(rules) == {"R0_fraud_signal", "R3b_ai_down_fraud_signal"}
+    assert set(rules) == {"R0_fraud_signal", "R3b_unopposed_fraud_signal"}
     assert not (await db.execute(select(Action).where(Action.type == ActionType.REFUND))).scalars().all()
     report = await db.get(Report, incident.id)
     assert "Nothing was blocked" not in report.alert_text and "blocked the devices" in report.alert_text

@@ -55,7 +55,7 @@ export const ACTION_LABEL: Record<string, string> = {
   REFUND: "Refund",
   NOTIFY: "Owner notified",
   DEESCALATE: "Stood down: checkout back to normal",
-  RELAX: "Extra checks switched off: AI judged it was not fraud",
+  RELAX: "Extra checks switched off: judged not to be fraud",
 };
 
 export const RULES_HINT_LABEL: Record<RulesHint, string> = {
@@ -68,8 +68,11 @@ export const RULES_HINT_LABEL: Record<RulesHint, string> = {
 export const FEATURE_LABEL: Record<string, string> = {
   attempts: "Attempts",
   attempts_per_min: "Attempts per minute",
-  velocity_z: "Speed vs normal (z-score)",
+  velocity_z: "Speed vs normal (z-score)", // incidents from before P9
+  expected_attempts: "Normal attempts for this hour",
+  velocity_surprise: "Volume surprise (−log10 p)",
   decline_rate: "Decline rate",
+  decline_surprise: "Decline surprise (−log10 p)",
   fraud_declines: "Declines coded as fraud",
   fraud_decline_share: "Share of declines coded as fraud",
   error_rate: "PayPal error rate",
@@ -90,6 +93,35 @@ export const FEATURE_LABEL: Record<string, string> = {
   new_email_domain_share: "Never-seen email domains",
   known_customer_share: "Returning customers",
   wallet_share: "PayPal wallet share",
+  cards_per_device_max: "Most cards on one device",
+  cards_per_device_p90: "Cards per device (90th pct)",
+  payers_per_device_max: "Most PayPal accounts on one device",
+  payers_per_device_p90: "PayPal accounts per device (90th pct)",
+  aged_wallet_orders: "Wallet orders old enough to approve",
+  unapproved_wallet_share: "Wallet orders never approved",
+  interarrival_cv: "Timing irregularity (1 ≈ human)",
+  error_devices: "Devices hit by errors",
+  error_top_device_share: "Errors from one device",
+  error_known_share: "Errors hitting returning customers",
+  error_top_sku_share: "Errors on one item",
+  distinct_skus: "Distinct items",
+  sku_entropy: "Basket variety (0-1)",
+  amount_cv: "Amount spread",
+  probing_decline_share: "Declines for wrong CVV/expiry",
+  customer_decline_share: "Declines that are honest bad luck",
+  processor_share: "Failures that are PayPal errors",
+  non_customer_declines: "Fraud, guessing or unexplained declines",
+  slow_decline_cusum: "Slow-decline build-up (CUSUM)",
+  multi_card_devices: "Devices with 3+ cards",
+  suspect_declines: "Stolen-card or guessing declines",
+  suspect_decline_devices: "Devices with stolen-card or guessing declines",
+  client_errors: "Errors a client caused (not counted)",
+};
+
+export const DECIDED_BY_LABEL: Record<string, string> = {
+  scorecard: "scorecard",
+  "scorecard+gemini_agree": "scorecard, confirmed by the AI second opinion",
+  gemini_disagree_unclear: "scorecard unsure, AI disagreed: stays unclear",
 };
 
 const RATIO_FEATURES = new Set([
@@ -105,6 +137,13 @@ const RATIO_FEATURES = new Set([
   "new_email_domain_share",
   "known_customer_share",
   "wallet_share",
+  "unapproved_wallet_share",
+  "error_top_device_share",
+  "error_known_share",
+  "error_top_sku_share",
+  "probing_decline_share",
+  "customer_decline_share",
+  "processor_share",
 ]);
 
 export function featureValue(feature: string, v: number | null | undefined): string {
@@ -127,6 +166,7 @@ export const TRIGGER_LABEL: Record<string, string> = {
   decline_spike: "Decline spike",
   fraud_declines: "Bank fraud codes",
   cheap_sku_card_cycling: "Cards cycling on cheapest item",
+  slow_declines: "Slow run of declines",
   processor_errors: "PayPal errors",
   blocked_activity: "Blocked devices still trying",
 };

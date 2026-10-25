@@ -9,11 +9,13 @@ import { OUTCOME_META, timeAgo } from "@/lib/format";
 
 const ABOUT: Record<string, string> = {
   card_testing: "Bot farm hammering the cheapest item with a new card each time, ~70% declined.",
-  account_testing: "Stolen PayPal accounts (wallet), many unique payers, cheapest item.",
+  account_testing: "Stolen PayPal logins (wallet): most orders never get approved, many payers per device, cheapest item.",
   slow_drip: "One attempt every 12 s: an attacker trying to stay under the radar.",
   flash_sale: "Real customers after an announced sale: returning shoppers, varied baskets, few declines.",
   paypal_outage: "Normal customers while PayPal returns errors: not an attack.",
   normal_night: "A few ordinary orders.",
+  mixed_traffic: "A busy ordinary evening: returning and new shoppers, a few honest second-card retries.",
+  stealth_bot: "A careful card tester: new device every attempt, one try every 1-5 minutes (slow; caught by the slow-decline trigger).",
 };
 
 export default function LabPage() {
@@ -76,7 +78,7 @@ export default function LabPage() {
                 <p className="mt-1 flex-1 text-sm text-slate-600">{ABOUT[s.name]}</p>
                 <Button
                   className="mt-3 self-start"
-                  variant={s.name === "card_testing" || s.name === "account_testing" || s.name === "slow_drip" ? "danger" : "secondary"}
+                  variant={["card_testing", "account_testing", "slow_drip", "stealth_bot"].includes(s.name) ? "danger" : "secondary"}
                   disabled={disabled || !!busy}
                   title={disabled ? "Offline only" : undefined}
                   onClick={() => act(s.name, () => api(`/demo/run/${s.name}`, { method: "POST", json: { mode, speed } }), `Started ${s.name} (${mode}).`)}

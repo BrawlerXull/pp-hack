@@ -70,7 +70,7 @@ class OfflinePlan:
     A card decline's code comes from the CCREJECT-* trigger in the card name (as in the sandbox);
     `decline_code` is the 422 issue used when there is no trigger (wallet declines)."""
 
-    outcome: Literal["approve", "decline", "error"]
+    outcome: Literal["approve", "decline", "error", "pending"]
     decline_code: str = "INSTRUMENT_DECLINED"
     is_bot: bool = True  # bots can't complete a 3-D Secure challenge; real shoppers can
 
@@ -124,6 +124,9 @@ def offline_result(plan: OfflinePlan, force_sca: bool, method: str, card: CardDe
         return OrderResult(503, None, None, None, None, "SERVICE_UNAVAILABLE", None, latency)
     if force_sca and method == Method.CARD and plan.is_bot:
         return OrderResult(200, oid, "PAYER_ACTION_REQUIRED", None, None, None, None, latency)
+    if plan.outcome == "pending":
+        # A wallet order the buyer never approves: PayPal leaves it CREATED (an abandoned or failed login).
+        return OrderResult(201, oid, "CREATED", None, None, None, None, latency)
     if plan.outcome == "decline":
         trigger = codes.trigger_code(card.name) if card else None
         if trigger:

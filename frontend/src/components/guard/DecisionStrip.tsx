@@ -1,9 +1,9 @@
 "use client";
 
-import { ArrowRight, Bot, Radar, Scale, Sparkles } from "lucide-react";
+import { ArrowRight, Calculator, Radar, Scale } from "lucide-react";
 import type { IncidentDetail } from "@/lib/api";
-import { ACTION_SHORT, CLASSIFICATION_LABEL, TIER_META, TRIGGER_LABEL, clock, timeAgo } from "@/lib/format";
-import { DroppedBadge } from "./incident";
+import { ACTION_SHORT, CLASSIFICATION_LABEL, FEATURE_LABEL, TIER_META, TRIGGER_LABEL, clock, featureValue, timeAgo } from "@/lib/format";
+import { ClassBars, DecisionSource, DroppedBadge } from "./incident";
 import { Badge } from "./ui";
 
 /** Which policy rules ran, with the actions each produced: the last full decision plus any rules-first step
@@ -39,14 +39,15 @@ function Step({ icon: Icon, title, children }: { icon: typeof Radar; title: stri
 
 const Arrow = () => <ArrowRight className="hidden size-4 shrink-0 self-center text-slate-300 lg:block" />;
 
-/** detect → judge → decide: what fired, who judged it (AI model, kept verdict or rules fallback), which
- * fixed policy rules then ran. Every step is from our records; nothing here is the AI's own claim. */
+/** detect → judge → decide: what fired, how the scorecard judged it (probabilities, top reasons, the AI
+ * tie-break if one was needed, who wrote the words), which fixed policy rules then ran. Every step is from
+ * our records; nothing here is the AI's own claim. */
 export function DecisionStrip({ incident }: { incident: IncidentDetail }) {
   const tiers = incident.trigger_tiers ?? {};
   const v = incident.verdict;
   const pct = incident.confidence !== null ? Math.round(incident.confidence * 100) : null;
   const rules = policyRules(incident);
-  const kept = incident.ai_available && incident.ai_refresh_failed_at;
+  const reasons = incident.scorecard?.top_reasons ?? [];
 
   return (
     <div className="flex flex-col gap-3 lg:flex-row">
@@ -68,22 +69,43 @@ export function DecisionStrip({ incident }: { incident: IncidentDetail }) {
         </p>
       </Step>
       <Arrow />
-      <Step icon={incident.ai_available ? Sparkles : Bot} title="Judge">
+      <Step icon={Calculator} title="Judge (scorecard)">
         {!v || incident.classification === null ? (
-          <p className="text-slate-500">AI analyst is looking…</p>
+          <p className="text-slate-500">Scoring…</p>
         ) : (
           <>
             <p className="font-medium text-slate-800">
               {CLASSIFICATION_LABEL[incident.classification]}
-              {pct !== null && <span className="font-normal text-slate-500"> · {pct}% confident</span>}
+              {pct !== null && (
+                <span className="font-normal text-slate-500">
+                  {" "}
+                  · {incident.classification === "unclear" ? "top class" : "confidence"} {pct}%
+                </span>
+              )}
+              {incident.verdict_at && <span className="font-normal text-slate-400"> · {timeAgo(incident.verdict_at)}</span>}
             </p>
-            <p className="text-xs text-slate-600">
-              {!incident.ai_available
-                ? `Rules fallback${incident.ai_fallback_reason ? ` (${incident.ai_fallback_reason})` : ""}: not an AI verdict`
-                : kept
-                  ? `Kept previous verdict from ${incident.model_id ?? "the AI"} (re-check failed ${timeAgo(incident.ai_refresh_failed_at!)}${incident.ai_fallback_reason ? `: ${incident.ai_fallback_reason}` : ""})`
-                  : `by ${incident.model_id ?? "the AI"}${incident.verdict_at ? ` · ${timeAgo(incident.verdict_at)}` : ""}`}
-            </p>
+            {incident.class_probs && <ClassBars probs={incident.class_probs} />}
+            {reasons.length > 0 && (
+              <ul className="space-y-0.5 text-xs text-slate-600">
+                {reasons.slice(0, 3).map((r, i) => (
+                  <li key={i}>
+                    <span className="tabular-nums text-slate-400">+{r.points}</span> {r.text}
+                    {r.feature && r.observed !== null && (
+                      <span className="text-slate-400">
+                        {" "}
+                        ({FEATURE_LABEL[r.feature] ?? r.feature}: {featureValue(r.feature, r.observed)})
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <DecisionSource incident={incident} />
+            {incident.ai_refresh_failed_at && (
+              <p className="text-xs text-amber-700">
+                Kept the AI-confirmed verdict (re-check failed {timeAgo(incident.ai_refresh_failed_at)})
+              </p>
+            )}
             <DroppedBadge count={incident.dropped_evidence ?? 0} />
           </>
         )}

@@ -55,8 +55,9 @@ class SimAttempt:
     card_name: str | None = None
     card_expiry: str = "2030-12"
     payer_id: str | None = None
-    # offline plan (also used as the intended outcome in live mode)
-    outcome: Literal["approve", "decline", "error"] = "approve"
+    # offline plan (also used as the intended outcome in live mode). "pending": a wallet order the buyer
+    # never approves (stays CREATED), e.g. a stolen login that fails PayPal's own checks.
+    outcome: Literal["approve", "decline", "error", "pending"] = "approve"
     decline_code: str = "INSTRUMENT_DECLINED"
     is_bot: bool = False
     extra: dict[str, str] = field(default_factory=dict)
@@ -105,6 +106,22 @@ def customer_pool(n: int = 60, seed: int = 7) -> list[tuple[str, str]]:
     ]
 
 
+def human_gap(rng: random.Random, mean_s: float) -> float:
+    """Seconds until the next real shopper: independent people arrive as a Poisson process (exponential
+    gaps, coefficient of variation about 1), not on a timer. Floored so a live run never fires two orders
+    in the same instant."""
+    return max(0.2, rng.expovariate(1 / mean_s))
+
+
+def honest_decline(rng: random.Random) -> tuple[str, str]:
+    """(card name trigger, wallet 422 issue) for a real shopper's refusal. Most honest refusals are a bank's
+    generic "do not honor" with no reason given, the rest insufficient funds: detection must not read the
+    generic ones as card testing."""
+    if rng.random() < 0.6:
+        return "CCREJECT-REFUSED", "INSTRUMENT_DECLINED"
+    return "CCREJECT-IF", "INSUFFICIENT_FUNDS"
+
+
 def _bot_email(rng: random.Random) -> str:
     junk = "".join(rng.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(6))
     tld = rng.choice(["top", "xyz", "click", "shop", "info", "site"])
@@ -140,11 +157,16 @@ def card_testing(
 def account_testing(
     mode: Mode, count: int = 80, seed: int | None = None, speed: float = 1.0
 ) -> Iterator[SimAttempt]:
-    """Stolen PayPal accounts (wallet). Offline only: wallet approval needs a real buyer login."""
+    """Stolen PayPal accounts (wallet). Offline only: wallet approval needs a real buyer login.
+    Most stolen logins never get through PayPal's own login checks, so most orders stay CREATED
+    (unapproved); a few are refused and only a few are captured."""
     rng = random.Random(seed)
     farm = [f"bot-{rng.randint(1000, 9999)}" for _ in range(3)]
     for i in range(count):
-        approve = rng.random() < 0.35
+        roll = rng.random()
+        outcome: Literal["approve", "decline", "pending"] = (
+            "approve" if roll < 0.12 else "decline" if roll < 0.30 else "pending"
+        )
         yield SimAttempt(
             delay_s=rng.uniform(0.4, 1.4) / speed,
             sku=CHEAPEST_SKU,
@@ -153,7 +175,7 @@ def account_testing(
             user_agent=BOT_UA,
             email=_bot_email(rng),
             payer_id=f"PAYER{rng.randint(10**9, 10**10)}",
-            outcome="approve" if approve else "decline",
+            outcome=outcome,
             decline_code=rng.choice(["PAYER_CANNOT_PAY", "INSTRUMENT_DECLINED", "PAYER_ACCOUNT_RESTRICTED"]),
             is_bot=True,
         )
@@ -170,7 +192,8 @@ def slow_drip(
 def flash_sale(
     mode: Mode, count: int = 60, seed: int | None = None, speed: float = 1.0
 ) -> Iterator[SimAttempt]:
-    """Real customers after an announced sale: returning shoppers, varied baskets, few declines."""
+    """Real customers after an announced sale: returning shoppers, varied baskets, a few honest declines
+    (mostly the bank's generic refusal)."""
     rng = random.Random(seed)
     pool = customer_pool()
     skus = list(PRODUCTS)
@@ -184,10 +207,11 @@ def flash_sale(
             )
         )
         method = rng.choice(["card", "wallet"]) if mode == "offline" else "card"
-        approve = rng.random() > 0.04
+        approve = rng.random() > 0.07
+        refusal, issue = honest_decline(rng)
         number, expiry = (luhn_card("4", rng=rng), "2030-12") if mode == "offline" else customer_card(device)
         yield SimAttempt(
-            delay_s=rng.uniform(0.8, 2.5) / speed,
+            delay_s=human_gap(rng, 1.65) / speed,
             sku=rng.choices(skus, weights=[2, 5, 4])[0],
             method=method,
             device_id=device,
@@ -195,10 +219,10 @@ def flash_sale(
             email=email,
             card_number=number if method == "card" else None,
             card_expiry=expiry,
-            card_name="Test Buyer" if approve else "CCREJECT-IF",
+            card_name="Test Buyer" if approve else refusal,
             payer_id=f"PAYER{rng.randint(10**9, 10**10)}" if method == "wallet" else None,
             outcome="approve" if approve else "decline",
-            decline_code="INSUFFICIENT_FUNDS",
+            decline_code=issue,
         )
 
 
@@ -211,7 +235,7 @@ def paypal_outage(
     for _ in range(count):
         device, email = rng.choice(pool)
         yield SimAttempt(
-            delay_s=rng.uniform(1.0, 3.0) / speed,
+            delay_s=human_gap(rng, 2.0) / speed,
             sku=rng.choice(list(PRODUCTS)),
             method="card",
             device_id=device,
@@ -232,7 +256,7 @@ def normal_night(
         device, email = rng.choice(pool)
         number, expiry = (luhn_card("4", rng=rng), "2030-12") if mode == "offline" else customer_card(device)
         yield SimAttempt(
-            delay_s=rng.uniform(5, 20) / speed,
+            delay_s=human_gap(rng, 12.5) / speed,
             sku=rng.choice(list(PRODUCTS)),
             method="card",
             device_id=device,
@@ -244,6 +268,74 @@ def normal_night(
         )
 
 
+def mixed_traffic(
+    mode: Mode, count: int = 40, seed: int | None = None, speed: float = 1.0
+) -> Iterator[SimAttempt]:
+    """A busy but ordinary evening: returning and new shoppers, varied baskets, and a few honest retries
+    (a card refused, usually with the bank's generic code, then a second card from the same device that
+    goes through)."""
+    rng = random.Random(seed)
+    pool = customer_pool()
+    skus = list(PRODUCTS)
+    for _ in range(count):
+        device, email = (
+            rng.choice(pool)
+            if rng.random() < 0.6
+            else (
+                f"new-{rng.randint(1000, 9999)}",
+                f"shopper{rng.randint(1, 9999)}@{rng.choice(COMMON_DOMAINS)}",
+            )
+        )
+        sku = rng.choices(skus, weights=[2, 5, 4])[0]
+        delay = human_gap(rng, 8) / speed
+        retry = rng.random() < 0.12
+        tries = ["decline", "approve"] if retry else ["approve"]
+        refusal, issue = honest_decline(rng)
+        for n, outcome in enumerate(tries):
+            number, expiry = (
+                (luhn_card("4", rng=rng), "2030-12") if mode == "offline" else customer_card(f"{device}{n}")
+            )
+            yield SimAttempt(
+                delay_s=delay if n == 0 else rng.uniform(20, 60) / speed,
+                sku=sku,
+                method="card",
+                device_id=device,
+                user_agent=BROWSER_UA,
+                email=email,
+                card_number=number,
+                card_expiry=expiry,
+                card_name="Test Buyer" if outcome == "approve" else refusal,
+                outcome="approve" if outcome == "approve" else "decline",
+                decline_code=issue,
+            )
+
+
+def stealth_bot(
+    mode: Mode, count: int = 25, seed: int | None = None, speed: float = 1.0
+) -> Iterator[SimAttempt]:
+    """A careful card tester: a fresh device id and an ordinary browser user agent on every attempt (so
+    per-device counts see one card each), one attempt every one to five minutes, cheapest item."""
+    rng = random.Random(seed)
+    for i in range(count):
+        approve = rng.random() < 0.28
+        number, expiry = (luhn_card("4", rng=rng), "2030-12") if mode == "offline" else live_card(rng)
+        name = "Test Buyer" if approve else DECLINE_TRIGGERS[i % len(DECLINE_TRIGGERS)]
+        yield SimAttempt(
+            delay_s=rng.uniform(60, 300) / speed,
+            sku=CHEAPEST_SKU,
+            method="card",
+            device_id=f"anon-{rng.randint(10**6, 10**7)}",
+            user_agent=BROWSER_UA,
+            email=_bot_email(rng),
+            card_number=number,
+            card_name=name,
+            card_expiry=expiry,
+            outcome="approve" if approve else "decline",
+            decline_code=trigger_decline(name),
+            is_bot=True,
+        )
+
+
 SCENARIOS = {
     "card_testing": card_testing,
     "account_testing": account_testing,
@@ -251,6 +343,8 @@ SCENARIOS = {
     "flash_sale": flash_sale,
     "paypal_outage": paypal_outage,
     "normal_night": normal_night,
+    "mixed_traffic": mixed_traffic,
+    "stealth_bot": stealth_bot,
 }
 # Scenarios that can't run against the live sandbox (they'd need real buyer logins or a real outage).
 OFFLINE_ONLY = {"account_testing", "paypal_outage"}

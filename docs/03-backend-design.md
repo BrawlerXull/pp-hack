@@ -108,7 +108,7 @@ A single process holds a Postgres advisory lock so only one instance runs.
 | Job | Every | Does |
 |---|---|---|
 | `process_webhooks` | 2 s | Unprocessed `paypal_events` → update attempts/captures/refunds/disputes |
-| `detect` | 10 s | Features over 1/5/10/15/60 min windows vs baseline (history excludes incident windows, guard-stopped attempts and blocked devices) → triggers → open an incident (or update the open one) → AI analyst → policy → executor → reporter alert |
+| `detect` | 10 s | Features over 1/5/10/15/60 min windows vs baseline (history excludes incident windows, guard-stopped attempts and blocked devices) → triggers → open an incident (or update the open one) → scorecard classifier (Gemini tie-break when unsure) → policy → executor → Gemini explanation → reporter alert |
 | `reassess` | 5 min per open incident | Updated features → AI `continue / escalate / de-escalate` → policy |
 | `deescalate` | 1 min | No attack signal for `deescalate_after_min` → restore `guard_state`, close incident, write report + evidence |
 | `refresh_baseline` | 1 h | Transaction Search + our attempts → `baselines` |

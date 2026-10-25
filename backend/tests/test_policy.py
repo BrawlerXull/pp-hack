@@ -83,7 +83,7 @@ def ai_down(**kw) -> PolicyInput:
         **{
             "classification": "unclear",
             "confidence": 0.5,
-            "ai_available": False,
+            "unopposed_tiebreak": True,
             "trigger_tiers": FRAUD,
             "strong_fingerprints": ["fp1"],
         }
@@ -96,7 +96,7 @@ def test_r3b_ai_down_fraud_blocks_only_strong_fingerprints_and_never_refunds():
     assert types(actions) == [ActionType.SCA_ON, ActionType.BLOCK_FP, ActionType.HOLD_SKU, ActionType.NOTIFY]
     block = next(a for a in actions if a.type == ActionType.BLOCK_FP)
     assert block.params == {"fingerprints": ["fp1"]}  # not fp2: suspicious, but not strong
-    assert all(a.rule == "R3b_ai_down_fraud_signal" for a in actions[:3])
+    assert all(a.rule == "R3b_unopposed_fraud_signal" for a in actions[:3])
     # No strong fingerprints, no targeted item: 3-D Secure only.
     assert types(decide(ai_down(strong_fingerprints=[], attack_sku=None))) == [
         ActionType.SCA_ON,
@@ -107,7 +107,7 @@ def test_r3b_ai_down_fraud_blocks_only_strong_fingerprints_and_never_refunds():
 def test_r3b_does_not_apply_during_a_sale_with_the_ai_up_or_with_paypal_failing():
     soft = [ActionType.SCA_ON, ActionType.NOTIFY]
     assert types(decide(ai_down(sale_window_active=True))) == soft
-    assert types(decide(ai_down(ai_available=True))) == soft  # an AI "unclear" is not an outage
+    assert types(decide(ai_down(unopposed_tiebreak=False))) == soft  # the AI disagreed: soft only
     assert types(decide(ai_down(trigger_tiers=FRAUD | {Tier.OPS}))) == soft
 
 
@@ -120,7 +120,7 @@ def test_r3c_volume_only_returning_customers_get_no_friction():
         decline_rate=0.04,
     )
     for ai in (True, False):
-        actions = decide(inp(**rush, ai_available=ai))
+        actions = decide(inp(**rush, unopposed_tiebreak=ai))
         assert [(a.type, a.rule) for a in actions] == [(ActionType.NOTIFY, "R3c_returning_customer_rush")]
     assert ActionType.SCA_ON in types(decide(inp(**rush | {"known_customer_share": 0.2})))
     assert ActionType.SCA_ON in types(decide(inp(**rush | {"decline_rate": 0.3})))
@@ -136,7 +136,7 @@ def test_r3d_ai_down_and_only_paypal_errors_notifies_only():
             (ActionType.NOTIFY, "R3d_processor_trouble_notify_only")
         ]
     # With the AI up but unsure, the usual soft defence applies.
-    assert types(decide(ai_down(trigger_tiers=frozenset({Tier.OPS}), ai_available=True))) == [
+    assert types(decide(ai_down(trigger_tiers=frozenset({Tier.OPS}), unopposed_tiebreak=False))) == [
         ActionType.SCA_ON,
         ActionType.NOTIFY,
     ]
@@ -185,3 +185,19 @@ def test_stale_verdict_keeps_blocks_but_queues_refunds_for_the_owner():
     ]
     refund = next(a for a in actions if a.type == ActionType.REFUND)
     assert refund.needs_approval and refund.rule == "R5_stale_verdict_needs_owner"
+
+
+def test_an_outage_call_never_relaxes_while_fraud_signals_fired():
+    # A bot can make captures fail on purpose (ORDER_NOT_APPROVED), so "PayPal is failing" alongside fraud
+    # triggers gets the soft defences instead of undoing them.
+    fake = inp(
+        classification="paypal_outage",
+        confidence=0.9,
+        guard_set_by_incident=True,
+        trigger_tiers=FRAUD | {Tier.OPS},
+    )
+    assert ActionType.RELAX not in types(decide(fake))
+    assert types(decide(fake)) == [ActionType.SCA_ON, ActionType.NOTIFY]
+    # A real outage (ops triggers only) still relaxes.
+    real = fake.__class__(**(vars(fake) | {"trigger_tiers": frozenset({Tier.OPS})}))
+    assert types(decide(real))[0] == ActionType.RELAX

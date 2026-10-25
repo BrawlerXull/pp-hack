@@ -1,14 +1,29 @@
 """Deterministic incident triggers and attack signature.
 
-Triggers are deliberately sensitive. Telling a real rush or an outage apart from an attack is
-the AI analyst's job, and what we're allowed to do about it is the policy engine's job.
+Triggers are deliberately sensitive. Telling a real rush or an outage apart from an attack is the
+scorecard classifier's job (app/detection/classifier.py), and what we're allowed to do about it is the
+policy engine's job.
 
-Each trigger has a tier, so the policy can act on the kind of signal before (and without) the AI:
+Each trigger has a tier, so the policy can act on the kind of signal before (and without) a verdict:
   volume   velocity_spike, sku_concentration     busy, not necessarily bad (a single-product sale trips both)
-  fraud    decline_spike, fraud_declines,         stolen credentials: banks refusing, cards cycling
-           cheap_sku_card_cycling
+  fraud    decline_spike, fraud_declines,         stolen credentials: banks refusing, cards cycling, or a
+           cheap_sku_card_cycling, slow_declines  low-and-slow run of refusals spread over the hour
   ops      processor_errors                       PayPal or our integration failing, not the shoppers
   holding  blocked_activity                       defences already stopping someone; keeps the incident alive
+
+The volume and decline triggers are significance tests against the shop's own normal, not fixed multiples:
+  velocity_spike  Poisson: P(at least this many attempts in 5 min | the normal rate for this hour of day,
+                  floored at MIN_EXPECTED_PER_HOUR) < 1e-4, with at least 8 attempts.
+  decline_spike   one-sided binomial: P(at least this many declines out of the attempts that reached PayPal
+                  in 15 min | the normal decline rate, floored at MIN_DECLINE_RATE) < 1e-3, with at least
+                  10 attempts and a 20% decline rate (so a huge shop's 6% day is not an incident).
+  slow_declines   CUSUM over the last 60 one-minute bins of "a fraud, probing or unexplained decline
+                  happened" (features._slow_decline_cusum; generic refusals count half) >= 2.5, with at
+                  least 5 such declines in the hour, 2 of them fraud or probing (a run of generic "do not
+                  honor" alone is ordinary bank caution) from 2 devices or from a device cycling 5+ cards
+                  (one shopper mistyping a security code, or trying three cards, is neither), and 2
+                  declines in the last 15 min (so an incident still closes once it stops).
+The numbers were tuned on our own simulator (scripts/eval_detection.py, docs/eval-detection.md).
 """
 
 from collections import defaultdict
@@ -35,6 +50,7 @@ TRIGGER_TIER: dict[str, Tier] = {
     "decline_spike": Tier.FRAUD,
     "fraud_declines": Tier.FRAUD,
     "cheap_sku_card_cycling": Tier.FRAUD,
+    "slow_declines": Tier.FRAUD,
     "processor_errors": Tier.OPS,
     "blocked_activity": Tier.HOLDING,
 }
@@ -47,10 +63,10 @@ def tiers(triggers: Iterable[str]) -> frozenset[Tier]:
 
 @dataclass(frozen=True)
 class TriggerThresholds:
-    velocity_z: float = 4.0
+    velocity_surprise: float = 4.0  # p < 1e-4
     velocity_min_attempts_5m: int = 8
-    decline_multiplier: float = 3.0
-    decline_floor: float = 0.30
+    decline_surprise: float = 3.0  # p < 1e-3
+    decline_floor: float = 0.20
     decline_min_attempts_15m: int = 10
     sku_share: float = 0.80
     sku_min_attempts_15m: int = 15
@@ -64,6 +80,11 @@ class TriggerThresholds:
     cycling_min_attempts: int = 10
     cycling_min_credentials: int = 5
     cycling_decline_rate: float = 0.30
+    slow_cusum: float = 2.5
+    slow_min_declines_60m: int = 5
+    slow_min_suspect_60m: int = 2
+    slow_cycling_cards: int = 5  # one device with this many card numbers is cycling, not retrying
+    slow_recent_declines_15m: int = 2
 
 
 DEFAULT_THRESHOLDS = TriggerThresholds()
@@ -72,12 +93,17 @@ DEFAULT_THRESHOLDS = TriggerThresholds()
 def evaluate(
     features: dict[int, Features], baseline: Baseline, t: TriggerThresholds = DEFAULT_THRESHOLDS
 ) -> list[str]:
-    f5, f10, f15 = features[5], features[10], features[15]
+    """baseline is already folded into the features (expected_attempts, the surprise values, the CUSUM
+    reference); it stays in the signature for callers and future triggers."""
+    f5, f10, f15, f60 = features[5], features[10], features[15], features[60]
     fired: list[str] = []
-    if f5.attempts >= t.velocity_min_attempts_5m and f5.velocity_z > t.velocity_z:
+    if f5.attempts >= t.velocity_min_attempts_5m and f5.velocity_surprise >= t.velocity_surprise:
         fired.append("velocity_spike")
-    decline_limit = max(baseline.decline_rate * t.decline_multiplier, t.decline_floor)
-    if f15.reached_paypal >= t.decline_min_attempts_15m and f15.decline_rate > decline_limit:
+    if (
+        f15.reached_paypal >= t.decline_min_attempts_15m
+        and f15.decline_rate >= t.decline_floor
+        and f15.decline_surprise >= t.decline_surprise
+    ):
         fired.append("decline_spike")
     if f15.attempts >= t.sku_min_attempts_15m and f15.top_sku_share > t.sku_share:
         fired.append("sku_concentration")
@@ -89,6 +115,14 @@ def evaluate(
         and f15.cheapest_sku_decline_rate >= t.cycling_decline_rate
     ):
         fired.append("cheap_sku_card_cycling")
+    if (
+        f60.slow_decline_cusum >= t.slow_cusum
+        and f60.non_customer_declines >= t.slow_min_declines_60m
+        and f60.suspect_declines >= t.slow_min_suspect_60m
+        and (f60.suspect_decline_devices >= 2 or f60.cards_per_device_max >= t.slow_cycling_cards)
+        and f15.declined >= t.slow_recent_declines_15m
+    ):
+        fired.append("slow_declines")
     if f5.reached_paypal >= t.error_min_attempts_5m and f5.error_rate > t.error_rate:
         fired.append("processor_errors")
     if f5.blocked_or_challenged >= t.blocked_min_5m:

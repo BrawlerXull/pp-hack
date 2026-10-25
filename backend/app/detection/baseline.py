@@ -9,13 +9,14 @@ which a real shop doesn't have and would leak the answer into the test):
   - the last 2 hours, so an attack the detector has not opened an incident for yet can't become "normal"
 and only CAPTURED attempts make a device or email domain "known" (a refunded capture was the attacker's).
 Hours an incident window covers are left out of the hourly series (not counted as zero-traffic hours,
-which would lower the mean and inflate velocity_z). The known-customer sets drop only the windows of
-incidents not confidently judged harmless: a shopper whose first purchase fell in a flash sale the AI
-called genuine_rush is a returning customer next time, not a stranger R4 may block and refund.
+which would lower the mean and make ordinary traffic look like a velocity spike). The known-customer sets
+drop only the windows of incidents not confidently judged harmless: a shopper whose first purchase fell in
+a flash sale classified genuine_rush is a returning customer next time, not a stranger R4 may block and
+refund. The hourly series also gives the hour-of-day rates the velocity test expects (hourly_rate).
 """
 
 import math
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, exists, func, literal, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,9 @@ HISTORY_DAYS = 28
 EXCLUDE_RECENT = timedelta(hours=2)
 # Same lookback the signature and refunds use: an attack's first attempts land before the incident opens.
 INCIDENT_LEAD = timedelta(minutes=15)
+# The hour-of-day rates are pulled towards the overall mean as if each hour had this many extra hours of
+# history at the mean: with a week of history, one odd Tuesday must not set Wednesday's normal.
+HOURLY_PRIOR_HOURS = 2.0
 
 
 async def recent_rows(session: AsyncSession, shop_id: str, since: datetime) -> list[AttemptRow]:
@@ -101,20 +105,25 @@ async def load_baseline(session: AsyncSession, shop_id: str, now: datetime) -> B
     windows = await _incident_windows(session, shop_id, first, now)
     counts = {h: c for h, c in hourly}
     hours = [first + timedelta(hours=i) for i in range(span_hours)]
-    series = [counts.get(h, 0) for h in hours if not _covered(h, windows)] or [c for _, c in hourly]
+    kept_hours = [h for h in hours if not _covered(h, windows)]
+    series = [counts.get(h, 0) for h in kept_hours] or [c for _, c in hourly]
     mean = sum(series) / len(series)
     std = math.sqrt(sum((c - mean) ** 2 for c in series) / len(series))
+    hourly_rate = _hourly_rate([(h, counts.get(h, 0)) for h in kept_hours], mean)
 
+    is_wallet = CheckoutAttempt.method == "wallet"
     totals = (
         await session.execute(
             select(
                 func.count().filter(CheckoutAttempt.outcome == Outcome.DECLINED),
                 func.count().filter(CheckoutAttempt.outcome == Outcome.ERROR),
                 func.count(),
+                func.count().filter(is_wallet),
+                func.count().filter(is_wallet, CheckoutAttempt.outcome == Outcome.CREATED),
             ).where(*in_range)
         )
     ).one()
-    declined, errors, reached = totals
+    declined, errors, reached, wallet, wallet_unapproved = totals
     good = (*eligible, ~in_suspect_incident, CheckoutAttempt.outcome == Outcome.CAPTURED)
     domains = (
         await session.execute(
@@ -133,7 +142,19 @@ async def load_baseline(session: AsyncSession, shop_id: str, now: datetime) -> B
         known_domains=frozenset(domains),
         known_fingerprints=frozenset(fps),
         history_days=max(1, span_hours // 24),
+        hourly_rate=hourly_rate,
+        wallet_unapproved_rate=wallet_unapproved / wallet if wallet else 0.0,
     )
+
+
+def _hourly_rate(series: list[tuple[datetime, int]], mean: float) -> tuple[float, ...]:
+    """Attempts per hour for each UTC hour of day, shrunk towards the overall mean (HOURLY_PRIOR_HOURS)."""
+    sums, counts = [0.0] * 24, [0] * 24
+    for hour, n in series:
+        h = hour.astimezone(UTC).hour
+        sums[h] += n
+        counts[h] += 1
+    return tuple((sums[h] + HOURLY_PRIOR_HOURS * mean) / (counts[h] + HOURLY_PRIOR_HOURS) for h in range(24))
 
 
 async def _incident_windows(

@@ -28,7 +28,7 @@ export default function IncidentsPage() {
                       {i.classification ? CLASSIFICATION_LABEL[i.classification] : "Analysing"}
                     </Badge>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm text-slate-800">{i.summary ?? "Waiting for the AI analyst…"}</p>
+                      <p className="truncate text-sm text-slate-800">{i.summary ?? "Assessing…"}</p>
                       <p className="text-xs text-slate-500">
                         Opened {timeAgo(i.opened_at)} · {i.status === "open" ? "active" : `closed ${timeAgo(i.closed_at!)}`}
                         {i.confidence !== null && ` · ${Math.round(i.confidence * 100)}% confident`}

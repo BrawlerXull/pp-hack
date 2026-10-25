@@ -110,7 +110,7 @@ def test_every_trigger_has_a_tier_and_sku_concentration_is_volume():
     rows = attack_rows()
     assert set(evaluate(compute_all(rows, NOW, BASE), BASE)) <= set(TRIGGER_TIER)
     assert TRIGGER_TIER["sku_concentration"] == Tier.VOLUME
-    assert FRAUD_TRIGGERS == {"decline_spike", "fraud_declines", "cheap_sku_card_cycling"}
+    assert FRAUD_TRIGGERS == {"decline_spike", "fraud_declines", "cheap_sku_card_cycling", "slow_declines"}
     assert tiers(["velocity_spike", "processor_errors", "nonsense"]) == {Tier.VOLUME, Tier.OPS}
 
 

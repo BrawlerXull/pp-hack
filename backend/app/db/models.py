@@ -251,13 +251,16 @@ class Incident(Base):
     verdict: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
     classification: Mapped[str | None] = mapped_column(String(30))
     confidence: Mapped[float | None]
+    # Who wrote the verdict's text: a Gemini model, or "template" (our own wording). The classification
+    # itself is the scorecard's (decided_by).
     model_id: Mapped[str | None] = mapped_column(String(60))
     prompt_version: Mapped[str | None] = mapped_column(String(20))
+    # Gemini answered the last assessment (explanation or second opinion), or a kept answer stands in.
     ai_available: Mapped[bool] = mapped_column(Boolean, default=True)
     # When the current classification was decided (AI or rules fallback). last_assessed_at moves on every
     # assessment, including a failed re-check that kept this verdict, so staleness is measured from here.
     verdict_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # A re-check failed but the last real AI verdict was kept: separate from ai_available so the badge
+    # A re-check failed but the last AI-confirmed tie-break was kept: separate from ai_available so the badge
     # doesn't flip to "rules fallback" mid-attack. Failures count consecutive AI misses (reset on success).
     ai_refresh_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ai_refresh_failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -267,7 +270,7 @@ class Incident(Base):
     assessment_context: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
     previous_guard_state: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
     # What the triggers alone suggest (app/policy/engine.rules_hint), kept apart from `classification` so a
-    # rules guess is never presented as the AI's verdict.
+    # rules guess is never presented as a verdict (the scorecard supersedes it).
     rules_hint: Mapped[str | None] = mapped_column(String(40))
     # Evidence items the analyst cited that did not match our computed numbers (dropped before display), for
     # the verdict on record; shown as "N AI claims dropped" so the owner sees the check working.
@@ -278,6 +281,15 @@ class Incident(Base):
     # The features the verdict on record was validated against. `features` moves on with every assessment,
     # including a failed re-check that keeps the verdict; "×N vs normal" next to the verdict must use these.
     verdict_features: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
+    # The deterministic scorecard (app/detection/classifier.py) that decides the classification, and how
+    # the decision was reached: "scorecard", "scorecard+gemini_agree" or "gemini_disagree_unclear"
+    # (app/incidents/decision.py). class_probs/class_margin are the scorecard's own numbers; `scorecard`
+    # holds its top reasons, scores, notes and the tie-break outcome for the dashboard.
+    classifier_version: Mapped[str | None] = mapped_column(String(20))
+    decided_by: Mapped[str | None] = mapped_column(String(30))
+    class_probs: Mapped[dict[str, float] | None] = mapped_column(JsonB)
+    class_margin: Mapped[float | None]
+    scorecard: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
 
 
 class Action(Base):

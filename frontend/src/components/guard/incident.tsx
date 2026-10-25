@@ -4,8 +4,8 @@ import { Bot, Check, Clock, PartyPopper, ShieldAlert, ShieldCheck, Sparkles, Tri
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useState } from "react";
-import { api, ApiError, type ActionRow, type AlertRow, type IncidentDetail, type Summary } from "@/lib/api";
-import { ACTION_LABEL, CLASSIFICATION_LABEL, FEATURE_LABEL, RULES_HINT_LABEL, STATUS_COPY, featureValue, hhmm, money, timeAgo, times } from "@/lib/format";
+import { api, ApiError, type ActionRow, type AlertRow, type Classification, type IncidentDetail, type IncidentSummary, type Summary } from "@/lib/api";
+import { ACTION_LABEL, CLASSIFICATION_LABEL, DECIDED_BY_LABEL, FEATURE_LABEL, RULES_HINT_LABEL, STATUS_COPY, featureValue, hhmm, money, timeAgo, times } from "@/lib/format";
 import { Badge, Button } from "./ui";
 
 const BANNER = {
@@ -50,9 +50,69 @@ export function StatusBanner({ summary }: { summary: Summary }) {
   );
 }
 
+const CLASS_ORDER: Classification[] = ["card_testing", "account_testing", "genuine_rush", "paypal_outage"];
+const BAR_COLOR: Record<string, string> = {
+  card_testing: "bg-red-500",
+  account_testing: "bg-red-400",
+  genuine_rush: "bg-blue-500",
+  paypal_outage: "bg-amber-500",
+};
+
+/** The scorecard's per-class probabilities: what decided the classification (not the AI). */
+export function ClassBars({ probs }: { probs: Record<string, number> }) {
+  return (
+    <ul className="space-y-1">
+      {CLASS_ORDER.filter((c) => c in probs).map((c) => {
+        const pct = Math.round((probs[c] ?? 0) * 100);
+        return (
+          <li key={c} className="flex items-center gap-2 text-xs text-slate-600">
+            <span className="w-32 shrink-0 truncate">{CLASSIFICATION_LABEL[c]}</span>
+            <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-100">
+              <div className={`h-full ${BAR_COLOR[c]}`} style={{ width: `${pct}%` }} />
+            </div>
+            <span className="w-9 shrink-0 text-right tabular-nums">{pct}%</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Who decided (the scorecard, with the tie-break outcome) and who wrote the words (Gemini or template). */
+export function DecisionSource({ incident }: { incident: IncidentSummary }) {
+  const tb = incident.scorecard?.tiebreak;
+  const explainer = incident.model_id && incident.model_id !== "template" && incident.model_id !== "rules-fallback" ? incident.model_id : null;
+  return (
+    <div className="space-y-0.5 text-xs text-slate-600">
+      <p>
+        <span className="text-slate-500">Decided by:</span>{" "}
+        <span className="font-medium text-slate-800">{incident.classifier_version ?? "AI analyst (before the scorecard)"}</span>
+        {incident.decided_by && incident.decided_by !== "scorecard" && <span> · {DECIDED_BY_LABEL[incident.decided_by]}</span>}
+      </p>
+      {tb && (
+        <p>
+          <span className="text-slate-500">AI second opinion:</span>{" "}
+          {tb.outcome === "agree"
+            ? `agreed${tb.model ? ` (${tb.model})` : ""}: confidence capped, never raised`
+            : tb.outcome === "disagree"
+              ? `read it as ${tb.gemini ? CLASSIFICATION_LABEL[tb.gemini] : "something else"}, so it stays unclear (soft defences only)`
+              : tb.outcome === "unverified"
+                ? "its numbers did not match ours: the scorecard's call stands"
+                : `unavailable${incident.ai_fallback_reason ? ` (${incident.ai_fallback_reason})` : ""}: the scorecard's call stands`}
+        </p>
+      )}
+      <p className="flex items-center gap-1">
+        {explainer ? <Sparkles className="size-3 text-violet-500" /> : <Bot className="size-3" />}
+        <span className="text-slate-500">Explained by:</span> {explainer ?? "Checkout Guard's own template"}
+        {incident.ai_fallback_reason && !tb && <span className="text-amber-700"> (AI: {incident.ai_fallback_reason})</span>}
+      </p>
+    </div>
+  );
+}
+
 export function VerdictCard({ incident }: { incident: IncidentDetail }) {
   const v = incident.verdict;
-  if (!v) return <p className="text-sm text-slate-500">Waiting for the AI analyst…</p>;
+  if (!v) return <p className="text-sm text-slate-500">Assessing…</p>;
   const pct = Math.round(v.confidence * 100);
   const dropped = incident.dropped_evidence ?? 0;
   const tone = v.classification === "card_testing" || v.classification === "account_testing" ? "bad" : v.classification === "genuine_rush" ? "info" : "warn";
@@ -64,37 +124,35 @@ export function VerdictCard({ incident }: { incident: IncidentDetail }) {
           <div className="h-1.5 w-28 overflow-hidden rounded-full bg-slate-100">
             <div className={`h-full ${tone === "bad" ? "bg-red-500" : tone === "info" ? "bg-blue-500" : "bg-amber-500"}`} style={{ width: `${pct}%` }} />
           </div>
-          {pct}% confident
+          {v.classification === "unclear" && incident.scorecard ? `leaning ${CLASSIFICATION_LABEL[incident.scorecard.top_class].toLowerCase()} (${pct}%)` : `${pct}% confident`}
         </div>
-        <span className="ml-auto flex items-center gap-1.5 text-xs text-slate-500">
-          {incident.ai_available ? <Sparkles className="size-3.5 text-violet-500" /> : <Bot className="size-3.5" />}
-          {incident.ai_available
-            ? incident.model_id
-            : `AI unavailable: rule-based fallback${incident.ai_fallback_reason ? ` (${incident.ai_fallback_reason})` : ""}`}
-        </span>
       </div>
-      {incident.ai_available && incident.ai_refresh_failed_at && (
+      <div className="grid gap-4 sm:grid-cols-2">
+        <DecisionSource incident={incident} />
+        {incident.class_probs && <ClassBars probs={incident.class_probs} />}
+      </div>
+      {incident.ai_refresh_failed_at && (
         <p className="text-xs text-amber-700">
-          AI re-check failed {timeAgo(incident.ai_refresh_failed_at)} ({incident.ai_refresh_failures}×). Keeping the verdict from{" "}
-          {incident.verdict_at ? timeAgo(incident.verdict_at) : "earlier"}; new refunds wait for your approval if this persists.
+          AI re-check failed {timeAgo(incident.ai_refresh_failed_at)} ({incident.ai_refresh_failures}×). Keeping the AI-confirmed verdict from{" "}
+          {incident.verdict_at ? timeAgo(incident.verdict_at) : "earlier"}; it can block but never refunds on its own.
         </p>
       )}
-      {!incident.ai_available && incident.rules_hint && (
+      {v.classification === "unclear" && incident.rules_hint && (
         <p className="text-xs text-slate-600">
-          Fixed rules saw: {RULES_HINT_LABEL[incident.rules_hint]}. This is not an AI verdict.
+          Fixed rules saw: {RULES_HINT_LABEL[incident.rules_hint]}. This is a hint, not a classification.
         </p>
       )}
       <p className="text-[15px] leading-relaxed text-slate-800">{v.summary}</p>
       {(v.evidence.length > 0 || dropped > 0) && (
         <div>
           <div className="mb-2 flex flex-wrap items-center gap-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Evidence (verified against our own data)</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Why: the scorecard&apos;s top reasons (our own data)</p>
             <DroppedBadge count={dropped} />
           </div>
           {v.evidence.length > 0 && (
             <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
               {v.evidence.map((e, i) => {
-                // Our own number and the ×N from our stored baseline; the AI's text is only the "why".
+                // The scorecard's reason: our own number and the ×N from our stored baseline.
                 const ours = incident.evidence_vs_normal?.[i];
                 const observed = ours?.feature === e.feature && ours.observed !== null ? ours.observed : e.observed;
                 return (
@@ -223,7 +281,7 @@ const WAIT_REASON: Record<string, string> = {
   R5_weak_match_needs_owner: "weak match",
   R5_sca_passed_needs_owner: "buyer passed 3-D Secure, which bots rarely do",
   R5_over_cap_needs_owner: "above your auto-refund limit",
-  R5_stale_verdict_needs_owner: "the AI verdict is out of date",
+  R5_stale_verdict_needs_owner: "the AI-confirmed verdict is out of date",
 };
 const MATCH_REASON: Record<string, string> = {
   strong_fingerprint: "device used several cards or accounts",

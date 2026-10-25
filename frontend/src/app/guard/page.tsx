@@ -102,7 +102,7 @@ export default function WarRoom() {
       {shown ? (
         <div className="grid gap-6 xl:grid-cols-3">
           <Card
-            title={shown.status === "open" ? "AI analyst verdict" : `Last incident · closed ${timeAgo(shown.closed_at!)}`}
+            title={shown.status === "open" ? "Verdict (scorecard decides, AI explains)" : `Last incident · closed ${timeAgo(shown.closed_at!)}`}
             action={<Link href={`/guard/incidents/${shown.id}`} className="text-xs font-medium text-guard hover:underline">Full report →</Link>}
             className="xl:col-span-2"
           >

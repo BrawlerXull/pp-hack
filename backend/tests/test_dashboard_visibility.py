@@ -340,32 +340,42 @@ def ai_with_one_invented_claim(monkeypatch, available: bool = True) -> None:
 
 
 async def test_dropped_ai_claims_and_fallback_reason_are_recorded_on_the_incident(db, client, monkeypatch):
+    """P9: the evidence rows are the scorecard's reasons (our numbers, several of them); Gemini's invented
+    claim in its explanation is still counted as dropped. A failed re-check no longer keeps an old verdict:
+    the scorecard re-decides from the new numbers and only the AI's wording is kept."""
     ai_with_one_invented_claim(monkeypatch)
     await seed_history(db, SHOP, days=7)
     await run_scenario(db, card_testing, 60)
     incident = await IncidentService(db, None, timedelta(minutes=2)).tick(SHOP)
     assert incident.dropped_evidence == 1 and incident.ai_fallback_reason is None
+    assert incident.model_id == "mock-model" and incident.decided_by == "scorecard"
 
     detail = (await client.get(f"/dashboard/incidents/{incident.id}")).json()
     assert detail["dropped_evidence"] == 1 and detail["trigger_tiers"]
-    assert len(detail["evidence_vs_normal"]) == 1
-    assert detail["evidence_vs_normal"][0]["multiplier"] > 1
+    rows = detail["evidence_vs_normal"]
+    assert len(rows) == len(incident.verdict["evidence"]) >= 3
+    assert {r["feature"] for r in rows} <= set(detail["features"]["15m"])
+    assert any(r["multiplier"] and r["multiplier"] > 1 for r in rows)
     assert detail["detected_in_s"] is not None and detail["detected_in_s"] >= 0
+    assert detail["decided_by"] == "scorecard" and detail["classifier_version"] == "scorecard-v1"
 
-    # The next re-check fails: the verdict (and its dropped count) is kept, and the reason is on record.
+    # The next re-check's explanation fails: the decision is fresh, the AI's wording is kept, the reason
+    # is on record.
     incident.last_assessed_at -= timedelta(minutes=11)
     incident.verdict_at -= timedelta(minutes=11)
     await db.commit()
     ai_with_one_invented_claim(monkeypatch, available=False)
     await IncidentService(db, None, timedelta(minutes=2)).tick(SHOP)
     await db.refresh(incident)
-    assert incident.ai_refresh_failed_at is not None and incident.dropped_evidence == 1
+    assert incident.ai_refresh_failed_at is None and incident.ai_refresh_failures == 1
+    assert incident.model_id == "mock-model" and incident.dropped_evidence == 1
     assert incident.ai_fallback_reason == "Gemini quota exhausted"
-    # The kept verdict's rows still show the numbers it was checked against, not the re-check's.
+    rechecked = (await client.get(f"/dashboard/incidents/{incident.id}")).json()
+    # The rows show the numbers the verdict was decided on, not whatever `features` holds later.
     incident.features = incident.features | {"15m": {"attempts": 7}}
     await db.commit()
-    kept = (await client.get(f"/dashboard/incidents/{incident.id}")).json()
-    assert kept["evidence_vs_normal"] == detail["evidence_vs_normal"]
+    later = (await client.get(f"/dashboard/incidents/{incident.id}")).json()
+    assert later["evidence_vs_normal"] == rechecked["evidence_vs_normal"]
 
 
 async def test_attempt_event_says_why_the_guard_decided(db):

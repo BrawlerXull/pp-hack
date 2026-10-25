@@ -92,7 +92,8 @@ async def run(sessions: Any, started_at: datetime, state: dict[str, Any], stop: 
 
 def _ai_block(ai: dict[str, Any], row: SystemStatus | None) -> dict[str, Any]:
     """live: Gemini answers (some models may be paused); cooling_down: every model paused until `until`;
-    rules_only: no AI until someone acts (no key, key rejected) — fixed rules decide meanwhile."""
+    rules_only: no AI until someone acts (no key, key rejected): the scorecard still decides, with template
+    wording and no AI second opinion for unsure cases."""
     state = ai.get("state")
     paused_until = [m["until"] for m in ai.get("models", []) if m.get("paused")]
     if state in ("ok", "degraded"):

@@ -6,10 +6,10 @@ There are two separately deployed apps plus a worker. **Status** says what the c
 | Part | Tech | Job | Status |
 |---|---|---|---|
 | **frontend/** | Next.js 16 (App Router) + TypeScript + Tailwind, AG Grid + AG Charts (Community), PayPal JS SDK v6 | **UI only:** the demo shop "Wick & Wax" and the owner dashboard (War Room, incidents, reports, settings, Demo lab). No PayPal secrets, no business logic | **Built** with the PayPal button (wallet). **Planned:** Card Fields in the shop, AG Studio |
-| **backend/** (API) | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 (async) + Alembic, httpx, Google Gen AI SDK (`google-genai`) | Shop order API, guard check (also public as `POST /v1/guard/check`), webhooks, PayPal client, AI analyst, policy engine, action executor, reports, dashboard API + live stream (Postgres LISTEN/NOTIFY → SSE) | **Built.** **Planned:** Studio agent endpoint |
+| **backend/** (API) | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 (async) + Alembic, httpx, Google Gen AI SDK (`google-genai`) | Shop order API, guard check (also public as `POST /v1/guard/check`), webhooks, PayPal client, scorecard classifier, AI explainer, policy engine, action executor, reports, dashboard API + live stream (Postgres LISTEN/NOTIFY → SSE) | **Built.** **Planned:** Studio agent endpoint |
 | **backend/worker** | Same Python package, separate process (`python -m app.worker.main`) | Webhook processing, detector loop, incident re-assessment, de-escalation, device-block expiry, in-flight refund sweeper, heartbeat | **Built.** The baseline comes from the shop's own attempts (seeded history in the demo). **Planned:** baseline refresh from Transaction Search |
 | **Simulator** | Inside the backend (`app/simulator/`), driven from the Demo lab, `/demo/*` and `scripts/attack.py` (Typer) | Labelled attacker and control scenarios: card testing, account testing, slow drip, flash sale, outage, normal night | **Built** (offline, and live sandbox for card scenarios) |
-| **Evaluation** | `scripts/eval_ai.py` + the pytest suite | Scores the live analyst on attack vs rush vs outage; the tests replay the pipeline end to end with PayPal and Gemini mocked | **Built** |
+| **Evaluation** | `scripts/eval_detection.py`, `scripts/eval_ai.py` + the pytest suite | Offline: triggers and scorecard on 12 simulated scenarios × 20 seeds (docs/eval-detection.md). Live: scorecard vs Gemini vs both. The tests replay the pipeline end to end with PayPal and Gemini mocked | **Built** |
 | Postgres | Render Postgres (paid) | The single store; no Redis | **Built** (docker compose locally, `render.yaml` for Render) |
 
 **Why a separate Python backend:**
@@ -112,7 +112,7 @@ flowchart LR
 ### 3.3 Incident lifecycle
 1. The detector runs every 10 s and computes window features against the baseline.
 2. A trigger opens an `incident`.
-3. The AI analyst returns a verdict.
+3. The scorecard classifier returns a verdict (Gemini breaks a tie only when it is unsure, and explains the decision afterwards).
 4. The policy engine decides the allowed actions and the executor runs them:
    - guard-state change (SCA, block fingerprints, hold SKU)
    - refunds through PayPal
@@ -217,7 +217,7 @@ checkout-guard/
 - **Real (sandbox) — built:**
   - PayPal OAuth, orders and captures (Orders v2), declines (`CCREJECT-*` triggers, live simulation mode), 3-D Secure (`SCA_ALWAYS`), refunds, webhooks with signature verification
   - Sandbox disputes: `CUSTOMER.DISPUTE.*` webhooks are handled (a disputed capture is never refunded automatically)
-  - Gemini calls (analyst and report writer)
+  - Gemini calls (explanations, tie-breaks, report writer)
   - Render (Blueprint in `render.yaml`)
 - **Real — planned, not built:**
   - Transaction Search (the baseline uses the shop's own attempts and seeded history)

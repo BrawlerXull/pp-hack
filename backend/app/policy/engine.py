@@ -1,33 +1,41 @@
 """Policy engine: fixed, deterministic rules that decide what Checkout Guard may do.
 
-The AI's verdict is an input; it never moves money or changes the checkout on its own. Trigger tiers
-(app/detection/triggers.py) let the rules act on the kind of signal before, and without, the AI.
+The classification is an input: the deterministic scorecard's verdict (app/detection/classifier.py), with
+Gemini only confirming an unsure one (app/incidents/decision.py: an AI-confirmed verdict is capped below
+the refund floor, and in practice below the blocking floor, so it gets R3b). Nothing here moves money or
+changes the checkout on a model's say-so, and whether Gemini answered (or only wrote the explanation)
+never changes the defences: only the recorded decision does.
+Trigger tiers (app/detection/triggers.py) let the rules act on the kind of signal before any verdict.
 
-  R0 fraud-tier trigger fired            → 3-D Secure at once, before the analyst is asked (rules_first);
+  R0 fraud-tier trigger fired            → 3-D Secure at once, before the verdict (rules_first);
                                            not during an owner-announced sale, not with the kill switch on
   R1 kill switch on                      → notify only
   R2 genuine rush or PayPal outage,      → notify, and RELAX: undo this incident's 3-D Secure and SKU holds
      confidence ≥ 0.70                     (restore the guard state from before the incident; blocked
                                            fingerprints stay blocked). Below 0.70 it falls through to R3.
+                                           An outage call never relaxes while fraud-tier triggers fired in
+                                           the incident (errors can be manufactured): it is R3 instead.
   R3 unclear, or confidence < 0.70       → soft defences: 3-D Secure for cards + notify, except
      R3c volume-only triggers, mostly returning customers, few declines → notify only (no friction)
-     R3d AI down and only ops triggers (PayPal failing)                 → notify only
-     R3b AI down, fraud-tier trigger, no sale, PayPal not failing → 3-D Secure, block the strong
-         fingerprints only (several cards or fraud/probing refusals, never a known customer), hold the
-         targeted SKU for first-time shoppers. Never refunds: money only moves on an AI verdict. With
-         processor errors in the mix, shoppers retrying through the outage blur the picture, so it is
-         plain R3 instead.
+     R3d unopposed tie-break and only ops triggers (PayPal failing)     → notify only
+     R3b unopposed tie-break (Gemini agreed with the unsure scorecard, or was down, off or unverifiable),
+         fraud-tier trigger, no sale, PayPal not failing →
+         3-D Secure, block the strong fingerprints only (several cards or fraud/probing refusals, never a
+         known customer), hold the targeted SKU for first-time shoppers. Never refunds. With processor
+         errors in the mix, shoppers retrying through the outage blur the picture, so it is plain R3.
+         An AI that answered "unclear" or disagreed with the scorecard keeps it at plain R3 (soft only).
   R4 attack, confidence ≥ 0.70           → 3-D Secure, block attack fingerprints, hold the targeted SKU
                                            for first-time shoppers, notify
      … but during an owner-announced sale → 3-D Secure + notify only (no blocking)
-  R5 refunds of matched attack captures  → only with confidence ≥ 0.85, outside a sale window;
+  R5 refunds of matched attack captures  → only with confidence ≥ 0.85 (the scorecard alone: an
+                                           AI-confirmed verdict is capped below it), outside a sale window;
                                            executed automatically under the caps when autopilot is
                                            on, otherwise queued for owner approval; also queued
-                                           while the verdict is stale (AI re-checks keep failing), so
-                                           blocks and holds continue but no new money moves unseen
+                                           while a kept AI-confirmed verdict is stale, so blocks and holds
+                                           continue but no new money moves unseen
 
-Fallback verdicts stay classification "unclear"; what the rules think is kept apart as rules_hint(), so a
-rules guess never reaches the owner's report or the eval dressed up as an AI classification.
+"unclear" stays "unclear"; what the triggers alone suggest is kept apart as rules_hint(), shown next to it
+and never used as a classification (the scorecard supersedes it).
 """
 
 from dataclasses import dataclass, field
@@ -62,10 +70,12 @@ class PolicyInput:
     sale_window_active: bool
     attack_fingerprints: list[str]
     attack_sku: str | None
-    # The verdict is a kept one that the AI could not re-confirm for a while (app/incidents/cadence.py).
+    # The verdict is a kept AI-confirmed one that the AI could not re-confirm for a while (cadence.py).
     verdict_stale: bool = False
-    # False when the classification is the rules fallback (Gemini unavailable), not a model's answer.
-    ai_available: bool = True
+    # The scorecard was unsure and nobody contradicted it: Gemini's second opinion agreed, or could not be
+    # had (down, quota, switched off, evidence that did not match). Set from the recorded decision only
+    # (service._policy_input), never from whether Gemini wrote the explanation.
+    unopposed_tiebreak: bool = False
     trigger_tiers: frozenset[Tier] = frozenset()
     known_customer_share: float = 0.0  # 15-minute window
     decline_rate: float = 0.0  # 15-minute window
@@ -93,16 +103,16 @@ def _looks_like_rush(p: PolicyInput) -> bool:
 
 
 def rules_first(p: PolicyInput) -> list[PlannedAction]:
-    """R0: applied (and committed) before the analyst is asked, so the minutes Gemini takes, or an outage,
-    never leave a card-testing burst undefended. 3-D Secure only: it costs a real shopper one bank prompt,
-    and a confident harmless verdict undoes it (RELAX)."""
+    """R0: applied (and committed) before the verdict, so an unsure scorecard waiting on Gemini's second
+    opinion, or an outage, never leaves a card-testing burst undefended. 3-D Secure only: it costs a real
+    shopper one bank prompt, and a confident harmless verdict undoes it (RELAX)."""
     if p.kill_switch or p.sale_window_active or Tier.FRAUD not in p.trigger_tiers:
         return []
     return [PlannedAction(ActionType.SCA_ON, "R0_fraud_signal")]
 
 
 def rules_hint(p: PolicyInput) -> str | None:
-    """What the triggers alone suggest. Shown next to a fallback verdict; never used as a classification."""
+    """What the triggers alone suggest. Shown next to an "unclear" verdict; never used as a classification."""
     if Tier.FRAUD in p.trigger_tiers:
         return "fraud_signals"
     if _ops_only(p):
@@ -118,7 +128,10 @@ def decide(p: PolicyInput) -> list[PlannedAction]:
     notify = PlannedAction(ActionType.NOTIFY, "always_notify")
     if p.kill_switch:
         return [PlannedAction(ActionType.NOTIFY, "R1_kill_switch")]
-    if p.classification in HARMLESS_CLASSES and p.confidence >= CONFIDENCE_ACT:
+    # A bot can make captures fail on purpose (capturing orders nobody approved): an "outage" with fraud
+    # signals in the same incident gets the soft defences, never a RELAX.
+    fake_outage = p.classification == "paypal_outage" and Tier.FRAUD in p.trigger_tiers
+    if p.classification in HARMLESS_CLASSES and p.confidence >= CONFIDENCE_ACT and not fake_outage:
         actions = [PlannedAction(ActionType.NOTIFY, f"R2_{p.classification}")]
         if p.guard_set_by_incident:
             actions.insert(0, PlannedAction(ActionType.RELAX, f"R2_relax_{p.classification}"))
@@ -152,30 +165,30 @@ def decide(p: PolicyInput) -> list[PlannedAction]:
 
 
 def _rules_only(p: PolicyInput, notify: PlannedAction) -> list[PlannedAction]:
-    """R3 family: no confident verdict to act on (unclear, below the floor, or the AI is down)."""
+    """R3 family: no confident verdict to act on (unclear, or below the floor)."""
     if _looks_like_rush(p):
         return [PlannedAction(ActionType.NOTIFY, "R3c_returning_customer_rush")]
-    if not p.ai_available and _ops_only(p):
+    if p.unopposed_tiebreak and _ops_only(p):
         # 3-D Secure during a PayPal outage only adds a failing step for shoppers already retrying.
         return [PlannedAction(ActionType.NOTIFY, "R3d_processor_trouble_notify_only")]
     if (
-        not p.ai_available
+        p.unopposed_tiebreak
         and Tier.FRAUD in p.trigger_tiers
         and Tier.OPS not in p.trigger_tiers
         and not p.sale_window_active
     ):
-        actions = [PlannedAction(ActionType.SCA_ON, "R3b_ai_down_fraud_signal")]
+        actions = [PlannedAction(ActionType.SCA_ON, "R3b_unopposed_fraud_signal")]
         if p.strong_fingerprints:
             actions.append(
                 PlannedAction(
                     ActionType.BLOCK_FP,
-                    "R3b_ai_down_fraud_signal",
+                    "R3b_unopposed_fraud_signal",
                     {"fingerprints": sorted(p.strong_fingerprints)},
                 )
             )
         if p.attack_sku:
             actions.append(
-                PlannedAction(ActionType.HOLD_SKU, "R3b_ai_down_fraud_signal", {"sku": p.attack_sku})
+                PlannedAction(ActionType.HOLD_SKU, "R3b_unopposed_fraud_signal", {"sku": p.attack_sku})
             )
         return [*actions, notify]
     return [PlannedAction(ActionType.SCA_ON, "R3_soft_defence"), notify]

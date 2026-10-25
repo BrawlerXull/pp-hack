@@ -1,9 +1,11 @@
-"""When the AI is asked again (app/incidents/cadence.py). Pure: transient Incident objects, no database."""
+"""When an incident is re-assessed and Gemini asked again (app/incidents/cadence.py). Pure: transient
+Incident objects, no database."""
 
 from datetime import UTC, datetime, timedelta
 
 from app.db.models import Incident
 from app.incidents import cadence
+from app.incidents.decision import DECIDED_BY_AGREE, DECIDED_BY_SCORECARD
 
 T0 = datetime(2026, 10, 18, 2, 0, tzinfo=UTC)
 BASE = timedelta(minutes=2)
@@ -123,23 +125,36 @@ def test_guard2_staleness_after_three_failures_or_twenty_minutes():
     )
 
 
-def test_has_real_verdict_ignores_the_ai_available_default():
+def test_has_real_verdict_means_an_agreed_tie_break():
+    """P9: the scorecard always answers, so the only AI-dependent verdict (the one kept through a failed
+    re-check) is a tie-break Gemini agreed to. Used to mean "any non-fallback AI verdict"."""
     assert not cadence.has_real_verdict(Incident(classification=None, model_id=None))
-    assert not cadence.has_real_verdict(inc(model_id=cadence.RULES_FALLBACK))
-    assert cadence.has_real_verdict(inc())
+    assert not cadence.has_real_verdict(inc(decided_by=DECIDED_BY_SCORECARD))
+    assert cadence.has_real_verdict(inc(decided_by=DECIDED_BY_AGREE))
+
+
+def test_gemini_is_retried_on_a_backoff_but_the_scorecard_never_waits():
+    assert cadence.ai_due(inc(), T0, BASE)
+    failing = inc(ai_refresh_failures=2)
+    failing.assessment_context = failing.assessment_context | {"ai_at": T0.isoformat()}
+    assert not cadence.ai_due(failing, T0 + timedelta(minutes=3), BASE)  # 2 failures: 4 min backoff
+    assert cadence.ai_due(failing, T0 + timedelta(minutes=4), BASE)
+    # A material change still re-assesses during the backoff (the scorecard re-runs; Gemini is skipped).
+    assert reason(failing, timedelta(minutes=1), attempts_15m=100) is None  # confident: growth alone is fine
+    unsure = inc(confidence=0.6, ai_refresh_failures=2)
+    assert reason(unsure, timedelta(minutes=3), attempts_15m=60) == "attempts_grew"
 
 
 def test_r0_only_acts_on_triggers_a_confident_harmless_verdict_has_not_weighed():
     fired = ["decline_spike", "velocity_spike", "fraud_declines"]
     rush = inc(classification="genuine_rush", confidence=0.9)  # its verdict saw decline_spike + velocity
     assert cadence.unjudged_triggers(rush, fired) == ["fraud_declines"]
-    # A weak rush verdict, an attack verdict, or the rules fallback: R0 sees everything.
+    # A weak rush verdict or an attack verdict: R0 sees everything.
     assert cadence.unjudged_triggers(inc(classification="genuine_rush", confidence=0.6), fired) == fired
     assert cadence.unjudged_triggers(inc(), fired) == fired
-    assert (
-        cadence.unjudged_triggers(inc(model_id=cadence.RULES_FALLBACK, classification="genuine_rush"), fired)
-        == fired
-    )
+    # P9: a confident scorecard rush counts whoever wrote its text (it used to need an AI verdict).
+    template_rush = inc(model_id=cadence.TEMPLATE, classification="genuine_rush")
+    assert cadence.unjudged_triggers(template_rush, fired) == ["fraud_declines"]
 
 
 def test_sku_concentration_is_not_a_fraud_signal_for_guard1():

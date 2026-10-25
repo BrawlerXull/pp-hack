@@ -35,7 +35,7 @@ from app.shop.service import CheckoutRequest, OfflinePlan, fingerprint, place_or
 from app.simulator.scenarios import card_testing
 from app.simulator.seed import seed_history
 from tests.conftest import SHOP, blocked
-from tests.test_pipeline import fake_ai, run_scenario
+from tests.test_pipeline import fake_ai, force_scorecard, run_scenario
 
 REASSESS = timedelta(minutes=2)
 
@@ -65,8 +65,22 @@ def observing(monkeypatch, classification: str, confidence: float) -> list[str]:
     return seen
 
 
+def rush_by_tiebreak(monkeypatch) -> list[str]:
+    """The scorecard unsure between a rush and an attack (forced), Gemini's second opinion says rush: an
+    agreed genuine_rush at AGREE_CAP, which RELAXes. (Before P9 the fake AI decided genuine_rush outright on
+    card-testing traffic; real card testing is now clear-cut to the scorecard, so R0→RELAX is exercised
+    through the tie-break, which is also the only path where the Gemini call happens before the policy.)"""
+    force_scorecard(monkeypatch, "unclear", 0.9, margin=0.1, top="genuine_rush")
+    return observing(monkeypatch, "genuine_rush", 0.9)
+
+
+def unclear_both_ways(monkeypatch) -> list[str]:
+    force_scorecard(monkeypatch, "unclear", 0.5, margin=0.05, top="card_testing")
+    return observing(monkeypatch, "unclear", 0.5)
+
+
 async def test_r0_turns_on_3ds_before_the_analyst_and_relax_undoes_it_once(db, monkeypatch):
-    seen = observing(monkeypatch, "genuine_rush", 0.9)
+    seen = rush_by_tiebreak(monkeypatch)
     await seed_history(db, SHOP, days=7)
     await run_scenario(db, card_testing, 60)
     svc = IncidentService(db, None, REASSESS)
@@ -98,13 +112,13 @@ def owner_closes_during(monkeypatch, method: str) -> None:
 
 
 async def test_an_owner_close_between_r0_and_the_claim_leaves_the_checkout_restored(db, monkeypatch):
-    observing(monkeypatch, "unclear", 0.5)
+    unclear_both_ways(monkeypatch)
     await seed_history(db, SHOP, days=7)
     await run_scenario(db, card_testing, 60)
     svc = IncidentService(db, None, REASSESS)
     incident = await svc.tick(SHOP)  # R0, then R3 (3-D Secure stays on)
 
-    seen = observing(monkeypatch, "unclear", 0.5)
+    seen = unclear_both_ways(monkeypatch)
     incident.last_assessed_at = datetime.now(UTC) - timedelta(minutes=5)
     incident.assessment_context = {**incident.assessment_context, "triggers": []}  # force a re-ask
     await db.commit()
@@ -132,13 +146,13 @@ async def test_an_owner_close_before_r0_stops_r0(db, monkeypatch):
 async def test_the_owner_is_told_when_r0_adds_friction_on_a_reassessment(db, monkeypatch):
     """R0 turns 3-D Secure on again; the analyst then says 'unclear', whose R3 plan adds nothing new. The
     owner must still hear about the friction R0 added."""
-    observing(monkeypatch, "genuine_rush", 0.9)
+    rush_by_tiebreak(monkeypatch)
     await seed_history(db, SHOP, days=7)
     await run_scenario(db, card_testing, 60)
     svc = IncidentService(db, None, REASSESS)
     incident = await svc.tick(SHOP)  # R0, then RELAX
 
-    observing(monkeypatch, "unclear", 0.5)
+    unclear_both_ways(monkeypatch)
     reports: list[str] = []
     real_report = IncidentService.write_report
 
@@ -157,7 +171,7 @@ async def test_the_owner_is_told_when_r0_adds_friction_on_a_reassessment(db, mon
 
 
 async def test_r0_is_skipped_during_an_owner_announced_sale(db, monkeypatch):
-    seen = observing(monkeypatch, "genuine_rush", 0.9)
+    seen = rush_by_tiebreak(monkeypatch)
     await seed_history(db, SHOP, days=7)
     ms = await db.get(MerchantSettings, SHOP)
     now = datetime.now(UTC)
@@ -241,9 +255,13 @@ async def test_a_second_attack_three_hours_after_the_first_still_trips_decline_s
     db.add_all(attack_row(now - timedelta(seconds=10 * i), i) for i in range(60))
     await db.commit()
 
-    # Control: without the incident record, the first run's declines become "normal" and hide the second.
-    assert (await baseline_mod.load_baseline(db, SHOP, now)).decline_rate > 0.3
-    assert "decline_spike" not in await detect(db, now)
+    # Without the incident record, the first run's declines become "normal": the second run is far less
+    # surprising against it. (Before P9 the 3x-baseline rule missed it entirely; the binomial test still
+    # fires on 75% declines against a polluted 40%, but the baseline must not be polluted in the first place.)
+    polluted = await baseline_mod.load_baseline(db, SHOP, now)
+    assert polluted.decline_rate > 0.3
+    rows = await baseline_mod.recent_rows(db, SHOP, now - timedelta(minutes=60))
+    polluted_surprise = compute_all(rows, now, polluted)[15].decline_surprise
 
     db.add(
         Incident(
@@ -254,8 +272,10 @@ async def test_a_second_attack_three_hours_after_the_first_still_trips_decline_s
         )
     )
     await db.commit()
-    assert (await baseline_mod.load_baseline(db, SHOP, now)).decline_rate < 0.1
+    clean = await baseline_mod.load_baseline(db, SHOP, now)
+    assert clean.decline_rate < 0.1
     assert "decline_spike" in await detect(db, now)
+    assert compute_all(rows, now, clean)[15].decline_surprise > polluted_surprise + 10
 
 
 async def test_baseline_ignores_guard_stopped_attempts_refunds_and_blocked_devices(db):
@@ -314,7 +334,7 @@ async def test_a_customer_first_seen_in_a_genuine_rush_incident_is_known_later(d
 
 async def test_incident_hours_are_left_out_of_the_hourly_series_not_zero_filled(db):
     """Three busy hours inside an incident become missing hours, not zero-traffic hours, so they do not
-    drag the mean down (which would inflate velocity_z for ordinary traffic)."""
+    drag the mean down (which would make ordinary traffic look like a velocity spike)."""
     now = datetime.now(UTC).replace(minute=30, second=0, microsecond=0)
     start = now - timedelta(hours=30)
     db.add_all(

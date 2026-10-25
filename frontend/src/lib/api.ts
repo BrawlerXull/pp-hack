@@ -86,15 +86,55 @@ export type IncidentSummary = {
   ai_available: boolean;
   // Last AI re-check failed and the previous AI verdict was kept (the badge keeps showing that model).
   ai_refresh_failed_at: string | null;
-  // What the triggers alone suggest; shown with a rules-fallback verdict, never used as the classification.
+  // What the triggers alone suggest; shown next to an "unclear" verdict, never used as the classification.
   rules_hint?: RulesHint | null;
   trigger_tiers?: Record<string, TriggerTier>;
   // AI evidence items that did not match our computed numbers and were dropped before display.
   dropped_evidence?: number;
   // Why the last assessment could not use the AI (rules fallback or kept verdict); null when it answered.
   ai_fallback_reason?: string | null;
+  // Who wrote the verdict's words: a Gemini model id, or "template" (Checkout Guard's own wording).
   model_id: string | null;
   verdict_at: string | null;
+  // P9: the deterministic scorecard decides the classification; Gemini explains it or breaks a tie.
+  classifier_version?: string | null;
+  decided_by?: DecidedBy | null;
+  class_probs?: Record<string, number> | null;
+  class_margin?: number | null;
+  scorecard?: Scorecard | null;
+};
+
+export type DecidedBy = "scorecard" | "scorecard+gemini_agree" | "gemini_disagree_unclear";
+
+export type ScoreReason = {
+  cls: string;
+  feature: string | null; // null: context that is not a feature (the owner's sale window)
+  window_min: number;
+  observed: number | null;
+  points: number;
+  text: string;
+  supporting: boolean;
+};
+
+export type Tiebreak = {
+  outcome: "agree" | "disagree" | "unavailable" | "unverified";
+  gemini: Classification | null;
+  model: string | null;
+};
+
+export type Scorecard = {
+  version: string;
+  classification: Classification;
+  confidence: number;
+  top_class: Classification;
+  runner_up: Classification;
+  margin: number;
+  probabilities: Record<string, number>;
+  scores: Record<string, number>;
+  window_min: number;
+  top_reasons: ScoreReason[];
+  notes: string[];
+  tiebreak: Tiebreak | null;
 };
 
 export type TriggerTier = "volume" | "fraud" | "ops" | "holding";

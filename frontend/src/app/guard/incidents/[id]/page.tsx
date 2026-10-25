@@ -67,7 +67,7 @@ export default function IncidentPage() {
       <DecisionStrip incident={inc} />
 
       <div className="grid gap-6 xl:grid-cols-3">
-        <Card title="AI analyst verdict" className="xl:col-span-2">
+        <Card title="Verdict (scorecard decides, AI explains)" className="xl:col-span-2">
           <VerdictCard incident={inc} />
         </Card>
         <div className="space-y-6">
