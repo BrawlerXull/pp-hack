@@ -1,14 +1,17 @@
 """Runs a scenario through the real shop order flow (in-process for the demo buttons)."""
 
 import asyncio
+import inspect
+import random
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
-from app.db.models import Source
+from app.db.models import Outcome, Source
 from app.db.session import get_sessionmaker
 from app.paypal.client import PayPalClient
 from app.paypal.orders import CardDetails
@@ -30,6 +33,18 @@ class SimRun:
     outcomes: Counter[str] = field(default_factory=Counter)
     error: str | None = None
     cancelled: bool = False
+    seed: int | None = None
+    # What was already in place when the run started (open incident, 3-D Secure, held items, blocked
+    # devices): explains a run whose attempts never reached PayPal.
+    context: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def stopped_by_guard(self) -> int:
+        return self.outcomes[Outcome.BLOCKED] + self.outcomes[Outcome.CHALLENGED]
+
+    @property
+    def reached_paypal(self) -> int:
+        return self.done - self.stopped_by_guard
 
 
 RUNS: dict[str, SimRun] = {}
@@ -72,14 +87,28 @@ def start_run(
     count: int | None = None,
     speed: float = 1.0,
     seed: int | None = None,
+    context: dict[str, Any] | None = None,
 ) -> SimRun:
+    """Demo runs vary: a fresh seed each time (reported, so a run can be replayed exactly with the same
+    seed), a +/-30% attempt count unless one is given, and a fresh attacker profile in the scenario."""
     if scenario not in SCENARIOS:
         raise ValueError(f"unknown scenario {scenario!r}")
     if mode == "live" and scenario in OFFLINE_ONLY:
         raise ValueError(f"{scenario} can only run offline (simulated)")
-    kwargs = {"seed": seed, "speed": speed} | ({"count": count} if count else {})
-    attempts = list(SCENARIOS[scenario](mode, **kwargs))
-    run = SimRun(id=uuid.uuid4().hex[:10], scenario=scenario, mode=mode, total=len(attempts))
+    fn = SCENARIOS[scenario]
+    seed = seed if seed is not None else random.SystemRandom().randrange(1, 10**6)
+    if not count:
+        default = inspect.signature(fn).parameters["count"].default
+        count = max(1, round(default * random.Random(seed ^ 0x5EED).uniform(0.7, 1.3)))
+    attempts = list(fn(mode, count=count, seed=seed, speed=speed, vary=True))
+    run = SimRun(
+        id=uuid.uuid4().hex[:10],
+        scenario=scenario,
+        mode=mode,
+        total=len(attempts),
+        seed=seed,
+        context=context or {},
+    )
     RUNS[run.id] = run
     task = asyncio.create_task(_execute(run, shop_id, attempts, paypal))
     _TASKS.add(task)

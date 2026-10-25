@@ -27,7 +27,9 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.events import publish
+from app.guard import devices
 from app.guard.check import invalidate_cache
+from app.incidents.service import open_incident
 from app.paypal.client import PayPalClient
 from app.simulator.runner import RUNS, active_run, start_run
 from app.simulator.scenarios import OFFLINE_ONLY, SCENARIOS
@@ -84,10 +86,35 @@ async def run(
         await session.commit()
         invalidate_cache(shop_id)
     try:
-        r = start_run(shop_id, scenario, body.mode, paypal, body.count, body.speed, body.seed)
+        context = await run_context(session, shop_id)
+        r = start_run(shop_id, scenario, body.mode, paypal, body.count, body.speed, body.seed, context)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"run_id": r.id, "scenario": r.scenario, "mode": r.mode, "total": r.total, "simulated": True}
+    return {
+        "run_id": r.id,
+        "scenario": r.scenario,
+        "mode": r.mode,
+        "total": r.total,
+        "seed": r.seed,
+        "context": r.context,
+        "simulated": True,
+    }
+
+
+async def run_context(session: AsyncSession, shop_id: str) -> dict:
+    """Defences already in place when a run starts. A new attack against them is stopped before PayPal,
+    which is correct but makes every run look the same: the Demo lab shows this next to the run."""
+    inc = await open_incident(session, shop_id)
+    gs = await session.get(GuardState, shop_id, populate_existing=True)
+    blocked = await devices.count_blocked(session, shop_id)
+    return {
+        "open_incident": inc.id if inc else None,
+        "open_incident_class": inc.classification if inc else None,
+        "sca_all": bool(gs and gs.mode == GuardMode.SCA_ALL),
+        "held_skus": list(gs.held_skus or []) if gs else [],
+        "blocked_devices": blocked,
+        "defences_active": bool(inc or (gs and (gs.mode == GuardMode.SCA_ALL or gs.held_skus)) or blocked),
+    }
 
 
 @router.get("/runs")
@@ -103,6 +130,10 @@ def runs(_shop: OwnerShop) -> list[dict]:
             "started_at": r.started_at,
             "finished_at": r.finished_at,
             "error": r.error,
+            "seed": r.seed,
+            "context": r.context,
+            "stopped_by_guard": r.stopped_by_guard,
+            "reached_paypal": r.reached_paypal,
         }
         for r in sorted(RUNS.values(), key=lambda r: r.started_at, reverse=True)
     ]

@@ -1,16 +1,17 @@
 "use client";
 
-import { Database, Loader2, Play, RotateCcw, Square } from "lucide-react";
+import { Database, Loader2, Play, RotateCcw, ShieldAlert, Square } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import useSWR from "swr";
 import { Badge, Button, Card, Empty } from "@/components/guard/ui";
-import { api, type Scenario, type SimRun } from "@/lib/api";
-import { OUTCOME_META, timeAgo } from "@/lib/format";
+import { api, type RunContext, type Scenario, type SimRun, type Summary } from "@/lib/api";
+import { OUTCOME_META, SKU_NAME, timeAgo } from "@/lib/format";
 
 const ABOUT: Record<string, string> = {
-  card_testing: "Bot farm hammering the cheapest item with a new card each time, ~70% declined.",
+  card_testing: "Bot farm hammering the cheapest item with a new card each time. Each run draws its own attacker: 2-7 devices, pace, decline mix.",
   account_testing: "Stolen PayPal logins (wallet): most orders never get approved, many payers per device, cheapest item.",
-  slow_drip: "One attempt every 12 s: an attacker trying to stay under the radar.",
+  slow_drip: "One attempt every 7-20 s: an attacker trying to stay under the radar.",
   flash_sale: "Real customers after an announced sale: returning shoppers, varied baskets, few declines.",
   paypal_outage: "Normal customers while PayPal returns errors: not an attack.",
   normal_night: "A few ordinary orders.",
@@ -20,7 +21,10 @@ const ABOUT: Record<string, string> = {
 
 export default function LabPage() {
   const { data: scenarios } = useSWR<Scenario[]>("/demo/scenarios");
-  const { data: runs } = useSWR<SimRun[]>("/demo/runs", { refreshInterval: 2000 });
+  const { data: runs, mutate: refreshRuns } = useSWR<SimRun[]>("/demo/runs", { refreshInterval: 2000 });
+  const { data: summary, mutate: refreshSummary } = useSWR<Summary>("/dashboard/summary", { refreshInterval: 5000 });
+  const gs = summary?.guard_state;
+  const defencesOn = Boolean(summary?.open_incident || gs?.mode === "sca_all" || gs?.held_skus.length || gs?.blocked_devices);
   const [mode, setMode] = useState<"offline" | "live">("offline");
   const [speed, setSpeed] = useState(3);
   const [busy, setBusy] = useState<string | null>(null);
@@ -36,8 +40,12 @@ export default function LabPage() {
       setMessage(e instanceof Error ? e.message : "Failed");
     } finally {
       setBusy(null);
+      refreshRuns();
+      refreshSummary();
     }
   }
+
+  const reset = () => act("reset", () => api("/demo/reset", { method: "POST" }), "Demo reset (history kept).");
 
   return (
     <>
@@ -48,6 +56,26 @@ export default function LabPage() {
           <b>Live</b> sends real PayPal sandbox orders with sandbox test cards (needs card processing enabled on the sandbox app).
         </p>
       </div>
+
+      {defencesOn && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <ShieldAlert className="size-5 shrink-0" />
+          <p className="min-w-0 flex-1">
+            <b>Defences from an earlier attack are still on</b>
+            {summary?.open_incident && (
+              <>
+                {" "}(
+                <Link href={`/guard/incidents/${summary.open_incident.id}`} className="underline">open incident</Link>)
+              </>
+            )}
+            : {describeDefences({ sca_all: gs?.mode === "sca_all", held_skus: gs?.held_skus, blocked_devices: gs?.blocked_devices })}. A new attack
+            will be stopped before it reaches PayPal. Reset the demo to watch an attack from the start.
+          </p>
+          <Button variant="secondary" disabled={!!busy} onClick={reset}>
+            <RotateCcw className="size-4" /> Reset demo
+          </Button>
+        </div>
+      )}
 
       <Card
         title="Scenarios"
@@ -93,7 +121,7 @@ export default function LabPage() {
           <Button variant="secondary" disabled={!!busy} onClick={() => act("seed", () => api("/demo/seed?days=28", { method: "POST" }), "Seeded 28 days of normal history.")}>
             <Database className="size-4" /> Seed 28 days of normal history
           </Button>
-          <Button variant="secondary" disabled={!!busy} onClick={() => act("reset", () => api("/demo/reset", { method: "POST" }), "Demo reset (history kept).")}>
+          <Button variant="secondary" disabled={!!busy} onClick={reset}>
             <RotateCcw className="size-4" /> Reset demo
           </Button>
           {message && <span className="self-center text-xs text-slate-500">{message}</span>}
@@ -106,7 +134,8 @@ export default function LabPage() {
         ) : (
           <ul className="-my-2 divide-y divide-slate-100">
             {runs.map((r) => (
-              <li key={r.run_id} className="flex flex-wrap items-center gap-3 py-3 text-sm">
+              <li key={r.run_id} className="py-3 text-sm">
+                <div className="flex flex-wrap items-center gap-3">
                 <span className="w-36 font-medium text-slate-800">{r.scenario.replace(/_/g, " ")}</span>
                 <Badge tone={r.mode === "live" ? "info" : "neutral"}>{r.mode}</Badge>
                 <div className="h-1.5 w-32 overflow-hidden rounded-full bg-slate-100">
@@ -127,11 +156,46 @@ export default function LabPage() {
                     <Square className="size-3.5" />
                   </Button>
                 )}
+                </div>
+                <RunNote run={r} />
               </li>
             ))}
           </ul>
         )}
       </Card>
     </>
+  );
+}
+
+function describeDefences(c: RunContext): string {
+  const parts: string[] = [];
+  if (c.sca_all) parts.push("3-D Secure on every card");
+  if (c.held_skus?.length) parts.push(`${c.held_skus.map((s) => SKU_NAME[s] ?? s).join(", ")} on hold for new shoppers`);
+  if (c.blocked_devices) parts.push(`${c.blocked_devices} device${c.blocked_devices === 1 ? "" : "s"} blocked`);
+  return parts.length ? parts.join(", ") : "an incident is open";
+}
+
+/** One line under each run: its seed (replayable) and why its numbers look the way they do. */
+function RunNote({ run: r }: { run: SimRun }) {
+  const ctx = r.context ?? {};
+  const allStopped = r.done > 0 && r.reached_paypal === 0;
+  return (
+    <p className="mt-1 text-xs text-slate-500">
+      {r.seed !== null && <span className="font-mono">seed {r.seed}</span>}
+      {r.done > 0 && (
+        <>
+          {" · "}
+          {allStopped
+            ? `all ${r.done} stopped by the guard before PayPal`
+            : `${r.reached_paypal} reached ${r.mode === "live" ? "PayPal" : "the (simulated) PayPal step"}, ${r.stopped_by_guard} stopped by the guard`}
+        </>
+      )}
+      {ctx.defences_active && (
+        <span className="text-amber-700">
+          {" · "}started with defences already on ({describeDefences(ctx)})
+        </span>
+      )}
+      {r.mode === "live" && allStopped && <span>{" · "}no PayPal calls were made</span>}
+    </p>
   );
 }

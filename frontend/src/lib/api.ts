@@ -293,6 +293,20 @@ export type SimRun = {
   started_at: string;
   finished_at: string | null;
   error: string | null;
+  seed: number | null;
+  context: RunContext;
+  stopped_by_guard: number;
+  reached_paypal: number;
 };
+
+/** Defences already in place when a demo run started (they explain a run that never reached PayPal). */
+export type RunContext = Partial<{
+  open_incident: string | null;
+  open_incident_class: Classification | null;
+  sca_all: boolean;
+  held_skus: string[];
+  blocked_devices: number;
+  defences_active: boolean;
+}>;
 
 export type LiveEvent = { kind: string; data: Record<string, unknown> };
