@@ -550,3 +550,18 @@ def test_a_capture_answer_without_the_3ds_result_keeps_the_one_read_before():
     assert merge(before, after) == before
     assert merge(None, after) == after and merge(before, None) == before
     assert merge(before, CardInfo(liability_shift="YES")).liability_shift == "YES"
+
+
+async def test_a_created_order_with_a_passing_3ds_result_is_captured(db, sandbox):
+    """Live sandbox, Oct 25: after the bank challenge passed, the order was still CREATED (not APPROVED)
+    with liability_shift POSSIBLE, enrollment Y, authentication Y, and capturing it succeeded. Requiring
+    APPROVED refused a correctly verified card."""
+    res = await place_order(db, sandbox.client, web_card())
+    sandbox.card_fields_submit(
+        res.order_id, liability_shift="POSSIBLE", enrollment="Y", auth_status="Y", status="CREATED"
+    )
+
+    a = await capture_web_order(db, sandbox.client, SHOP, res.order_id)
+
+    assert a is not None and a.outcome == Outcome.CAPTURED and a.capture_id
+    assert a.sca_liability_shift == "POSSIBLE"

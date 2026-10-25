@@ -333,8 +333,14 @@ async def _web_gate(
     browser_gave_up = record_only and (card is not None or order.status == "PAYER_ACTION_REQUIRED")
     if browser_gave_up or not three_ds.capture_allowed(card, order.status, sca_required):
         return await _store(session, attempt.id, None, sca_failed=order), None
-    if record_only or order.status != "APPROVED":
-        return attempt, None  # not approved: PayPal would only answer ORDER_NOT_APPROVED
+    if record_only:
+        return attempt, None
+    # Card Fields: after a 3-D Secure challenge the sandbox leaves the order CREATED (not APPROVED) with the
+    # card and its authentication_result attached (seen live, Oct 25). The 3-D Secure rule above has already
+    # passed, and PayPal itself refuses a capture the card wasn't authorised for, so CREATED-with-a-card is
+    # capturable. Anything else (no card yet, PAYER_ACTION_REQUIRED, ...) still waits.
+    if order.status != "APPROVED" and not (order.status == "CREATED" and card is not None):
+        return attempt, None
     return None, card
 
 

@@ -413,7 +413,8 @@ const FIELD_STYLE = {
   input: { fontSize: "15px", color: "#1c1917", padding: "10px 12px" },
   "input.invalid": { color: "#b91c1c" },
 };
-const FIELD_CONTAINER = { minHeight: "3rem" };
+// A fixed height (as PayPal documents): with only minHeight the hosted iframe grows to its own ~150px default.
+const FIELD_CONTAINER = { height: "3.25rem" };
 
 /** PayPal-hosted card inputs (iframes): the card number, expiry and CVV never touch our page or server. */
 function CardForm({

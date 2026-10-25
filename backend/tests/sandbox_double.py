@@ -282,7 +282,9 @@ class SandboxDouble:
             return self._err(422, "ORDER_ALREADY_CAPTURED")
         if o.status == "PAYER_ACTION_REQUIRED":
             return self._err(422, "PAYER_ACTION_REQUIRED")
-        if o.status == "CREATED":
+        if o.status == "CREATED" and not (o.card or {}).get("number"):
+            # Seen live (Oct 25): after a Card Fields submit with a 3-D Secure challenge the order stays
+            # CREATED with the card attached, and the capture succeeds. Without a card it is not approved.
             return self._err(422, "ORDER_NOT_APPROVED")
         self._capture(o)
         return httpx.Response(201, json=self._order_json(o), headers={"paypal-debug-id": "dbg-cap"})
