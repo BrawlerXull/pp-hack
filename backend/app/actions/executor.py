@@ -209,19 +209,26 @@ class Executor:
         disputed capture (a refund on top of a chargeback pays the buyer twice), never a device the owner
         trusts, never one already handled anywhere in the shop."""
         sig = incident.signature or {}
-        if not sig.get("top_sku"):
-            return []
+        top_sku = sig.get("top_sku")
         now = datetime.now(UTC)
         trusted = await devices.trusted(self.s, incident.shop_id, now)
+        # No SKU filter in SQL: a STRONG device (several cards or fraud refusals, never a known customer) is a
+        # bot whatever it bought, so its captures on other items, or in an attack with no single target
+        # item, are refunded too. Weaker matches stay limited to the attacked item (below), where a real
+        # first-time shopper sharing an email domain or one honest refusal is most likely to be.
         q = (
-            select(CheckoutAttempt.id, CheckoutAttempt.fingerprint_hash, CheckoutAttempt.email_domain)
+            select(
+                CheckoutAttempt.id,
+                CheckoutAttempt.fingerprint_hash,
+                CheckoutAttempt.email_domain,
+                CheckoutAttempt.sku,
+            )
             .where(
                 CheckoutAttempt.shop_id == incident.shop_id,
                 CheckoutAttempt.outcome == Outcome.CAPTURED,
                 CheckoutAttempt.capture_id.is_not(None),
                 CheckoutAttempt.disputed.is_(False),
                 CheckoutAttempt.ts >= incident.opened_at - REFUND_LOOKBACK,
-                CheckoutAttempt.sku == sig["top_sku"],
                 CheckoutAttempt.id.not_in(self._handled(incident.shop_id)),
             )
             .order_by(CheckoutAttempt.ts)
@@ -230,9 +237,16 @@ class Executor:
             q = q.where(CheckoutAttempt.fingerprint_hash.not_in(trusted))
         blocked = await devices.blocked_as_strong(self.s, incident.shop_id, now, incident.id)
         out = []
-        for attempt_id, fp, domain in (await self.s.execute(q)).all():
-            if m := classify_match(fp, domain, sig, blocked):
-                out.append(Match(attempt_id, *m))
+        for attempt_id, fp, domain, sku in (await self.s.execute(q)).all():
+            m = classify_match(fp, domain, sig, blocked)
+            if m is None:
+                continue
+            strong, matched_on = m
+            if not strong and (top_sku is None or sku != top_sku):
+                continue
+            if strong and sku != top_sku:
+                matched_on = [*matched_on, "other_item"]
+            out.append(Match(attempt_id, strong, matched_on))
         return out
 
     async def _refunded_total(self, incident: Incident) -> Decimal:

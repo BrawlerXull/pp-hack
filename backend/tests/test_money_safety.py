@@ -190,6 +190,38 @@ async def test_only_a_strong_match_is_refunded_without_the_owner_and_matched_on_
     assert newcomer.id not in done
 
 
+async def test_a_strong_bot_device_is_refunded_on_any_item_but_weak_matches_only_on_the_attacked_one(db):
+    """Found in a live sandbox run: a bot that also bought the $18 candle kept that payment, because
+    matching only looked at the attacked item. A strong device is a bot whatever it buys."""
+    other = await captured(db, "bot", sku="SKU-PILLAR-18", amount=Decimal("5.00"))
+    over_cap = await captured(db, "bot", sku="SKU-GIFTSET-42", amount=Decimal("18.00"))
+    weak_other = await captured(db, "fresh", sku="SKU-PILLAR-18", email_domain="burner.example")
+    inc = await incident_with(db, {"strong_fingerprints": ["bot"], "suspect_domains": ["burner.example"]})
+
+    done = {a.params["attempt_id"]: a for a in await Executor(db, None).refund_matched(inc, R4)}
+
+    assert done[other.id].status == ActionStatus.EXECUTED
+    assert done[other.id].params["matched_on"] == ["strong_fingerprint", "other_item"]
+    assert done[over_cap.id].status == ActionStatus.AWAITING_APPROVAL  # above the $10 per-payment cap
+    assert weak_other.id not in done  # a domain-only match off the attacked item is left alone
+
+
+async def test_strong_devices_are_still_refunded_when_the_attack_has_no_single_item(db):
+    a = await captured(db, "bot", sku="SKU-GIFTSET-42", amount=Decimal("5.00"))
+    b = await captured(db, "fresh", email_domain="burner.example")
+    inc = Incident(
+        shop_id=SHOP,
+        opened_at=datetime.now(UTC),
+        signature={"top_sku": None, "strong_fingerprints": ["bot"], "suspect_domains": ["burner.example"]},
+    )
+    db.add(inc)
+    await db.commit()
+
+    done = {x.params["attempt_id"] for x in await Executor(db, None).refund_matched(inc, R4)}
+
+    assert done == {a.id} and b.id not in done
+
+
 async def test_a_capture_that_passed_3ds_is_never_auto_refunded(db):
     a = await captured(db, "bot", guard_decision=Decision.ALLOW_WITH_SCA)
     inc = await incident_with(db, {"strong_fingerprints": ["bot"]})
