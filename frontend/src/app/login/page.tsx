@@ -1,6 +1,7 @@
 "use client";
 
-import { Loader2, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Loader2, Lock, Moon, ShieldCheck } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api, ApiError } from "@/lib/api";
@@ -26,35 +27,42 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 via-slate-900 to-blue-950 px-6">
-      <form onSubmit={submit} className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-2xl">
-        <div className="flex items-center gap-2.5">
-          <div className="flex size-10 items-center justify-center rounded-xl bg-guard">
+    <main className="night relative flex min-h-screen flex-col items-center justify-center px-6">
+      <Link href="/" className="absolute top-6 left-6 flex items-center gap-1.5 text-sm text-ink-3 hover:text-ink-1">
+        <ArrowLeft className="size-4" /> Back
+      </Link>
+      <form onSubmit={submit} className="panel w-full max-w-sm p-8">
+        <div className="flex items-center gap-3">
+          <span className="relative flex size-11 items-center justify-center rounded-xl bg-gradient-to-br from-guard to-indigo-600 shadow-[0_10px_30px_-10px_rgb(76_141_255/0.8)]">
             <ShieldCheck className="size-5 text-white" />
-          </div>
+            <Moon className="absolute -top-1 -right-1 size-3.5 fill-amber-200 text-amber-200" />
+          </span>
           <div>
-            <p className="font-semibold text-slate-900">Checkout Guard</p>
-            <p className="text-xs text-slate-500">Wick &amp; Wax · owner dashboard</p>
+            <p className="font-semibold text-ink-1">Checkout Guard</p>
+            <p className="text-xs text-ink-3">Wick &amp; Wax · owner dashboard</p>
           </div>
         </div>
         <label className="mt-8 block">
-          <span className="text-sm font-medium text-slate-700">Password</span>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoFocus
-            className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 outline-none focus:border-guard focus:ring-2 focus:ring-guard/20"
-          />
+          <span className="text-sm font-medium text-ink-2">Password</span>
+          <span className="relative mt-1.5 block">
+            <Lock className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-ink-3" aria-hidden />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoFocus
+              className="w-full rounded-lg border border-white/10 bg-white/[0.04] py-2.5 pr-3 pl-9 text-ink-1 outline-none focus:border-guard/60 focus:ring-2 focus:ring-guard/20"
+            />
+          </span>
         </label>
-        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        {error && <p className="mt-3 text-sm text-red-300">{error}</p>}
         <button
           disabled={busy || !password}
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-guard py-2.5 text-sm font-medium text-white hover:bg-guard-dark disabled:opacity-50"
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-guard py-2.5 text-sm font-medium text-white shadow-[0_8px_24px_-8px_rgb(76_141_255/0.7)] hover:bg-guard-dark disabled:opacity-50"
         >
           {busy && <Loader2 className="size-4 animate-spin" />} Sign in
         </button>
-        <p className="mt-4 text-center text-xs text-slate-500">Demo password for judges is in the README.</p>
+        <p className="mt-4 text-center text-xs text-ink-3">Judging? The demo password is in the README.</p>
       </form>
     </main>
   );

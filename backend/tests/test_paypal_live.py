@@ -113,8 +113,8 @@ async def test_sca_mode_sends_return_urls_and_records_sca_required(db, sandbox):
     assert res.outcome == Outcome.SCA_REQUIRED and res.payer_action_url
     order = sandbox.orders[res.order_id]
     assert order.card["experience_context"] == {
-        "return_url": "https://shop.example.test/?3ds=return",
-        "cancel_url": "https://shop.example.test/?3ds=cancel",
+        "return_url": "https://shop.example.test/shop?3ds=return",
+        "cancel_url": "https://shop.example.test/shop?3ds=cancel",
     }
     # Capturing before the buyer finished 3-D Secure: 422 PAYER_ACTION_REQUIRED is SCA, not a decline.
     a = await capture_web_order(db, sandbox.client, SHOP, res.order_id)

@@ -82,9 +82,17 @@ export type RulesHint = "fraud_signals" | "processor_trouble" | "returning_custo
 
 export type GuardStatus = "quiet" | "under_attack" | "busy_genuine_rush" | "paypal_issue" | "investigating" | "recovering";
 
+// Gemini circuit-breaker state shared by the API and the worker (backend app/ai/gemini.py status()).
+export type AiStatus = {
+  state: "ok" | "degraded" | "cooling_down" | "key_rejected" | "not_configured";
+  detail: string;
+  models: { model: string; paused: boolean; reason: string | null; until: string | null }[];
+};
+
 export type Summary = {
   status: GuardStatus;
   open_incident: IncidentSummary | null;
+  ai?: AiStatus;
   guard_state: { mode: "normal" | "sca_all"; blocked_devices: number; held_skus: string[] };
   last_24h: {
     attempts: number;
@@ -110,6 +118,7 @@ export type Attempt = {
   decision: Decision;
   outcome: Outcome;
   decline_code: string | null;
+  decline_category?: string | null;
   capture_id?: string | null;
   refund_id?: string | null;
   card_last4?: string | null;
@@ -132,7 +141,7 @@ export type Verdict = {
 export type ActionRow = {
   id: string;
   incident_id: string;
-  type: "SCA_ON" | "BLOCK_FP" | "HOLD_SKU" | "REFUND" | "NOTIFY" | "DEESCALATE";
+  type: "SCA_ON" | "BLOCK_FP" | "HOLD_SKU" | "REFUND" | "NOTIFY" | "DEESCALATE" | "RELAX";
   status: "executed" | "awaiting_approval" | "rejected" | "failed";
   rule: string;
   params: Record<string, unknown>;
@@ -161,7 +170,7 @@ export type MerchantSettings = {
   kill_switch: boolean;
   max_auto_refund_per_txn: string | number;
   max_auto_refund_per_incident: string | number;
-  deescalate_after_min: number;
+  deescalate_after_min: string | number;
   sale_windows: SaleWindow[];
 };
 

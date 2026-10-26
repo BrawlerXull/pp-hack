@@ -194,8 +194,8 @@ async def place_order(
                 custom_id=custom_id(req.shop_id, attempt.id),
                 card=req.card,
                 force_sca=force_sca and req.method == Method.CARD,
-                return_url=f"{app_url}/?3ds=return",
-                cancel_url=f"{app_url}/?3ds=cancel",
+                return_url=f"{app_url}/shop?3ds=return",
+                cancel_url=f"{app_url}/shop?3ds=cancel",
             )
             result = await create_order(paypal, payload, order_request_id(attempt.id))
             # Server-side card orders (simulator) come back APPROVED and are captured immediately.

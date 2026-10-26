@@ -21,18 +21,29 @@ type Phase =
 export function CheckoutSheet({
   product,
   clientId,
+  configError,
   onClose,
 }: {
   product: Product;
-  clientId: string | null;
+  /** undefined while /shop/config loads; "" when the server has no PayPal client id configured. */
+  clientId: string | undefined;
+  configError?: boolean;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-soot/40 backdrop-blur-[2px]" onClick={onClose}>
       <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label="Checkout"
         className="h-full w-full max-w-md overflow-y-auto bg-cream shadow-2xl"
         onClick={(e) => e.stopPropagation()}
-        aria-label="Checkout"
       >
         <div className="flex items-center justify-between border-b border-wax px-6 py-4">
           <h2 className="text-lg font-semibold text-soot">Checkout</h2>
@@ -53,9 +64,18 @@ export function CheckoutSheet({
             <PayPalProvider clientId={clientId} environment="sandbox" components={["paypal-payments"]} pageType="checkout">
               <CheckoutForm product={product} />
             </PayPalProvider>
+          ) : configError || clientId === "" ? (
+            <p className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+              {configError ? "Couldn't reach the shop server. Please try again in a moment." : "PayPal isn't configured on this demo server yet (no sandbox client id)."}
+            </p>
           ) : (
-            <p className="text-sm text-soot/60">Loading payment options…</p>
+            <p className="flex items-center gap-2 text-sm text-soot/60">
+              <Loader2 className="size-4 animate-spin" /> Loading payment options…
+            </p>
           )}
+          <p className="flex items-center justify-center gap-1.5 text-xs text-soot/50">
+            <ShieldCheck className="size-3.5" /> Checkout protected by Checkout Guard
+          </p>
         </div>
       </aside>
     </div>
@@ -107,12 +127,16 @@ function CheckoutForm({ product }: { product: Product }) {
   }
 
   async function onApprove({ orderId }: { orderId: string }) {
-    const res = await api<{ outcome: string; capture_id: string | null; decline_code: string | null }>(
-      `/shop/orders/${orderId}/capture`,
-      { method: "POST" },
-    );
-    if (res.outcome === "captured") setPhase({ kind: "paid", orderId, captureId: res.capture_id });
-    else setPhase({ kind: "error", message: `Payment ${res.outcome}${res.decline_code ? ` (${res.decline_code})` : ""}` });
+    try {
+      const res = await api<{ outcome: string; capture_id: string | null; decline_code: string | null }>(
+        `/shop/orders/${orderId}/capture`,
+        { method: "POST" },
+      );
+      if (res.outcome === "captured") setPhase({ kind: "paid", orderId, captureId: res.capture_id });
+      else setPhase({ kind: "error", message: `Payment ${res.outcome === "declined" ? "declined" : "not completed"}${res.decline_code ? ` (${res.decline_code})` : ""}. You have not been charged.` });
+    } catch (err) {
+      setPhase({ kind: "error", message: err instanceof Error ? `We couldn't confirm your payment: ${err.message}` : "We couldn't confirm your payment." });
+    }
   }
 
   async function verifyHuman() {
@@ -121,6 +145,8 @@ function CheckoutForm({ product }: { product: Product }) {
       const res = await api<{ challenge_token: string }>("/shop/challenge", { method: "POST", json: { device_id: getDeviceId() } });
       setChallengeToken(res.challenge_token);
       setPhase({ kind: "idle" });
+    } catch {
+      setPhase({ kind: "error", message: "The check didn't go through. Please try again." });
     } finally {
       setVerifying(false);
     }
@@ -181,7 +207,7 @@ function CheckoutForm({ product }: { product: Product }) {
         <p className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">{phase.message}</p>
       )}
       {sca && (
-        <p className="text-xs text-soot/60">Extra protection is on: card payments are verified with your bank (3-D Secure).</p>
+        <p className="text-xs text-soot/60">Extra protection is on: if you pay by card, your bank will ask you to confirm it&apos;s you (3-D Secure).</p>
       )}
 
       <div className="min-h-12">
@@ -198,7 +224,7 @@ function CheckoutForm({ product }: { product: Product }) {
             createOrder={createOrder}
             onApprove={onApprove}
             onCancel={() => setPhase({ kind: "idle" })}
-            onError={() => undefined /* handled in createOrder / onApprove */}
+            onError={() => setPhase((p) => (p.kind === "idle" ? { kind: "error", message: "PayPal couldn't complete the payment. You have not been charged." } : p))}
             type="pay"
           />
         )}

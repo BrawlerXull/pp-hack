@@ -27,11 +27,12 @@ cd ../frontend && pnpm install && pnpm dev   # http://localhost:3000
 
 | URL | What |
 |---|---|
-| http://localhost:3000 | **Wick & Wax** demo shop: PayPal checkout, protected by the guard |
+| http://localhost:3000 | **Checkout Guard** product page: what it does and how, for judges |
+| http://localhost:3000/shop | **Wick & Wax** demo shop: PayPal checkout, protected by the guard |
 | http://localhost:3000/guard | **Checkout Guard** dashboard (password `guard-demo`): War Room, incidents, settings, demo lab |
 | http://localhost:8000/docs | Backend API docs |
 
-In the dashboard: **Demo lab → Seed 28 days of normal history** once, then use **Simulate card-testing attack** / **Simulate flash sale** on the War Room.
+In the dashboard: **Demo lab → Seed 28 days of normal history** once, then use **Card-testing attack** / **Flash sale** in the simulation bar at the bottom of every dashboard page.
 
 PayPal webhooks, enabling card payments in the sandbox, and demo scenarios are covered in [backend/README.md](backend/README.md).
 

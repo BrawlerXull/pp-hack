@@ -19,10 +19,27 @@
   --color-ember-dark: #8a3f06;
   --color-soot: #2b2118;
 
-  /* Checkout Guard */
-  --color-guard: #1d4ed8;
-  --color-guard-dark: #1e3a8a;
+  /* Checkout Guard: the night console */
+  --color-guard: #4c8dff;
+  --color-guard-dark: #2f6fe8;
+  --color-night-950: #04070e;
+  --color-night-900: #070c18;
+  --color-night-850: #0a1120;
+  --color-night-800: #0e1628; /* card + chart surface (chart palette validated against it) */
+  --color-night-750: #121c33;
+  --color-night-700: #18243f;
+  --color-night-600: #233254;
+  --color-ink-1: #e7ecf6; /* primary text */
+  --color-ink-2: #a9b3c7; /* secondary text */
+  --color-ink-3: #7f8aa3; /* muted text, 4.5:1 on night-800 */
   --color-ink: #0f172a;
+
+  /* Chart series (dataviz validated: dark mode, surface #0e1628, adjacent pairs in this order) */
+  --color-series-paid: #3987e5;
+  --color-series-declined: #d95926;
+  --color-series-stopped: #199e70;
+  --color-series-refunded: #c98500;
+  --color-series-error: #d55181;
 }
 
 body {
@@ -31,22 +48,92 @@ body {
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
-/* Markdown rendered from incident reports */
-.prose-report h1 { font-size: 1.25rem; font-weight: 650; margin: 0 0 0.75rem; }
-.prose-report h2 { font-size: 1.05rem; font-weight: 650; margin: 1.25rem 0 0.5rem; }
-.prose-report h3 { font-size: 0.95rem; font-weight: 650; margin: 1rem 0 0.4rem; }
-.prose-report p { margin: 0.5rem 0; line-height: 1.6; }
-.prose-report ul { list-style: disc; padding-left: 1.25rem; margin: 0.5rem 0; }
-.prose-report ol { list-style: decimal; padding-left: 1.25rem; margin: 0.5rem 0; }
-.prose-report li { margin: 0.2rem 0; line-height: 1.55; }
-.prose-report strong { font-weight: 650; }
-.prose-report table { width: 100%; border-collapse: collapse; margin: 0.75rem 0; font-size: 0.875rem; }
-.prose-report th, .prose-report td { border: 1px solid #e2e8f0; padding: 0.4rem 0.6rem; text-align: left; }
-.prose-report th { background: #f8fafc; font-weight: 600; }
+/* ---- Night console ------------------------------------------------------------------------- */
+
+.night {
+  color-scheme: dark;
+  background-color: var(--color-night-950);
+  background-image:
+    radial-gradient(1200px 600px at 12% -10%, rgb(76 141 255 / 0.10), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgb(25 158 112 / 0.06), transparent 60%);
+  background-attachment: fixed;
+  color: var(--color-ink-1);
+}
+
+.night ::selection { background: rgb(76 141 255 / 0.35); }
+
+.panel {
+  border-radius: 1rem;
+  border: 1px solid rgb(255 255 255 / 0.07);
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.025), transparent 40%), var(--color-night-800);
+  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 20px 40px -24px rgb(0 0 0 / 0.6);
+}
+
+.hairline { border-color: rgb(255 255 255 / 0.07); }
+
+/* Status hero glow per state */
+.hero-glow-critical { box-shadow: 0 0 0 1px rgb(248 113 113 / 0.35), 0 30px 80px -30px rgb(239 68 68 / 0.45); }
+.hero-glow-good { box-shadow: 0 0 0 1px rgb(52 211 153 / 0.18), 0 30px 80px -40px rgb(16 185 129 / 0.35); }
+.hero-glow-warn { box-shadow: 0 0 0 1px rgb(251 191 36 / 0.25), 0 30px 80px -40px rgb(245 158 11 / 0.35); }
+.hero-glow-info { box-shadow: 0 0 0 1px rgb(96 165 250 / 0.25), 0 30px 80px -40px rgb(59 130 246 / 0.4); }
 
 @keyframes pulse-ring {
-  0% { box-shadow: 0 0 0 0 rgb(220 38 38 / 0.45); }
-  70% { box-shadow: 0 0 0 10px rgb(220 38 38 / 0); }
-  100% { box-shadow: 0 0 0 0 rgb(220 38 38 / 0); }
+  0% { box-shadow: 0 0 0 0 rgb(239 68 68 / 0.55); }
+  70% { box-shadow: 0 0 0 14px rgb(239 68 68 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(239 68 68 / 0); }
 }
 .pulse-danger { animation: pulse-ring 1.6s ease-out infinite; }
+
+@keyframes live-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.live-dot { animation: live-dot 1.6s ease-in-out infinite; }
+
+@keyframes sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+.scan::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent);
+  animation: sweep 2.4s linear infinite;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.rise { animation: rise 0.45s ease-out both; }
+
+/* AG Grid rows (classes set by rowClassRules in AttemptsGrid) */
+.cg-row-stopped { box-shadow: inset 3px 0 0 0 var(--color-series-stopped); }
+.cg-row-refunded { box-shadow: inset 3px 0 0 0 var(--color-series-refunded); }
+@keyframes row-arrive {
+  from { background-color: rgb(76 141 255 / 0.22); }
+  to { background-color: transparent; }
+}
+.cg-row-new { animation: row-arrive 2.5s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-danger, .live-dot, .scan::after, .rise, .cg-row-new { animation: none; }
+}
+
+/* Markdown rendered from incident reports */
+.prose-report h1 { font-size: 1.2rem; font-weight: 650; margin: 0 0 0.75rem; color: var(--color-ink-1); }
+.prose-report h2 { font-size: 1.02rem; font-weight: 650; margin: 1.25rem 0 0.5rem; color: var(--color-ink-1); }
+.prose-report h3 { font-size: 0.95rem; font-weight: 650; margin: 1rem 0 0.4rem; color: var(--color-ink-1); }
+.prose-report p { margin: 0.5rem 0; line-height: 1.65; }
+.prose-report ul { list-style: disc; padding-left: 1.25rem; margin: 0.5rem 0; }
+.prose-report ol { list-style: decimal; padding-left: 1.25rem; margin: 0.5rem 0; }
+.prose-report li { margin: 0.25rem 0; line-height: 1.6; }
+.prose-report strong { font-weight: 650; color: var(--color-ink-1); }
+.prose-report table { width: 100%; border-collapse: collapse; margin: 0.9rem 0; font-size: 0.875rem; }
+.prose-report th, .prose-report td { border: 1px solid rgb(255 255 255 / 0.08); padding: 0.45rem 0.7rem; text-align: left; }
+.prose-report th { background: rgb(255 255 255 / 0.03); font-weight: 600; }
+/* Report tables use an empty Markdown header row as a label/value layout: don't draw it. */
+.prose-report thead:has(th:empty) { display: none; }
+.prose-report td:last-child { font-variant-numeric: tabular-nums; }
+.prose-report code { font-family: var(--font-geist-mono); font-size: 0.8em; }
