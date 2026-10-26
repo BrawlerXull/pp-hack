@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import breaker, gemini
-from app.api import auth, dashboard, demo, guard, settings, shop, webhooks
+from app.api import auth, dashboard, demo, guard, settings, shop, studio, webhooks
 from app.api.deps import get_paypal
 from app.config import get_settings
 from app.db.bootstrap import ensure_shop
@@ -48,7 +48,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for router in (auth.router, shop.router, guard.router, webhooks.router, dashboard.router, settings.router):
+for router in (
+    auth.router,
+    shop.router,
+    guard.router,
+    webhooks.router,
+    dashboard.router,
+    settings.router,
+    studio.router,
+):
     app.include_router(router)
 if get_settings().simulator_enabled:
     app.include_router(demo.router)

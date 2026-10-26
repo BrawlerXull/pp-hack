@@ -108,6 +108,10 @@ services:
           type: web
           name: checkout-guard-api
           property: host
+      # AG Studio licence key for the Investigate page (a build arg: NEXT_PUBLIC_ values go into the bundle).
+      # Optional: without it AG Studio runs as a trial with a watermark.
+      - key: NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY
+        sync: false
 
 databases:
   - name: checkout-guard-db

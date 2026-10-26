@@ -22,7 +22,7 @@ export function useLiveUpdates(onEvent?: (e: LiveEvent) => void): "connecting" |
     const es = new EventSource("/api/dashboard/stream", { withCredentials: true });
     const flush = () => {
       pending.current = null;
-      mutate((key) => typeof key === "string" && key.startsWith("/dashboard"));
+      mutate((key) => typeof key === "string" && (key.startsWith("/dashboard") || key.startsWith("/studio/data")));
       mutate("/demo/runs");
     };
     es.addEventListener("hello", () => setState("live"));

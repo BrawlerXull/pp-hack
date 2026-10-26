@@ -12,6 +12,10 @@ COPY . .
 ARG BACKEND_URL
 ENV BACKEND_URL=$BACKEND_URL NEXT_TELEMETRY_DISABLED=1
 RUN test -n "$BACKEND_URL" || { echo "BACKEND_URL build arg is required (the API's URL or private host)" >&2; exit 1; }
+# Optional: the AG Studio licence key (Investigate page). NEXT_PUBLIC_ values are compiled into the browser
+# bundle; without one, AG Studio runs as a trial with a watermark.
+ARG NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY
+ENV NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY=$NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY
 RUN pnpm build
 
 FROM node:22-slim

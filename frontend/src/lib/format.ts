@@ -75,7 +75,7 @@ export const SERIES = [
   { key: "declined", label: "Declined by bank", color: "#d95926", outcomes: ["declined"] },
   { key: "stopped", label: "Stopped by Checkout Guard", color: "#199e70", outcomes: ["blocked", "challenged", "sca_required"] },
   { key: "refunded", label: "Refunded before dispute", color: "#c98500", outcomes: ["refunded"] },
-  { key: "error", label: "PayPal error", color: "#d55181", outcomes: ["error"] },
+  { key: "error", label: "PayPal error", color: "#9085e9", outcomes: ["error"] },
 ] as const satisfies readonly { key: string; label: string; color: string; outcomes: readonly Outcome[] }[];
 
 export const DECISION_META: Record<Decision, { label: string; tone: Tone }> = {

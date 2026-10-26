@@ -15,6 +15,7 @@ import {
   Settings2,
   ShieldOff,
   Smartphone,
+  Telescope,
   Sparkles,
   User,
   Waypoints,
@@ -123,7 +124,13 @@ export default function IncidentPage() {
             {parts.length > 0 && <span className="text-ink-3"> · {parts.join(" · ")}</span>}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href={`/guard/investigate?incident=${encodeURIComponent(inc.id)}`}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-guard px-3.5 py-2 text-sm font-medium text-white shadow-[0_8px_24px_-8px_rgb(76_141_255/0.6)] hover:bg-guard-dark"
+          >
+            <Telescope className="size-4" /> Investigate in Studio
+          </Link>
           <Button variant="secondary" disabled={!!busy} onClick={() => act("regen", `${key}/report/regenerate`)}>
             {busy === "regen" ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />} Refresh report
           </Button>

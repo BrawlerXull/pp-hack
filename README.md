@@ -33,8 +33,9 @@ Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox*
    - The **Blocked devices** card: each blocked device links to its incident, and **Unblock and trust** marks it as a trusted shopper.
 5. **Open the incident**. It shows the **detect → judge → decide strip** (triggers and their tier, who judged, which policy rules ran), the verdict with its evidence checked against our numbers ("×12 vs normal"), the actions taken, refunds waiting for approval (**Refund / Keep**), the attack signature, the morning report, and an **evidence pack for PayPal** to copy or download.
 6. **Simulation bar → Flash sale**. It announces a 2-hour sale window and sends a rush of mostly returning customers. Expect no blocks and no refunds: the AI calls it a genuine rush (policy R2) or the rules see a returning-customer rush (R3c). **Reset** clears the demo.
-7. **Settings**: autopilot, kill switch, refund caps, stand-down time, "I'm running a sale".
-8. Optional: the **attacker terminal** for a split screen, `uv run python scripts/attack.py card_testing --url https://<frontend-host>/api --password <judge password>` (see [Attacker terminal](#attacker-terminal)).
+7. **Investigate** (AG Studio): every attempt, incident and action from the last 48 hours as an editable report, with our own **AI verdict** and **Defence timeline** widgets. Click a bar to cross-filter the page. **Ask the Guard analyst** opens the AI assistant: ask "What happened in the last incident?" or "Investigate the latest attack", and it reads the incident through Checkout Guard's tools and has Studio's dashboard team build the page. With *Auto-investigate* on, a new incident gets its own investigation page without asking.
+8. **Settings**: autopilot, kill switch, refund caps, stand-down time, "I'm running a sale".
+9. Optional: the **attacker terminal** for a split screen, `uv run python scripts/attack.py card_testing --url https://<frontend-host>/api --password <judge password>` (see [Attacker terminal](#attacker-terminal)).
 
 ## What is real and what is simulated
 
@@ -69,6 +70,7 @@ We do **not** call the webhook simulator (`/v1/notifications/simulate-event`), T
 |---|---|---|
 | **Analyst** ([app/ai/analyst.py](backend/app/ai/analyst.py)) | Classifies an incident as `card_testing`, `account_testing`, `genuine_rush`, `paypal_outage` or `unclear`. It returns a confidence and cites evidence (feature, window, value) as JSON-schema structured output | Move money or change the checkout. Its verdict is one input to the policy engine |
 | **Report writer** ([app/ai/reporter.py](backend/app/ai/reporter.py)) | Writes the wording of the phone alert, the morning report and the PayPal evidence pack | Write numbers. It may only use `{{placeholders}}`, which we fill from the database |
+| **Guard analyst** (Investigate page; [frontend/src/components/studio/ai.ts](frontend/src/components/studio/ai.ts), [app/ai/studio_agent.py](backend/app/ai/studio_agent.py)) | An AG Studio Agent Framework agent: reads the guard's live state and incidents through read-only tools, queries the report's data, and hands dashboard building to Studio's built-in agents. Each LLM turn goes through our backend to Gemini (`POST /studio/agent/turn`), so the key stays on the server | Change defences, approve refunds or move money: its tools only read |
 
 **Models:** `gemini-3.5-flash`, then `gemini-2.5-flash`, then `gemini-flash-lite-latest` (`GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS`).
 
@@ -191,10 +193,10 @@ uv run python scripts/attack.py flash_sale --url https://<frontend-host>/api --p
 | PayPal button checkout (JS SDK v6), Orders v2, Refunds, webhook verification, labelled simulator (offline + live sandbox) | **Built** |
 | Disputes | **Built:** `CUSTOMER.DISPUTE.*` webhooks mark captures as disputed, which blocks automatic refunds and shows in the evidence pack. **Planned:** the Disputes API (we do not read or answer disputes through it) |
 | Dashboard on AG Grid + AG Charts (Community) | **Built** |
+| AG Studio Investigate page: custom widgets, night theme, Guard analyst agent on Gemini with Studio's built-in agents, auto-investigation of new incidents | **Built** (needs `NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY` to drop the trial watermark) |
 | Docker compose, Render Blueprint, CI, daily health check, attacker terminal | **Built** |
 | Transaction Search (baseline from real PayPal history instead of the seeded one) | Planned |
 | PayPal Card Fields in the shop (card payments today come only from the simulator) | Planned |
-| AG Studio dashboard and the Studio agent | Planned |
 
 ## Layout
 

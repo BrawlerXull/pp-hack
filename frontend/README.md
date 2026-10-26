@@ -8,6 +8,8 @@ pnpm dev        # http://localhost:3000 (backend must be running on :8000)
 pnpm build && pnpm start
 ```
 
+`NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY` (optional, in `frontend/.env.local` for `pnpm dev`, a build arg for Docker/Render) removes AG Studio's trial watermark on the Investigate page.
+
 `BACKEND_URL` is read when `next.config.ts` builds the rewrites, so a production build must know it at build time: the [Dockerfile](Dockerfile) takes it as a build arg (`docker compose` passes `http://api:8000`; Render passes the API's private hostname, and a value without a scheme gets `http://` and, without a port, `:8000`). The image build fails if it is empty.
 
 | Route | What |
@@ -17,6 +19,7 @@ pnpm build && pnpm start
 | `/login` | Owner login (password from `ADMIN_PASSWORD`, default `guard-demo`) |
 | `/guard` | War Room: system pills (AI, detector, PayPal, simulator, live updates), status hero with the Watch → Judge → Act → Explain pipeline and time to first defence, KPIs vs normal, activity chart in 10-second bars with the incident shaded and a marker where it was detected and where each defence fired (AG Charts), AI verdict with verified evidence (×N vs normal), decision trace (policy rule and PayPal mechanism per action, approvals), the phone's alert history, guard switches, devices (blocked/trusted), live attempts table (AG Grid: custom cells, search, outcome filters, a Why column) |
 | `/guard/incidents`, `/guard/incidents/[id]` | Incident history; detect → judge → decide strip, traffic around the incident, verdict, decision trace, attack signature, morning report, evidence pack for PayPal (copy / download), audit timeline |
+| `/guard/investigate` | AG Studio over the last 48 hours (`GET /api/studio/data`): pages for the live attack, incidents and attack vs flash sale; our own **AI verdict** and **Defence timeline** widgets; the night theme; the **Guard analyst** (Studio Agent Framework) with read-only Checkout Guard tools, delegating to Studio's built-in agents, every turn on Gemini via `POST /api/studio/agent/turn`; auto-investigation of new incidents. Files in `src/components/studio/` |
 | `/guard/settings` | Autopilot, kill switch, refund caps, stand-down time, "I'm running a sale", AI guardrails |
 | `/guard/lab` | Labelled simulations (offline or live sandbox), seed history, reset |
 

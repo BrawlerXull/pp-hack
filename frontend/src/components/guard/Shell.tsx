@@ -1,6 +1,6 @@
 "use client";
 
-import { FlaskConical, Home, LayoutDashboard, LogOut, Moon, Settings, ShieldCheck, Siren, Store } from "lucide-react";
+import { FlaskConical, Home, LayoutDashboard, LogOut, Moon, Settings, ShieldCheck, Siren, Store, Telescope } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect } from "react";
@@ -14,6 +14,7 @@ import { LiveDot } from "./ui";
 const NAV = [
   { href: "/guard", label: "War Room", icon: LayoutDashboard },
   { href: "/guard/incidents", label: "Incidents", icon: Siren },
+  { href: "/guard/investigate", label: "Investigate", icon: Telescope },
   { href: "/guard/settings", label: "Settings", icon: Settings },
   { href: "/guard/lab", label: "Demo lab", icon: FlaskConical },
 ];
