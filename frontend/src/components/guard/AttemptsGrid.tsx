@@ -15,7 +15,7 @@ import { AgGridReact } from "ag-grid-react";
 import { CreditCard, Search, Wallet } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Attempt, Outcome } from "@/lib/api";
-import { DECISION_META, OUTCOME_META, SKU_NAME, clock } from "@/lib/format";
+import { DECISION_META, GUARD_REASON_LABEL, OUTCOME_META, SKU_NAME, clock } from "@/lib/format";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -113,6 +113,13 @@ function SourceCell({ data }: ICellRendererParams<Attempt>) {
   );
 }
 
+/** The guard's reason for its decision, and PayPal's decline code when it got that far. */
+function whyText(a: Attempt): string {
+  const guard = a.guard_reason ? (GUARD_REASON_LABEL[a.guard_reason] ?? a.guard_reason) : "";
+  if (a.decline_code) return a.guard_reason && a.guard_reason !== "normal" ? `${guard} · PayPal: ${a.decline_code}` : `PayPal: ${a.decline_code}`;
+  return guard;
+}
+
 const rowClassRules: RowClassRules<Attempt> = {
   "cg-row-stopped": (p) => !!p.data && STOPPED.includes(p.data.outcome),
   "cg-row-refunded": (p) => p.data?.outcome === "refunded",
@@ -135,24 +142,26 @@ export default function AttemptsGrid({ rows, height = 460 }: { rows: Attempt[]; 
 
   const columns = useMemo<ColDef<Attempt>[]>(
     () => [
-      { field: "ts", headerName: "Time", flex: 0.8, minWidth: 92, valueFormatter: (p) => (p.value ? clock(p.value) : ""), sort: "desc", cellClass: "tabular-nums text-ink-2" },
-      { field: "outcome", headerName: "Outcome", flex: 1.3, minWidth: 140, cellRenderer: OutcomeCell, filter: true },
-      { field: "decision", headerName: "Guard", flex: 1, minWidth: 106, cellRenderer: DecisionCell },
-      { field: "sku", headerName: "Item", flex: 1.1, minWidth: 116, valueFormatter: (p) => SKU_NAME[p.value] ?? p.value, filter: true },
-      { field: "amount", headerName: "Amount", flex: 0.75, minWidth: 82, valueFormatter: (p) => `$${p.value}`, type: "rightAligned", cellClass: "tabular-nums" },
-      { field: "method", headerName: "Paid with", flex: 0.9, minWidth: 96, cellRenderer: MethodCell },
-      { field: "email_domain", headerName: "Email domain", flex: 1.5, minWidth: 130, filter: true },
-      { field: "fingerprint", headerName: "Device", flex: 1.1, minWidth: 116, cellRenderer: DeviceCell },
+      { field: "ts", headerName: "Time", flex: 0.8, minWidth: 86, valueFormatter: (p) => (p.value ? clock(p.value) : ""), sort: "desc", cellClass: "tabular-nums text-ink-2" },
+      { field: "outcome", headerName: "Outcome", flex: 1.2, minWidth: 128, cellRenderer: OutcomeCell, filter: true },
+      { field: "decision", headerName: "Guard", flex: 0.9, minWidth: 98, cellRenderer: DecisionCell },
+      { field: "sku", headerName: "Item", flex: 1, minWidth: 108, valueFormatter: (p) => SKU_NAME[p.value] ?? p.value, filter: true },
+      { field: "amount", headerName: "Amount", flex: 0.7, minWidth: 74, valueFormatter: (p) => `$${p.value}`, type: "rightAligned", cellClass: "tabular-nums" },
+      { field: "method", headerName: "Paid with", flex: 0.8, minWidth: 88, cellRenderer: MethodCell },
+      { field: "email_domain", headerName: "Email domain", flex: 1.3, minWidth: 118, filter: true },
+      { field: "fingerprint", headerName: "Device", flex: 1, minWidth: 108, cellRenderer: DeviceCell },
       {
-        field: "decline_code",
-        headerName: "Bank response",
-        flex: 1.3,
-        minWidth: 120,
-        valueFormatter: (p) => p.value ?? "",
-        tooltipValueGetter: (p) => (p.data?.decline_category ? `PayPal decline category: ${p.data.decline_category}` : undefined),
-        cellClass: "font-mono text-xs text-ink-2",
+        colId: "why",
+        headerName: "Why",
+        flex: 1.4,
+        minWidth: 128,
+        valueGetter: (p) => (p.data ? whyText(p.data) : ""),
+        tooltipValueGetter: (p) =>
+          p.data ? [whyText(p.data), p.data.decline_category && `PayPal decline category: ${p.data.decline_category}`].filter(Boolean).join(" · ") : undefined,
+        filter: true,
+        cellClass: "text-xs text-ink-2",
       },
-      { field: "source", headerName: "Source", flex: 0.9, minWidth: 92, cellRenderer: SourceCell },
+      { field: "source", headerName: "Source", flex: 0.7, minWidth: 76, cellRenderer: SourceCell },
     ],
     [],
   );

@@ -419,14 +419,19 @@ async def test_second_approve_waits_for_the_first_and_gets_409(db):
 
 
 async def test_two_incidents_never_both_claim_one_refund(db):
-    """Owner approval in incident A holds the attempt lock; incident B's autopilot waits, then sees the
-    capture is REFUNDED and records nothing, so the refund is counted in one report only."""
+    """Incident A's claim (here an approval in progress, not yet committed) keeps incident B's autopilot
+    off the capture: the already-handled check is shop-wide, so B records nothing and the refund is
+    counted in one report only. (Before, B waited on the attempt lock and re-checked the outcome.)"""
     res = await place_order(
         db, None, to_request(SHOP, "t", next(flash_sale("offline", count=1, seed=4)), "offline")
     )
     a = await _attempt(db, res.attempt_id)
     inc_a, inc_b = Incident(shop_id=SHOP), Incident(shop_id=SHOP)
-    inc_b.signature = {"top_sku": a.sku, "fingerprints": [a.fingerprint_hash]}
+    inc_b.signature = {
+        "top_sku": a.sku,
+        "fingerprints": [a.fingerprint_hash],
+        "strong_fingerprints": [a.fingerprint_hash],
+    }
     inc_b.opened_at = datetime.now(UTC)
     db.add_all([inc_a, inc_b])
     await db.flush()
@@ -447,13 +452,10 @@ async def test_two_incidents_never_both_claim_one_refund(db):
         )
         assert approved.status == ActionStatus.EXECUTED
         planned = PlannedAction(ActionType.REFUND, "R4")
-        auto = asyncio.create_task(
-            Executor(s2, None).refund_matched(await s2.get(Incident, inc_b.id), planned)
-        )
-        await asyncio.sleep(0.3)
-        assert not auto.done()  # waiting on the attempt lock
+        assert await Executor(s2, None).refund_matched(await s2.get(Incident, inc_b.id), planned) == []
         await s1.commit()
-        assert await auto == []
+    refunds = (await db.execute(select(Action).where(Action.type == ActionType.REFUND))).scalars().all()
+    assert [r.incident_id for r in refunds] == [inc_a.id]
 
 
 # flash_sale seed 3 has both a card (CCREJECT-IF) and a wallet decline; account_testing seed 1 has

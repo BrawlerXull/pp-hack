@@ -7,6 +7,7 @@ import {
   INSTANCE_LOADING_STATE,
 } from "@paypal/react-paypal-js/sdk-v6";
 import { CheckCircle2, Loader2, ShieldAlert, ShieldCheck, X } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api, ApiError, type CheckoutResult, type Product } from "@/lib/api";
 import { getDeviceId } from "@/lib/device";
@@ -21,13 +22,13 @@ type Phase =
 export function CheckoutSheet({
   product,
   clientId,
-  configError,
+  configFailed = false,
   onClose,
 }: {
   product: Product;
   /** undefined while /shop/config loads; "" when the server has no PayPal client id configured. */
   clientId: string | undefined;
-  configError?: boolean;
+  configFailed?: boolean;
   onClose: () => void;
 }) {
   useEffect(() => {
@@ -64,10 +65,19 @@ export function CheckoutSheet({
             <PayPalProvider clientId={clientId} environment="sandbox" components={["paypal-payments"]} pageType="checkout">
               <CheckoutForm product={product} />
             </PayPalProvider>
-          ) : configError || clientId === "" ? (
-            <p className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
-              {configError ? "Couldn't reach the shop server. Please try again in a moment." : "PayPal isn't configured on this demo server yet (no sandbox client id)."}
-            </p>
+          ) : configFailed ? (
+            <p className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">Couldn&apos;t reach the shop server. Please try again in a moment.</p>
+          ) : clientId === "" ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <p className="font-medium">PayPal not configured: use the Demo lab (offline)</p>
+              <p className="mt-1 text-amber-900/80">
+                This server has no PayPal sandbox client id (<code>PAYPAL_CLIENT_ID</code>), so the real checkout is off. The guard still works: run a
+                labelled offline simulation from the owner dashboard.
+              </p>
+              <Link href="/guard/lab" className="mt-3 inline-block font-medium underline">
+                Open the Demo lab
+              </Link>
+            </div>
           ) : (
             <p className="flex items-center gap-2 text-sm text-soot/60">
               <Loader2 className="size-4 animate-spin" /> Loading payment options…

@@ -22,6 +22,12 @@ from app.paypal.webhooks import Verification
 from app.shop.service import attempt_event, short_hash
 
 log = structlog.get_logger()
+DISPUTE_EVENTS = frozenset(
+    {"CUSTOMER.DISPUTE.CREATED", "CUSTOMER.DISPUTE.UPDATED", "CUSTOMER.DISPUTE.RESOLVED"}
+)
+# Resolutions that leave the money with the seller: only these clear `disputed`. Anything else, including a
+# missing or unknown outcome code, keeps it set (fail closed: a refund on top of a payout pays twice).
+SELLER_KEPT_OUTCOMES = frozenset({"RESOLVED_SELLER_FAVOUR", "CANCELED_BY_BUYER", "DENIED"})
 UNMATCHED_RETRY = timedelta(minutes=2)
 RETRY_EVERY = timedelta(seconds=15)
 
@@ -62,6 +68,29 @@ async def _attempt(
     return (await session.execute(select(CheckoutAttempt).where(or_(*conds)).limit(1))).scalar_one_or_none()
 
 
+def apply_dispute(a: CheckoutAttempt, event_type: str, r: dict[str, Any]) -> None:
+    """disputed means "a refund now risks paying twice". It is set while a dispute is open and after any
+    resolution except one that left the money with the seller (SELLER_KEPT_OUTCOMES). Disputes are told
+    apart by dispute_id: a late CREATED/UPDATED for a resolved dispute never reopens it, but a CREATED for a
+    new dispute on the same capture does. Once a resolution paid the buyer, nothing clears it again."""
+    dispute_id = str(r.get("dispute_id") or "")[:64] or None
+    other = bool(dispute_id and a.dispute_id and dispute_id != a.dispute_id)
+    resolved = (a.dispute_status or "").startswith("RESOLVED")
+    if event_type == "CUSTOMER.DISPUTE.RESOLVED":
+        if other and (not resolved or a.disputed):
+            return  # another dispute ending while ours is open, or after ours already paid the buyer
+        outcome = str((r.get("dispute_outcome") or {}).get("outcome_code") or "UNKNOWN")
+        a.dispute_status = f"RESOLVED:{outcome}"[:40]
+        a.dispute_id = dispute_id or a.dispute_id
+        a.disputed = outcome not in SELLER_KEPT_OUTCOMES
+        return
+    if resolved and (not other or a.disputed):
+        return
+    a.dispute_status = str(r.get("status") or "OPEN")[:40]
+    a.dispute_id = dispute_id or a.dispute_id
+    a.disputed = True
+
+
 async def apply_event(session: AsyncSession, ev: PayPalEvent) -> str:
     r: dict[str, Any] = (ev.payload or {}).get("resource") or {}
     et = ev.event_type or ""
@@ -95,13 +124,13 @@ async def apply_event(session: AsyncSession, ev: PayPalEvent) -> str:
         payer = (r.get("payer") or {}).get("payer_id")
         if a and payer:
             a.payer_id_hash = short_hash(payer)
-    elif et.startswith("CUSTOMER.DISPUTE."):
+    elif et in DISPUTE_EVENTS:
         ids = [t.get("seller_transaction_id") for t in r.get("disputed_transactions", [])]
         a = None
         for cid in filter(None, ids):
             a = await _attempt(session, cid, None)
             if a:
-                a.disputed = True
+                apply_dispute(a, et, r)
     else:
         return "ignored"
     if a:

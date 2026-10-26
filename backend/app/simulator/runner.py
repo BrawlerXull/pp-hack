@@ -36,6 +36,12 @@ RUNS: dict[str, SimRun] = {}
 _TASKS: set[asyncio.Task[None]] = set()  # keep references so runs aren't garbage-collected
 
 
+def active_run() -> SimRun | None:
+    """A run still placing orders. A stopped (cancelled) one no longer counts, though its loop may place
+    one more order before it notices."""
+    return next((r for r in RUNS.values() if r.finished_at is None and not r.cancelled), None)
+
+
 def to_request(shop_id: str, scenario: str, a: SimAttempt, mode: Mode) -> CheckoutRequest:
     card = (
         CardDetails(number=a.card_number, name=a.card_name or "Test Buyer", expiry=a.card_expiry)

@@ -4,7 +4,7 @@ and one more indexed lookup only for a held SKU.
 
 Decision order (first match wins):
   1. kill switch on            → allow (owner turned the guard off)
-  2. fingerprint blocked       → block
+  2. fingerprint blocked       → block (unexpired entries in device_entries, app/guard/devices.py)
   3. device velocity: this device made 6+ attempts or had 2+ declines in 10 min → challenge
      (a valid challenge token lets it through up to 12 attempts / 4 declines; past that → block until its
      attempts age out of the window, since another challenge could not let it through anyway)
@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import CheckoutAttempt, Decision, GuardMode, GuardState, MerchantSettings, Method, Outcome
+from app.guard import devices
 
 CACHE_TTL_S = 2.0
 CHALLENGE_MAX_AGE_S = 600
@@ -102,7 +103,8 @@ async def _state(session: AsyncSession, shop_id: str) -> _CachedState:
     ms = await session.get(MerchantSettings, shop_id, populate_existing=True)
     state = _CachedState(
         mode=gs.mode if gs else GuardMode.NORMAL,
-        blocked=frozenset(gs.blocked_fingerprints or []) if gs else frozenset(),
+        # Expired blocks are filtered here too, not only pruned by the worker (which may be stopped).
+        blocked=await devices.blocked(session, shop_id),
         held_skus=frozenset(gs.held_skus or []) if gs else frozenset(),
         kill_switch=bool(ms and ms.kill_switch),
         incident_id=gs.set_by_incident if gs else None,

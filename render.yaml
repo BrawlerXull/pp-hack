@@ -1,0 +1,118 @@
+# Render Blueprint: Dashboard → New → Blueprint → this repo. Creates the API, the worker, the frontend and
+# Postgres. All paid plans on purpose: free web services sleep (judges would wait on a cold start), workers
+# have no free plan, preDeployCommand needs a paid instance, and free Postgres expires after 30 days, while
+# the demo must keep working until Dec 15, 2026.
+#
+# After the first deploy:
+#   1. Fill the `sync: false` values when Render asks (PayPal sandbox app, Gemini key, the frontend URL).
+#   2. Read the generated ADMIN_PASSWORD in the checkout-guard-shared group: that is the judge password.
+#   3. Register the PayPal webhook against the API's public URL:
+#        cd backend && uv run python scripts/register_webhook.py https://checkout-guard-api.onrender.com
+#      and set PAYPAL_WEBHOOK_ID on the API and the worker.
+
+envVarGroups:
+  - name: checkout-guard-shared
+    envVars:
+      # Startup refuses the demo defaults for the three secrets below (app/config.py).
+      - key: ENVIRONMENT
+        value: production
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: SHOP_API_KEY
+        generateValue: true
+      - key: PAYPAL_API_BASE
+        value: https://api-m.sandbox.paypal.com
+      - key: GEMINI_MODEL
+        value: gemini-3.5-flash
+      - key: GEMINI_FALLBACK_MODELS
+        value: gemini-2.5-flash,gemini-flash-lite-latest
+      - key: AI_ENABLED
+        value: "true"
+      - key: SIMULATOR_ENABLED
+        value: "true"
+
+services:
+  - type: web
+    name: checkout-guard-api
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    preDeployCommand: uv run alembic upgrade head
+    # Liveness (process + database). /healthz is the readiness report: it is 503 while Gemini's quota is
+    # exhausted or the PayPal sandbox is down, and Render must not restart a guard that is running fine on
+    # its rules fallback because of that. The daily GitHub Action watches /healthz instead.
+    healthCheckPath: /livez
+    envVars:
+      - fromGroup: checkout-guard-shared
+      # Fixed, so the frontend can be built against host:8000 without waiting for Render's port discovery.
+      - key: PORT
+        value: "8000"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: checkout-guard-db
+          property: connectionString
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PUBLIC_APP_URL  # the frontend's public URL, e.g. https://checkout-guard-web.onrender.com
+        sync: false
+      - key: NOTIFY_WEBHOOK_URL
+        sync: false
+
+  - type: worker
+    name: checkout-guard-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: python -m app.worker.main
+    envVars:
+      - fromGroup: checkout-guard-shared
+      - key: DATABASE_URL
+        fromDatabase:
+          name: checkout-guard-db
+          property: connectionString
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: NOTIFY_WEBHOOK_URL
+        sync: false
+
+  - type: web
+    name: checkout-guard-web
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    healthCheckPath: /
+    envVars:
+      # The API's private hostname (not hostport: the port is only discovered once the API runs, and this
+      # frontend may build first). frontend/next.config.ts turns a bare host into http://<host>:8000, the
+      # API's fixed PORT. Render passes env vars to Docker builds as build args, which the rewrites need
+      # (they are compiled into the build); the frontend Dockerfile fails the build if it is empty.
+      - key: BACKEND_URL
+        fromService:
+          type: web
+          name: checkout-guard-api
+          property: host
+
+databases:
+  - name: checkout-guard-db
+    plan: basic-256mb
+    databaseName: checkout_guard
+    user: checkout_guard
+    postgresMajorVersion: "16"
+    ipAllowList: []  # private network only

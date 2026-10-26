@@ -11,6 +11,7 @@ import {
   ListChecks,
   Loader2,
   RefreshCw,
+  Scale,
   Settings2,
   ShieldOff,
   Smartphone,
@@ -25,10 +26,11 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
+import { DecisionStrip } from "@/components/guard/DecisionStrip";
 import { AlertPhone, DecisionTrace, Markdown, VerdictCard } from "@/components/guard/incident";
 import { defencesSummary } from "@/components/guard/StatusHero";
 import { Badge, Button, Card, Empty, Skeleton } from "@/components/guard/ui";
-import { api, ApiError, type IncidentDetail, type TimeseriesPoint } from "@/lib/api";
+import { api, ApiError, type AlertRow, type IncidentDetail, type TimeseriesPoint } from "@/lib/api";
 import { CLASSIFICATION_LABEL, SKU_NAME, classificationTone, clock, duration } from "@/lib/format";
 import { useNow } from "@/lib/now";
 
@@ -45,6 +47,7 @@ export default function IncidentPage() {
   const { id } = useParams<{ id: string }>();
   const key = `/dashboard/incidents/${id}`;
   const { data: inc, error: loadError, mutate } = useSWR<IncidentDetail>(key);
+  const { data: alerts } = useSWR<AlertRow[]>(`/dashboard/alerts?limit=10&incident_id=${encodeURIComponent(id)}`);
   const [tab, setTab] = useState<Tab>("report");
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -133,6 +136,10 @@ export default function IncidentPage() {
       </div>
       {error && <p className="rounded-lg bg-amber-400/10 px-3 py-2 text-sm text-amber-200">{error}</p>}
 
+      <Card title="How Checkout Guard decided" subtitle="Detect, judge, decide: every step from our records, none of it the AI's own claim" icon={Scale}>
+        <DecisionStrip incident={inc} />
+      </Card>
+
       {series && (
         <Card title="Traffic around this incident" icon={Waypoints} bodyClassName="px-3 pb-3">
           <ActivityChart points={series} minutes={chartMinutes} incident={inc} height={260} />
@@ -143,8 +150,8 @@ export default function IncidentPage() {
         <Card title="AI analyst verdict" icon={Sparkles} className="xl:col-span-2">
           <VerdictCard incident={inc} />
         </Card>
-        <Card title="Owner alert" icon={Smartphone}>
-          <AlertPhone text={inc.report?.alert_text} at={inc.report?.generated_at} />
+        <Card title="Owner alerts" icon={Smartphone}>
+          <AlertPhone text={inc.report?.alert_text} at={inc.report?.generated_at} history={alerts} />
         </Card>
       </div>
 

@@ -1,32 +1,38 @@
 "use client";
 
-import { Activity, ArrowRight, CircleDollarSign, ListChecks, ShieldCheck, Smartphone, Sparkles, Table2, Timer, Waypoints } from "lucide-react";
+import { Activity, ArrowRight, Ban, CircleDollarSign, ListChecks, Percent, ShieldCheck, Smartphone, Sparkles, Table2, ToggleRight, Waypoints } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import useSWR, { useSWRConfig } from "swr";
+import { DevicesList, useDeviceCounts } from "@/components/guard/DevicesCard";
+import { GuardSwitches } from "@/components/guard/GuardSwitches";
 import { AlertPhone, DecisionTrace, VerdictCard } from "@/components/guard/incident";
 import { StatusHero } from "@/components/guard/StatusHero";
 import { Card, Empty, Skeleton, Stat } from "@/components/guard/ui";
-import type { Attempt, IncidentDetail, IncidentSummary, Summary, TimeseriesPoint } from "@/lib/api";
-import { duration, money } from "@/lib/format";
+import type { AlertRow, Attempt, IncidentDetail, IncidentSummary, Summary, TimeseriesPoint } from "@/lib/api";
+import { money, times } from "@/lib/format";
 
 // AG Grid / AG Charts render in the browser only.
 const AttemptsGrid = dynamic(() => import("@/components/guard/AttemptsGrid"), { ssr: false, loading: () => <Skeleton className="h-[500px]" /> });
 const ActivityChart = dynamic(() => import("@/components/guard/ActivityChart"), { ssr: false, loading: () => <Skeleton className="h-[300px]" /> });
 
-const CHART_MINUTES = 20;
+const CHART_MINUTES = 10;
+const BUCKET_S = 10; // an attack's first seconds are visible, not averaged into a minute
 
 export default function WarRoom() {
   const { mutate } = useSWRConfig();
   const { data: summary } = useSWR<Summary>("/dashboard/summary", { refreshInterval: 10_000 });
   const { data: attempts } = useSWR<Attempt[]>("/dashboard/attempts?minutes=120&limit=1000", { refreshInterval: 15_000 });
-  const { data: series } = useSWR<TimeseriesPoint[]>(`/dashboard/timeseries?minutes=${CHART_MINUTES}`, { refreshInterval: 15_000 });
+  const { data: series } = useSWR<TimeseriesPoint[]>(`/dashboard/timeseries?minutes=${CHART_MINUTES}&bucket_s=${BUCKET_S}`, { refreshInterval: 10_000 });
   const openId = summary?.open_incident?.id;
   const { data: incident } = useSWR<IncidentDetail>(openId ? `/dashboard/incidents/${openId}` : null, { refreshInterval: 8_000 });
   const { data: recent } = useSWR<IncidentSummary[]>("/dashboard/incidents?limit=1");
   const lastClosedId = !openId && recent?.[0]?.status === "closed" ? recent[0].id : null;
   const { data: lastClosed } = useSWR<IncidentDetail>(lastClosedId ? `/dashboard/incidents/${lastClosedId}` : null);
   const shown = incident ?? lastClosed;
+  // The phone sits next to the shown incident: only that incident's alerts.
+  const { data: alerts } = useSWR<AlertRow[]>(shown ? `/dashboard/alerts?limit=6&incident_id=${shown.id}` : null, { refreshInterval: 30_000 });
+  const devices = useDeviceCounts();
 
   if (!summary) {
     return (
@@ -41,47 +47,54 @@ export default function WarRoom() {
     );
   }
   const s = summary.last_24h;
-  const firstDefence = shown?.actions.find((a) => a.status === "executed" && a.type !== "NOTIFY");
-  const contained = shown && firstDefence ? new Date(firstDefence.created_at).getTime() - new Date(shown.opened_at).getTime() : null;
+  const live = summary.system.live;
+  const offline = !summary.system.worker.alive;
+  const waiting = offline ? "detector stopped" : "waiting for the detector";
 
   return (
     <>
       <StatusHero summary={summary} incident={shown} />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat label="Checkout attempts · 24 h" icon={Activity} value={s.attempts.toLocaleString()} hint={`${s.captured} paid · ${s.declined} declined by banks`} />
         <Stat
-          label="Stopped by Checkout Guard"
-          icon={ShieldCheck}
-          value={s.stopped_by_guard.toLocaleString()}
-          hint="Blocked, human check or 3-D Secure"
-          tone={s.stopped_by_guard ? "good" : undefined}
+          label="Attempts · last 5 min"
+          icon={Activity}
+          value={live ? live["5m"].attempts : "–"}
+          hint={live ? vsNormal(live["5m"].attempts_vs_normal, `${s.attempts} in 24 h`) : waiting}
+          tone={live && (live["5m"].attempts_vs_normal ?? 0) >= 3 ? "bad" : undefined}
         />
         <Stat
-          label="Refunded before dispute"
+          label="Decline rate · last 15 min"
+          icon={Percent}
+          value={live ? `${Math.round(live["15m"].decline_rate * 100)}%` : "–"}
+          hint={live ? vsNormal(live["15m"].decline_rate_vs_normal, `${s.declined} declined by banks in 24 h`) : waiting}
+          tone={live && (live["15m"].decline_rate_vs_normal ?? 0) >= 3 ? "bad" : undefined}
+        />
+        <Stat
+          label="Stopped by guard · 15 min"
+          icon={ShieldCheck}
+          value={live ? live["15m"].stopped : "–"}
+          hint={`${s.stopped_by_guard} in 24 h · blocked, human check or 3-D Secure`}
+          tone={live?.["15m"].stopped ? "good" : undefined}
+        />
+        <Stat
+          label="Refunded before dispute · 24 h"
           icon={CircleDollarSign}
           value={money(s.refunded_amount)}
           hint={`${s.refunded} test payment${s.refunded === 1 ? "" : "s"} returned to the cardholder`}
           tone={s.refunded ? "warn" : undefined}
-        />
-        <Stat
-          label="Time to first defence"
-          icon={Timer}
-          value={contained !== null ? duration(contained) : "–"}
-          hint={contained !== null ? (shown?.status === "open" ? "This incident" : "Last incident") : "No incidents yet"}
-          tone={contained !== null ? "info" : undefined}
         />
       </div>
 
       <div className="grid gap-6 xl:grid-cols-3">
         <Card
           title="Checkout traffic"
-          subtitle={`Every attempt in the last ${CHART_MINUTES} minutes, by what happened to it. Markers show when each defence fired.`}
+          subtitle={`Last ${CHART_MINUTES} minutes in ${BUCKET_S}-second bars. Markers show when the attack was detected and when each defence fired.`}
           icon={Waypoints}
           className="xl:col-span-2"
           bodyClassName="px-3 pb-3"
         >
-          <ActivityChart points={series ?? []} minutes={CHART_MINUTES} incident={shown} />
+          <ActivityChart points={series ?? []} minutes={CHART_MINUTES} bucketS={BUCKET_S} incident={shown} />
         </Card>
         <Card
           title="AI analyst"
@@ -120,7 +133,22 @@ export default function WarRoom() {
           )}
         </Card>
         <Card title="What the owner sees" subtitle="One calm message instead of a 3 a.m. scramble" icon={Smartphone}>
-          <AlertPhone text={shown?.report?.alert_text} at={shown?.report?.generated_at} />
+          <AlertPhone text={shown?.report?.alert_text} at={shown?.report?.generated_at} history={alerts} />
+        </Card>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-3">
+        <Card title="Guard switches" subtitle="The two an owner reaches for mid-incident" icon={ToggleRight}>
+          <GuardSwitches switches={summary.switches} />
+        </Card>
+        <Card
+          title={`Blocked devices${devices ? ` (${devices.blocked})` : ""}`}
+          subtitle="Blocks expire after 24 h. Unblocking also trusts the device, so it isn't blocked or refunded again."
+          icon={Ban}
+          className="xl:col-span-2"
+          action={devices && devices.trusted > 0 ? <span className="text-xs whitespace-nowrap text-ink-3">{devices.trusted} trusted by you</span> : undefined}
+        >
+          <DevicesList />
         </Card>
       </div>
 
@@ -129,4 +157,8 @@ export default function WarRoom() {
       </Card>
     </>
   );
+}
+
+function vsNormal(multiplier: number | null, fallback: string): string {
+  return multiplier !== null ? `${times(multiplier)} vs normal · ${fallback}` : fallback;
 }

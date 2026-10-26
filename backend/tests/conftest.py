@@ -6,7 +6,13 @@ from urllib.parse import urlsplit
 # Before any app module reads settings: never load the repo .env (it holds real Gemini/PayPal credentials),
 # blank every credential an exported shell variable could still supply, and use the test database.
 os.environ["CHECKOUT_GUARD_NO_ENV_FILE"] = "1"
-for _var in ("GEMINI_API_KEY", "PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "PAYPAL_WEBHOOK_ID"):
+for _var in (
+    "GEMINI_API_KEY",
+    "PAYPAL_CLIENT_ID",
+    "PAYPAL_CLIENT_SECRET",
+    "PAYPAL_WEBHOOK_ID",
+    "NOTIFY_WEBHOOK_URL",
+):
     os.environ[_var] = ""
 os.environ["DATABASE_URL"] = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+asyncpg://localhost:5432/checkout_guard_test"
@@ -22,12 +28,18 @@ from app.config import SANDBOX_API_BASE, Settings, get_settings  # noqa: E402
 from app.db import session as db_session  # noqa: E402
 from app.db.bootstrap import ensure_shop  # noqa: E402
 from app.db.models import Base  # noqa: E402
+from app.guard import devices  # noqa: E402
 from app.guard.check import invalidate_cache  # noqa: E402
 from app.paypal.client import PayPalClient  # noqa: E402
 from tests.sandbox_double import SandboxDouble  # noqa: E402
 
 get_settings.cache_clear()
 SHOP = get_settings().shop_id
+
+
+async def blocked(session) -> list[str]:
+    """Device fingerprints blocked right now (app/guard/devices.py), sorted."""
+    return sorted(await devices.blocked(session, SHOP))
 
 
 def _db_addresses() -> set[str]:

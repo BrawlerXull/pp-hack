@@ -1,4 +1,4 @@
-import type { ActionRow, Classification, Decision, GuardStatus, Outcome, RulesHint } from "./api";
+import type { ActionRow, Classification, Decision, GuardStatus, Outcome, RulesHint, TriggerTier } from "./api";
 
 export const money = (v: string | number) => `$${Number(v).toFixed(2)}`;
 
@@ -25,6 +25,9 @@ export const clock = (iso: string) =>
 
 /** "06:10": compact 24-hour minute label for chart axes. */
 export const minuteLabel = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+// "×12 vs normal"; one decimal below 10.
+export const times = (m: number) => `×${m >= 10 ? Math.round(m) : m.toFixed(1)}`;
 
 export const hhmm = (iso: string | number | Date) =>
   new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -114,6 +117,8 @@ const RULE_LABEL: Record<string, string> = {
   R4_attack_during_sale_soft_only: "Attack during your sale: 3-D Secure only, no blocks",
   R5_refund_matched: "AI ≥ 85% confident · matched the attack signature · within your cap",
   R5_over_cap_needs_owner: "Above your auto-refund limit: needs your approval",
+  R5_weak_match_needs_owner: "Weak match to the attack: needs your approval",
+  R5_sca_passed_needs_owner: "Buyer passed 3-D Secure, which bots rarely do: needs your approval",
   R5_stale_verdict_needs_owner: "AI verdict is out of date: needs your approval",
   always_notify: "Owner kept in the loop",
   owner_closed: "You stood the guard down",
@@ -128,13 +133,41 @@ export function ruleLabel(rule: string): string {
 }
 
 export const TRIGGER_LABEL: Record<string, string> = {
-  velocity_spike: "traffic spike",
-  sku_concentration: "one item targeted",
-  decline_spike: "decline spike",
-  fraud_declines: "fraud-coded declines",
-  cheap_sku_card_cycling: "card cycling on the cheapest item",
+  velocity_spike: "Traffic spike",
+  sku_concentration: "One item targeted",
+  decline_spike: "Decline spike",
+  fraud_declines: "Bank fraud codes",
+  cheap_sku_card_cycling: "Cards cycling on cheapest item",
   processor_errors: "PayPal errors",
-  blocked_activity: "blocked devices retrying",
+  blocked_activity: "Blocked devices still trying",
+};
+
+export const TIER_META: Record<TriggerTier, { label: string; tone: Tone }> = {
+  fraud: { label: "fraud", tone: "bad" },
+  volume: { label: "volume", tone: "info" },
+  ops: { label: "ops", tone: "warn" },
+  holding: { label: "holding", tone: "neutral" },
+};
+
+// Why the guard decided what it did for one checkout (backend app/guard/check.py).
+export const GUARD_REASON_LABEL: Record<string, string> = {
+  normal: "Normal checks",
+  guard_disabled: "Kill switch on: guard off",
+  fingerprint_blocked: "Device blocked",
+  device_velocity_limit: "Too many tries from this device",
+  device_velocity: "Fast retries: challenged",
+  sku_on_hold: "Item on hold for new shoppers",
+  sca_mode: "3-D Secure on for every card",
+};
+
+export const ACTION_SHORT: Record<string, string> = {
+  SCA_ON: "3-D Secure",
+  BLOCK_FP: "Block devices",
+  HOLD_SKU: "Hold item",
+  REFUND: "Refund",
+  NOTIFY: "Notify owner",
+  DEESCALATE: "Stand down",
+  RELAX: "Relax checks",
 };
 
 export const RULES_HINT_LABEL: Record<RulesHint, string> = {

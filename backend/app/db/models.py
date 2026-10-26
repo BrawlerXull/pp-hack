@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -100,6 +101,24 @@ class ActionStatus(StrEnum):
     AWAITING_APPROVAL = "awaiting_approval"
     REJECTED = "rejected"
     FAILED = "failed"
+    # A refund committed as claimed before PayPal is called: a crash or a timeout leaves this on record,
+    # and the sweeper (app/actions/executor.sweep_in_flight) re-sends it with the same PayPal-Request-Id.
+    IN_FLIGHT = "in_flight"
+
+
+# Refund states that settle a capture for good (one per capture, enforced by uq_actions_refund_attempt).
+# FAILED is left out on purpose: a failed refund may be retried.
+REFUND_CLAIM_STATUSES = (
+    ActionStatus.EXECUTED,
+    ActionStatus.AWAITING_APPROVAL,
+    ActionStatus.REJECTED,
+    ActionStatus.IN_FLIGHT,
+)
+
+
+class DeviceListKind(StrEnum):
+    BLOCK = "block"  # guard check stops the device
+    TRUST = "trust"  # owner unblocked it: never re-blocked or matched for refunds while the entry lasts
 
 
 class CooldownReason(StrEnum):
@@ -142,7 +161,7 @@ class GuardState(Base):
     __tablename__ = "guard_state"
     shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"), primary_key=True)
     mode: Mapped[str] = mapped_column(String(20), default=GuardMode.NORMAL)
-    blocked_fingerprints: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list)
+    # Device blocks live in device_entries (they expire and carry a reason); see app/guard/devices.py.
     held_skus: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list)
     set_by_incident: Mapped[str | None] = mapped_column(String(16))
     updated_at: Mapped[datetime] = mapped_column(
@@ -186,7 +205,13 @@ class CheckoutAttempt(Base):
     decline_category: Mapped[str | None] = mapped_column(String(20))
     paypal_debug_id: Mapped[str | None] = mapped_column(String(40))
     refund_id: Mapped[str | None] = mapped_column(String(40))
+    # True while a refund would risk paying twice: a dispute is open, or it ended with the buyer refunded.
+    # A dispute settled in the seller's favour clears it. dispute_status is PayPal's last word on it.
     disputed: Mapped[bool] = mapped_column(Boolean, default=False)
+    dispute_status: Mapped[str | None] = mapped_column(String(40))
+    # The dispute dispute_status is about: a CREATED for a different id is a new dispute, even after the
+    # earlier one was resolved.
+    dispute_id: Mapped[str | None] = mapped_column(String(64))
     latency_ms: Mapped[int | None] = mapped_column(Integer)
 
     __table_args__ = (
@@ -244,6 +269,15 @@ class Incident(Base):
     # What the triggers alone suggest (app/policy/engine.rules_hint), kept apart from `classification` so a
     # rules guess is never presented as the AI's verdict.
     rules_hint: Mapped[str | None] = mapped_column(String(40))
+    # Evidence items the analyst cited that did not match our computed numbers (dropped before display), for
+    # the verdict on record; shown as "N AI claims dropped" so the owner sees the check working.
+    dropped_evidence: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Why the last assessment could not use the AI (quota, timeout…), set with a rules fallback or a kept
+    # verdict, cleared when the AI answers again.
+    ai_fallback_reason: Mapped[str | None] = mapped_column(String(120))
+    # The features the verdict on record was validated against. `features` moves on with every assessment,
+    # including a failed re-check that keeps the verdict; "×N vs normal" next to the verdict must use these.
+    verdict_features: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
 
 
 class Action(Base):
@@ -258,6 +292,51 @@ class Action(Base):
     paypal_ref: Mapped[str | None] = mapped_column(String(80))
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # When an IN_FLIGHT refund was last sent to PayPal: the sweeper re-sends ones older than its timeout.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        # One refund claim per capture across every incident: an owner's "Keep" (rejected) in one incident
+        # is respected by the next, and two racing claimers cannot both refund. Postgres-only expression.
+        Index(
+            "uq_actions_refund_attempt",
+            text("(params ->> 'attempt_id')"),
+            unique=True,
+            postgresql_where=text(
+                "type = 'REFUND' AND status IN ('executed', 'awaiting_approval', 'rejected', 'in_flight')"
+            ),
+        ),
+    )
+
+
+class DeviceEntry(Base):
+    """A blocked or owner-trusted device. Blocks expire (a reused or shared device id must not stay locked
+    out for good); released_at is set when one expires, is unblocked or the guard is reset. Active means
+    released_at IS NULL AND expires_at > now()."""
+
+    __tablename__ = "device_entries"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default=new_id)
+    shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(10))
+    incident_id: Mapped[str | None] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_device_entries_shop_kind", "shop_id", "kind", "expires_at"),
+        # At most one unreleased entry per device and kind (expired ones are released by the prune first).
+        Index(
+            "uq_device_entries_open",
+            "shop_id",
+            "fingerprint",
+            "kind",
+            unique=True,
+            postgresql_where=text("released_at IS NULL"),
+        ),
+    )
 
 
 class Report(Base):
@@ -299,3 +378,24 @@ class AIModelState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class SystemStatus(Base):
+    """Liveness of background components, written by the worker (app/worker/heartbeat.py) every few seconds
+    and read by the dashboard's header pills. One row per component ("worker")."""
+
+    __tablename__ = "system_status"
+    component: Mapped[str] = mapped_column(String(20), primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Last finished detector pass: a fresh heartbeat with an old tick means busy (waiting on an AI call).
+    last_tick_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Last failed detector pass (exception type only): a failing detector must not look busy or healthy.
+    last_tick_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_tick_error: Mapped[str | None] = mapped_column(String(120))
+    last_ai_model: Mapped[str | None] = mapped_column(String(80))
+    last_ai_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_ai_error: Mapped[str | None] = mapped_column(Text)
+    last_ai_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Detector numbers from the last pass (5 and 15 min windows and the shop's normal), for the live tiles.
+    live: Mapped[dict[str, Any] | None] = mapped_column(JsonB)

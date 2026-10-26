@@ -200,4 +200,6 @@ def test_strong_fingerprints_need_several_cards_or_guessing_declines_and_are_nev
     ]
     sig = signature(rows, NOW - timedelta(minutes=15), NOW, BASE)
     assert sig.strong_fingerprints == ["cards", "probe"]
-    assert "unlucky" in sig.fingerprints  # suspicious enough for an AI-confirmed block, not a rules-only one
+    # Two honest "insufficient funds" refusals are bad luck, not an attack: never blocked; a capture from
+    # it would be a weak match (owner approval only).
+    assert "unlucky" not in sig.fingerprints and sig.weak_fingerprints == ["unlucky"]

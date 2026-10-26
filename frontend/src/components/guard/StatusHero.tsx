@@ -1,8 +1,8 @@
 "use client";
 
-import { Ban, Eye, FileText, Gavel, Loader2, PauseCircle, ShieldAlert, ShieldCheck, Sparkles, TriangleAlert, Users, Zap, type LucideIcon } from "lucide-react";
+import { Ban, Eye, FileText, Gavel, Loader2, PartyPopper, PauseCircle, Power, ShieldAlert, ShieldCheck, Sparkles, TriangleAlert, Users, Zap, type LucideIcon } from "lucide-react";
 import type { IncidentDetail, Summary } from "@/lib/api";
-import { CLASSIFICATION_LABEL, STATUS_COPY, TRIGGER_LABEL, duration, money, timeAgo, type Tone } from "@/lib/format";
+import { CLASSIFICATION_LABEL, STATUS_COPY, TRIGGER_LABEL, duration, hhmm, money, timeAgo, type Tone } from "@/lib/format";
 
 // Most telling first, so the Watch step names the strongest signals.
 const TRIGGER_ORDER = ["fraud_declines", "cheap_sku_card_cycling", "decline_spike", "processor_errors", "velocity_spike", "sku_concentration", "blocked_activity"];
@@ -11,10 +11,13 @@ const rank = (t: string) => (TRIGGER_ORDER.includes(t) ? TRIGGER_ORDER.indexOf(t
 function triggerSummary(triggers: string[]): string {
   if (!triggers.length) return "unusual traffic";
   const sorted = [...triggers].sort((a, b) => rank(a) - rank(b));
-  const shown = sorted.slice(0, 2).map((t) => TRIGGER_LABEL[t] ?? t.replace(/_/g, " "));
+  const shown = sorted.slice(0, 2).map((t, i) => {
+    const label = TRIGGER_LABEL[t] ?? t.replace(/_/g, " ");
+    return i === 0 || label.startsWith("PayPal") ? label : label.charAt(0).toLowerCase() + label.slice(1);
+  });
   return sorted.length > 2 ? `${shown.join(", ")} +${sorted.length - 2} more` : shown.join(", ");
 }
-import { LiveDot } from "./ui";
+import { Badge, LiveDot } from "./ui";
 
 const HERO: Record<Tone, { glow: string; tile: string; icon: LucideIcon; eyebrow: string }> = {
   good: { glow: "hero-glow-good", tile: "bg-emerald-400/12 text-emerald-300 ring-emerald-400/30", icon: ShieldCheck, eyebrow: "text-emerald-300" },
@@ -47,7 +50,11 @@ function steps(summary: Summary, inc: IncidentDetail | null | undefined): Step[]
     icon: Eye,
     state: "done",
     title: inc ? `Flagged: ${triggerSummary(inc.triggers)}` : `${s24.attempts} checkouts in 24 h`,
-    detail: inc ? `Detector opened an incident ${timeAgo(inc.opened_at)}` : "Every checkout passes the guard before PayPal",
+    detail: inc
+      ? inc.detected_in_s != null
+        ? `Detected ${inc.detected_in_s} s after the burst began`
+        : `Detector opened an incident ${timeAgo(inc.opened_at)}`
+      : "Every checkout passes the guard before PayPal",
   };
   if (!inc) {
     return [
@@ -62,8 +69,14 @@ function steps(summary: Summary, inc: IncidentDetail | null | undefined): Step[]
   const judge: Step = !v
     ? { name: "Judge", icon: Sparkles, state: "active", title: "Gemini is analysing…", detail: "Attack, real rush or PayPal outage?" }
     : inc.ai_available
-      ? { name: "Judge", icon: Sparkles, state: "done", title: `${CLASSIFICATION_LABEL[v.classification]} · ${Math.round(v.confidence * 100)}%`, detail: `Verdict from ${inc.model_id ?? "Gemini"}` }
-      : { name: "Judge", icon: Sparkles, state: "done", title: "Fixed rules (AI unavailable)", detail: "Safe defaults applied" };
+      ? {
+          name: "Judge",
+          icon: Sparkles,
+          state: "done",
+          title: `${CLASSIFICATION_LABEL[v.classification]} · ${Math.round(v.confidence * 100)}%`,
+          detail: `Verdict from ${inc.model_id ?? "Gemini"}${inc.dropped_evidence ? ` · ${inc.dropped_evidence} unverified claim${inc.dropped_evidence === 1 ? "" : "s"} dropped` : ""}`,
+        }
+      : { name: "Judge", icon: Sparkles, state: "done", title: "Fixed rules (AI unavailable)", detail: inc.ai_fallback_reason ? `AI: ${inc.ai_fallback_reason}` : "Safe defaults applied" };
 
   const parts = defencesSummary(inc);
   const pending = inc.actions.filter((a) => a.type === "REFUND" && a.status === "awaiting_approval").length;
@@ -108,6 +121,22 @@ export function StatusHero({ summary, incident }: { summary: Summary; incident?:
             </p>
             <h1 className="mt-1 text-3xl font-semibold tracking-tight text-ink-1 sm:text-[2.1rem]">{copy.title}</h1>
             <p className="mt-1 max-w-2xl text-[15px] text-ink-2">{open?.summary ?? copy.line}</p>
+            {(summary.switches.kill_switch || summary.sale_window) && (
+              <div className="mt-2.5 flex flex-wrap gap-2">
+                {summary.switches.kill_switch && (
+                  <Badge tone="bad">
+                    <Power className="size-3" /> Kill switch on: guard paused
+                  </Badge>
+                )}
+                {summary.sale_window && (
+                  <span title={summary.sale_window.note || undefined}>
+                    <Badge tone="info">
+                      <PartyPopper className="size-3" /> Sale running until {hhmm(summary.sale_window.end)}
+                    </Badge>
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <dl className="grid shrink-0 grid-cols-3 gap-2 text-center xl:w-[400px]">

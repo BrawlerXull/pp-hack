@@ -6,8 +6,20 @@ export class ApiError extends Error {
     public status: number,
     public body: unknown,
   ) {
-    super(typeof body === "object" && body && "detail" in body ? String((body as { detail: unknown }).detail) : `HTTP ${status}`);
+    super(errorMessage(status, body));
   }
+
+  // Structured FastAPI detail ({code, message}), e.g. the 409 for approving a refund on a disputed payment.
+  get code(): string | undefined {
+    const d = typeof this.body === "object" && this.body ? (this.body as { detail?: unknown }).detail : undefined;
+    return typeof d === "object" && d && "code" in d ? String((d as { code: unknown }).code) : undefined;
+  }
+}
+
+function errorMessage(status: number, body: unknown): string {
+  const d = typeof body === "object" && body && "detail" in body ? (body as { detail: unknown }).detail : undefined;
+  if (typeof d === "object" && d && "message" in d) return String((d as { message: unknown }).message);
+  return d !== undefined ? String(d) : `HTTP ${status}`;
 }
 
 export async function api<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
@@ -76,23 +88,64 @@ export type IncidentSummary = {
   ai_refresh_failed_at: string | null;
   // What the triggers alone suggest; shown with a rules-fallback verdict, never used as the classification.
   rules_hint?: RulesHint | null;
+  trigger_tiers?: Record<string, TriggerTier>;
+  // AI evidence items that did not match our computed numbers and were dropped before display.
+  dropped_evidence?: number;
+  // Why the last assessment could not use the AI (rules fallback or kept verdict); null when it answered.
+  ai_fallback_reason?: string | null;
+  model_id: string | null;
+  verdict_at: string | null;
 };
+
+export type TriggerTier = "volume" | "fraud" | "ops" | "holding";
 
 export type RulesHint = "fraud_signals" | "processor_trouble" | "returning_customer_rush" | "unusual_volume";
 
 export type GuardStatus = "quiet" | "under_attack" | "busy_genuine_rush" | "paypal_issue" | "investigating" | "recovering";
 
-// Gemini circuit-breaker state shared by the API and the worker (backend app/ai/gemini.py status()).
-export type AiStatus = {
-  state: "ok" | "degraded" | "cooling_down" | "key_rejected" | "not_configured";
-  detail: string;
-  models: { model: string; paused: boolean; reason: string | null; until: string | null }[];
+export type LiveWindow = {
+  attempts: number;
+  attempts_vs_normal: number | null;
+  decline_rate: number;
+  decline_rate_vs_normal: number | null;
+  captured: number;
+  stopped: number;
+};
+
+export type SystemStatus = {
+  worker: {
+    alive: boolean;
+    // running; slow (no finished pass for 30 s); stalled (2.5 min); failing (the last pass raised); stopped.
+    state: "running" | "slow" | "stalled" | "failing" | "stopped";
+    // An incident is waiting on its AI assessment: the only time "waiting on AI" is true.
+    assessing: boolean;
+    heartbeat_at: string | null;
+    last_tick_at: string | null;
+    last_tick_error: string | null;
+    last_tick_error_at: string | null;
+    started_at: string | null;
+  };
+  ai: {
+    mode: "live" | "cooling_down" | "rules_only";
+    until: string | null;
+    reason: string | null;
+    last_model: string | null;
+    last_answer_at: string | null;
+    last_error: string | null;
+    last_error_at: string | null;
+  };
+  paypal: { environment: "sandbox"; configured: boolean; card_processing: "seen_working" | "unknown" };
+  simulator_enabled: boolean;
+  // The detector's last 5/15-minute numbers; null while the worker is down (they would be stale).
+  live: { "5m": LiveWindow; "15m": LiveWindow; at: string } | null;
 };
 
 export type Summary = {
   status: GuardStatus;
   open_incident: IncidentSummary | null;
-  ai?: AiStatus;
+  system: SystemStatus;
+  switches: { kill_switch: boolean; autopilot: boolean };
+  sale_window: { end: string; note: string } | null;
   guard_state: { mode: "normal" | "sca_all"; blocked_devices: number; held_skus: string[] };
   last_24h: {
     attempts: number;
@@ -116,6 +169,8 @@ export type Attempt = {
   fingerprint: string;
   email_domain: string | null;
   decision: Decision;
+  // Why the guard decided that (backend app/guard/check.py), e.g. fingerprint_blocked, sca_mode.
+  guard_reason: string | null;
   outcome: Outcome;
   decline_code: string | null;
   decline_category?: string | null;
@@ -124,7 +179,12 @@ export type Attempt = {
   card_last4?: string | null;
 };
 
-export type TimeseriesPoint = { minute: string } & Partial<Record<Outcome, number>>;
+// t: bucket start (bucket_s wide). minute: the same, older name.
+export type TimeseriesPoint = { t: string; minute: string } & Partial<Record<Outcome, number>>;
+
+export type AlertRow = { id: number; ts: string; incident_id: string; text: string | null; model_id: string | null };
+
+export type EvidenceVsNormal = { feature: string; window_min: number; observed: number | null; normal: number | null; multiplier: number | null };
 
 export type Evidence = { feature: string; window_min: number; observed: number; baseline: number | null; why: string };
 
@@ -142,22 +202,29 @@ export type ActionRow = {
   id: string;
   incident_id: string;
   type: "SCA_ON" | "BLOCK_FP" | "HOLD_SKU" | "REFUND" | "NOTIFY" | "DEESCALATE" | "RELAX";
-  status: "executed" | "awaiting_approval" | "rejected" | "failed";
+  // in_flight: a refund sent to PayPal whose answer is not in yet (re-sent with the same request id if lost).
+  status: "executed" | "awaiting_approval" | "rejected" | "failed" | "in_flight";
   rule: string;
   params: Record<string, unknown>;
   paypal_ref: string | null;
+  error: string | null;
   approved_by: string;
   created_at: string;
 };
 
+export type DeviceRow = { fingerprint: string; reason: string | null; incident_id: string | null; created_at: string; expires_at: string };
+export type Devices = { blocked: DeviceRow[]; trusted: DeviceRow[] };
+
 export type IncidentDetail = IncidentSummary & {
   verdict: Verdict | null;
   features: Record<string, unknown>;
-  signature: { top_sku?: string | null; fingerprints?: string[]; strong_fingerprints?: string[]; new_email_domains?: string[]; window_start?: string };
-  model_id: string | null;
+  signature: { top_sku?: string | null; fingerprints?: string[]; strong_fingerprints?: string[]; weak_fingerprints?: string[]; new_email_domains?: string[]; suspect_domains?: string[]; window_start?: string };
   prompt_version: string | null;
-  verdict_at: string | null;
   ai_refresh_failures: number;
+  // One row per verdict evidence item: our own number, the shop's normal and the ×N (never the AI's baseline).
+  evidence_vs_normal: EvidenceVsNormal[];
+  // Seconds from the burst's first attempt to the incident opening.
+  detected_in_s: number | null;
   actions: ActionRow[];
   report: { alert_text: string | null; report_md: string | null; evidence_md: string | null; model_id: string | null; generated_at: string } | null;
   timeline: { ts: string; actor: string; event: string; data: Record<string, unknown> }[];

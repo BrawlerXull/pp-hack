@@ -1,13 +1,14 @@
 "use client";
 
-import { FlaskConical, Home, LayoutDashboard, LogOut, Moon, Settings, ShieldCheck, Siren, Sparkles, Store } from "lucide-react";
+import { FlaskConical, Home, LayoutDashboard, LogOut, Moon, Settings, ShieldCheck, Siren, Store } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect } from "react";
 import useSWR, { SWRConfig } from "swr";
 import { DemoDock } from "@/components/guard/DemoDock";
-import { api, ApiError, fetcher, type Summary } from "@/lib/api";
+import { api, ApiError, fetcher } from "@/lib/api";
 import { useLiveUpdates } from "@/lib/live";
+import { SystemPills } from "./SystemPills";
 import { LiveDot } from "./ui";
 
 const NAV = [
@@ -28,19 +29,10 @@ export function GuardShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-const AI_COPY: Record<string, { label: string; tone: "good" | "warn" | "bad" | "neutral" }> = {
-  ok: { label: "AI analyst online", tone: "good" },
-  degraded: { label: "AI analyst online (fallback model)", tone: "warn" },
-  cooling_down: { label: "AI paused: fixed rules in charge", tone: "warn" },
-  key_rejected: { label: "AI key rejected: fixed rules in charge", tone: "bad" },
-  not_configured: { label: "AI not configured: fixed rules only", tone: "neutral" },
-};
-
 function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { data: me, error } = useSWR<{ shop_id: string }>("/auth/me", fetcher, { shouldRetryOnError: false });
-  const { data: summary } = useSWR<Summary>(me ? "/dashboard/summary" : null);
   const live = useLiveUpdates();
 
   useEffect(() => {
@@ -50,7 +42,6 @@ function Shell({ children }: { children: React.ReactNode }) {
   // Always render the page (it shows skeletons until data arrives); unauthenticated visitors are
   // redirected to /login as soon as /auth/me answers 401.
   const backendDown = error && !(error instanceof ApiError && error.status === 401);
-  const ai = summary?.ai ? AI_COPY[summary.ai.state] ?? AI_COPY.not_configured : null;
   const signOut = async () => {
     try {
       await api("/auth/logout", { method: "POST" });
@@ -92,18 +83,6 @@ function Shell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="space-y-2 px-3 pb-3">
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 text-xs">
-            <p className="flex items-center gap-2 text-ink-2">
-              <LiveDot tone={live === "live" ? "good" : live === "connecting" ? "warn" : "neutral"} />
-              {live === "live" ? "Live: watching every checkout" : live === "connecting" ? "Connecting…" : "Live updates paused"}
-            </p>
-            {ai && (
-              <p className="mt-2 flex items-center gap-2 text-ink-2" title={summary?.ai?.detail}>
-                <Sparkles className={`size-3.5 ${ai.tone === "good" ? "text-violet-300" : "text-ink-3"}`} />
-                {ai.label}
-              </p>
-            )}
-          </div>
           <div className="space-y-0.5 border-t border-white/[0.06] pt-2">
             <Link href="/shop" className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-ink-2 hover:bg-white/[0.04] hover:text-ink-1">
               <Store className="size-4 text-ink-3" /> Demo shop
@@ -144,6 +123,9 @@ function Shell({ children }: { children: React.ReactNode }) {
             })}
           </nav>
         </header>
+        <div className="border-b border-white/[0.06] bg-night-900/50 px-4 py-2.5 backdrop-blur sm:px-6 md:sticky md:top-0 md:z-20 lg:px-8">
+          <SystemPills live={live} />
+        </div>
         <main className="mx-auto w-full max-w-[1400px] flex-1 space-y-6 p-4 pb-28 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28">
           {backendDown && (
             <p className="rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-2 text-sm text-red-200">

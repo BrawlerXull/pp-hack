@@ -20,8 +20,9 @@ from datetime import datetime, timedelta
 from sqlalchemy import and_, exists, func, literal, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import CheckoutAttempt, GuardState, Incident, Outcome
+from app.db.models import CheckoutAttempt, Incident, Outcome
 from app.detection.features import AttemptRow, Baseline, card_key
+from app.guard import devices
 from app.policy.engine import CONFIDENCE_ACT, HARMLESS_CLASSES
 
 HISTORY_DAYS = 28
@@ -68,8 +69,7 @@ async def recent_rows(session: AsyncSession, shop_id: str, since: datetime) -> l
 async def load_baseline(session: AsyncSession, shop_id: str, now: datetime) -> Baseline:
     end = now - EXCLUDE_RECENT
     start = end - timedelta(days=HISTORY_DAYS)
-    gs = await session.get(GuardState, shop_id)
-    blocked = list(gs.blocked_fingerprints or []) if gs else []
+    blocked = list(await devices.blocked(session, shop_id))
     window = (
         Incident.shop_id == shop_id,
         CheckoutAttempt.ts >= Incident.opened_at - INCIDENT_LEAD,

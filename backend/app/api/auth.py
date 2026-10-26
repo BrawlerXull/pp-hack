@@ -19,8 +19,15 @@ def login(body: LoginIn, response: Response, settings: Annotated[Settings, Depen
     if not hmac.compare_digest(body.password, settings.admin_password):
         raise HTTPException(401, "wrong password")
     token = issue_session(settings)
+    # Secure in production (served over https): the cookie approves refunds and flips the kill switch.
+    # Local http dev needs it off, or the browser would drop it.
     response.set_cookie(
-        SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_S, httponly=True, samesite="lax", secure=False
+        SESSION_COOKIE,
+        token,
+        max_age=SESSION_MAX_AGE_S,
+        httponly=True,
+        samesite="lax",
+        secure=settings.environment == "production",
     )
     return {"ok": True, "shop_id": settings.shop_id, "token": token}
 

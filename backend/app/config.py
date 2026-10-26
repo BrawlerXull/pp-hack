@@ -1,5 +1,6 @@
 import os
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,9 +10,20 @@ SANDBOX_API_BASE = "https://api-m.sandbox.paypal.com"
 # test that forgot a mock must fail, not quietly call the real APIs.
 ENV_FILES = None if os.environ.get("CHECKOUT_GUARD_NO_ENV_FILE") else (".env", "../.env")
 
+# Values from the code and .env.example. A deployed demo with any of them is open to anyone who read the repo.
+DEFAULT_ADMIN_PASSWORDS = frozenset({"", "guard-demo"})
+DEFAULT_SESSION_SECRETS = frozenset({"", "dev-session-secret-change-me", "change-me-to-a-long-random-string"})
+DEFAULT_SHOP_API_KEYS = frozenset({"", "dev-shop-key", "change-me-shop-key"})
+MIN_SESSION_SECRET_LEN = 32
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=ENV_FILES, extra="ignore")
+    # hide_input_in_errors: a failed check (e.g. a production deploy missing a secret) would otherwise print a
+    # truncated repr of every setting, real API keys included, into the deploy log.
+    model_config = SettingsConfigDict(env_file=ENV_FILES, extra="ignore", hide_input_in_errors=True)
+
+    # "production" makes startup refuse the well-known demo secrets (_no_default_secrets).
+    environment: Literal["development", "production"] = "development"
 
     # PayPal sandbox REST app
     paypal_client_id: str = ""
@@ -25,6 +37,9 @@ class Settings(BaseSettings):
     # Tried in order when the primary is overloaded (503), over quota or times out.
     gemini_fallback_models: str = "gemini-2.5-flash,gemini-flash-lite-latest"
     ai_timeout_s: float = 20.0
+    # False: no Gemini call at all; the analyst returns the rules fallback labelled "AI disabled" and reports
+    # use their templates. For a demo without a key or quota, and to show the rules-only path on purpose.
+    ai_enabled: bool = True
 
     database_url: str = "postgresql+asyncpg://localhost:5432/checkout_guard"
 
@@ -44,6 +59,10 @@ class Settings(BaseSettings):
     detect_interval_s: float = 5.0
     reassess_interval_s: float = 120.0
 
+    # Optional: also push each owner alert to a Slack incoming webhook or an ntfy topic URL (app/notify.py).
+    notify_webhook_url: str = ""
+    notify_timeout_s: float = 3.0
+
     spike_output_dir: str = "spike-output"
 
     @field_validator("database_url")
@@ -60,6 +79,25 @@ class Settings(BaseSettings):
         # Hackathon safety: this project must never talk to live PayPal.
         if "sandbox" not in self.paypal_api_base:
             raise ValueError(f"PAYPAL_API_BASE must be a sandbox URL, got {self.paypal_api_base!r}")
+        return self
+
+    @model_validator(mode="after")
+    def _no_default_secrets(self) -> "Settings":
+        # The session secret signs owner sessions and challenge tokens: a known one lets anyone forge a login.
+        if self.environment != "production":
+            return self
+        problems = []
+        if self.admin_password in DEFAULT_ADMIN_PASSWORDS:
+            problems.append("ADMIN_PASSWORD is the demo default")
+        if (
+            self.session_secret in DEFAULT_SESSION_SECRETS
+            or len(self.session_secret) < MIN_SESSION_SECRET_LEN
+        ):
+            problems.append(f"SESSION_SECRET must be a random string of {MIN_SESSION_SECRET_LEN}+ characters")
+        if self.shop_api_key in DEFAULT_SHOP_API_KEYS:
+            problems.append("SHOP_API_KEY is the demo default")
+        if problems:
+            raise ValueError("ENVIRONMENT=production refuses default secrets: " + "; ".join(problems))
         return self
 
 

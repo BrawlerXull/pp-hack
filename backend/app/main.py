@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,11 +54,29 @@ if get_settings().simulator_enabled:
     app.include_router(demo.router)
 
 
+@app.get("/livez", tags=["ops"])
+async def livez(session: Annotated[AsyncSession, Depends(get_session)], response: Response) -> dict[str, str]:
+    """Liveness for the platform (Render healthCheckPath, compose healthcheck): the process answers and the
+    database is reachable. Deliberately not /healthz: a Gemini quota or a PayPal sandbox outage marks
+    /healthz degraded (503), and a platform that restarts or refuses to deploy on that would take down
+    a guard that is meant to keep running on its rules fallback."""
+    try:
+        await session.execute(text("SELECT 1"))
+    except Exception as exc:
+        response.status_code = 503
+        return {"status": "down", "db": f"error: {exc.__class__.__name__}"}
+    return {"status": "ok"}
+
+
 @app.get("/healthz", tags=["ops"])
 async def healthz(
+    request: Request,
+    response: Response,
     paypal: Annotated[PayPalClient, Depends(get_paypal)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, str]:
+    """Readiness of everything the demo needs; 503 when degraded, so an uptime check (the daily GitHub
+    Action) can alert on the status code alone."""
     checks = {"status": "ok"}
     try:
         await session.execute(text("SELECT 1"))
@@ -79,4 +97,11 @@ async def healthz(
     )
     if ai["state"] in ("cooling_down", "key_rejected"):
         checks["status"] = "degraded"
+    # The dashboard's live stream (LISTEN connection). "not_started" only when no lifespan ran (tests).
+    broadcaster: Broadcaster | None = getattr(request.app.state, "broadcaster", None)
+    checks["stream"] = broadcaster.state if broadcaster else "not_started"
+    if checks["stream"] == "reconnecting":
+        checks["status"] = "degraded"
+    if checks["status"] != "ok":
+        response.status_code = 503
     return checks

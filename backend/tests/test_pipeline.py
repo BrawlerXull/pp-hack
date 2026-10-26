@@ -25,7 +25,7 @@ from app.shop.service import place_order
 from app.simulator.runner import to_request
 from app.simulator.scenarios import card_testing, flash_sale
 from app.simulator.seed import seed_history
-from tests.conftest import SHOP
+from tests.conftest import SHOP, blocked
 
 
 def fake_ai(classification: str, confidence: float):
@@ -72,7 +72,7 @@ async def test_card_testing_is_contained_and_refunded(db, mock_ai):
     assert incident is not None and incident.classification == "card_testing"
 
     gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert gs.mode == "sca_all" and gs.held_skus == ["SKU-TEALIGHT-3"] and len(gs.blocked_fingerprints) == 4
+    assert gs.mode == "sca_all" and gs.held_skus == ["SKU-TEALIGHT-3"] and len(await blocked(db)) == 4
 
     refunds = (await db.execute(select(Action).where(Action.type == ActionType.REFUND))).scalars().all()
     captured_before = [r for r in refunds if r.status == ActionStatus.EXECUTED]
@@ -132,7 +132,7 @@ async def test_flash_sale_gets_no_defences(db, mock_ai):
     incident = await IncidentService(db, None, timedelta(minutes=2)).tick(SHOP)
     assert incident is not None and incident.classification == "genuine_rush"
     gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert gs.mode == "normal" and gs.blocked_fingerprints == [] and gs.held_skus == []
+    assert gs.mode == "normal" and await blocked(db) == [] and gs.held_skus == []
     acts = (await db.execute(select(Action.type))).scalars().all()
     assert ActionType.REFUND not in acts and ActionType.BLOCK_FP not in acts
 
@@ -160,8 +160,8 @@ async def test_ai_outage_falls_back_to_rules_only_defences(db, monkeypatch):
     assert incident.rules_hint == "fraud_signals"
     gs = await db.get(GuardState, SHOP, populate_existing=True)
     assert gs.mode == "sca_all" and gs.held_skus == ["SKU-TEALIGHT-3"]
-    assert gs.blocked_fingerprints == incident.signature["strong_fingerprints"]
-    assert len(gs.blocked_fingerprints) == 4  # the bot farm: a new card on every attempt
+    assert await blocked(db) == incident.signature["strong_fingerprints"]
+    assert len(await blocked(db)) == 4  # the bot farm: a new card on every attempt
     rules = (await db.execute(select(Action.policy_rule).where(Action.incident_id == incident.id))).scalars()
     assert set(rules) == {"R0_fraud_signal", "R3b_ai_down_fraud_signal"}
     assert not (await db.execute(select(Action).where(Action.type == ActionType.REFUND))).scalars().all()
@@ -181,7 +181,7 @@ async def test_incident_deescalates_when_quiet(db, mock_ai):
     await db.refresh(incident)
     assert incident.status == "closed"
     gs = await db.get(GuardState, SHOP, populate_existing=True)
-    assert gs.mode == "normal" and gs.held_skus == [] and gs.blocked_fingerprints  # bots stay blocked
+    assert gs.mode == "normal" and gs.held_skus == [] and await blocked(db)  # bots stay blocked (24 h)
 
 
 async def test_captures_after_the_verdict_are_refunded_on_the_next_tick(db, mock_ai):
@@ -191,10 +191,12 @@ async def test_captures_after_the_verdict_are_refunded_on_the_next_tick(db, mock
     svc = IncidentService(db, None, timedelta(minutes=2))
     await svc.tick(SHOP)
 
-    # A brand-new bot device gets a capture through before it is known (e.g. while the AI was deciding).
+    # A brand-new bot device gets a capture through before it is known (e.g. while the AI was deciding),
+    # after a decline on another card: two cards on one device is a strong match. (A lone capture from a
+    # new device is a first-time shopper as far as anyone can tell, and is not refunded.)
     invalidate_cache()
-    late = next(a for a in card_testing("offline", count=40, seed=99) if a.outcome == "approve")
-    late.device_id = "bot-late"
+    pool = list(card_testing("offline", count=40, seed=99))
+    late = [next(a for a in pool if a.outcome == "decline"), next(a for a in pool if a.outcome == "approve")]
     from app.db.models import GuardState as GS
     from app.guard.check import invalidate_cache as inv
 
@@ -202,7 +204,9 @@ async def test_captures_after_the_verdict_are_refunded_on_the_next_tick(db, mock
     gs.mode, gs.held_skus = "normal", []  # simulate the window before defences applied
     await db.commit()
     inv()
-    res = await place_order(db, None, to_request(SHOP, "test", late, "offline"))
+    for a in late:
+        a.device_id = "bot-late"
+        res = await place_order(db, None, to_request(SHOP, "test", a, "offline"))
     assert res.outcome == Outcome.CAPTURED
 
     await svc.tick(SHOP)  # no new AI call: enforcement only

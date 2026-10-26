@@ -3,7 +3,7 @@
 import { Bug, ChevronDown, FlaskConical, Loader2, PartyPopper, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
-import { api, type MerchantSettings, type SimRun } from "@/lib/api";
+import { api, type SimRun } from "@/lib/api";
 import { Button } from "./ui";
 
 const COLLAPSED_KEY = "cg_demo_dock_collapsed";
@@ -60,18 +60,9 @@ export function DemoDock() {
 
   const attack = () => api("/demo/run/card_testing", { method: "POST", json: { mode: "offline", count: 150, speed: 1 } }); // ~2 min: spreads over a few chart bars
 
-  const flashSale = async () => {
-    const s = await api<MerchantSettings>("/settings");
-    const now = Date.now();
-    await api("/settings", {
-      method: "PUT",
-      json: {
-        ...s,
-        sale_windows: [{ start: new Date(now - 5 * 60_000).toISOString(), end: new Date(now + 2 * 3600_000).toISOString(), note: "Autumn sale announced on Instagram" }],
-      },
-    });
-    return api("/demo/run/flash_sale", { method: "POST", json: { mode: "offline", count: 60, speed: 1.5 } });
-  };
+  // The backend announces the 2-hour sale window itself, and only if the run is accepted (409 while one is going).
+  const flashSale = () =>
+    api("/demo/run/flash_sale", { method: "POST", json: { mode: "offline", count: 60, speed: 1.5, announce_sale: true } });
 
   if (collapsed) {
     return (

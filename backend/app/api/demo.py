@@ -3,6 +3,7 @@
 Only mounted when SIMULATOR_ENABLED=true. Everything created here is tagged source=simulator/seed.
 """
 
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +17,7 @@ from app.db.models import (
     Action,
     AuditLog,
     CheckoutAttempt,
+    DeviceEntry,
     GuardMode,
     GuardState,
     Incident,
@@ -27,7 +29,7 @@ from app.db.session import get_session
 from app.events import publish
 from app.guard.check import invalidate_cache
 from app.paypal.client import PayPalClient
-from app.simulator.runner import RUNS, start_run
+from app.simulator.runner import RUNS, active_run, start_run
 from app.simulator.scenarios import OFFLINE_ONLY, SCENARIOS
 from app.simulator.seed import seed_history
 
@@ -40,6 +42,13 @@ class RunIn(BaseModel):
     count: int | None = Field(default=None, ge=1, le=500)
     speed: float = Field(default=1.0, gt=0, le=20)
     seed: int | None = None
+    # Announce a sale (a 2-hour window) as part of the run, server-side and only once the run is accepted:
+    # a refused run must not leave a sale window behind that softens the policy for the next attack.
+    announce_sale: bool = False
+
+
+SALE_WINDOW = timedelta(hours=2)
+SALE_NOTE = "Autumn sale announced on Instagram (simulated)"
 
 
 @router.get("/scenarios")
@@ -49,8 +58,31 @@ def scenarios() -> list[dict]:
 
 @router.post("/run/{scenario}")
 async def run(
-    scenario: str, body: RunIn, shop_id: OwnerShop, paypal: Annotated[PayPalClient, Depends(get_paypal)]
+    scenario: str,
+    body: RunIn,
+    shop_id: OwnerShop,
+    session: Session,
+    paypal: Annotated[PayPalClient, Depends(get_paypal)],
 ) -> dict:
+    """409 while another run is going: two overlapping scenarios blur into one incident and the demo's
+    story (and its numbers) stops making sense."""
+    if active := active_run():
+        message = f"a {active.scenario} run is still going: stop it or wait for it to finish"
+        raise HTTPException(409, {"code": "run_active", "message": message, "run_id": active.id})
+    if body.announce_sale:
+        if scenario not in SCENARIOS or (body.mode == "live" and scenario in OFFLINE_ONLY):
+            raise HTTPException(400, f"cannot run {scenario} ({body.mode})")
+        # Only the sale window changes (no read-modify-write of the whole settings: the switches stay as set).
+        now = datetime.now(UTC)
+        window = {"start": (now - timedelta(minutes=5)).isoformat(), "end": (now + SALE_WINDOW).isoformat()}
+        await session.execute(
+            update(MerchantSettings)
+            .where(MerchantSettings.shop_id == shop_id)
+            .values(sale_windows=[window | {"note": SALE_NOTE}])
+        )
+        audit(session, "owner", "demo.sale_announced", end=window["end"])
+        await session.commit()
+        invalidate_cache(shop_id)
     try:
         r = start_run(shop_id, scenario, body.mode, paypal, body.count, body.speed, body.seed)
     except ValueError as exc:
@@ -92,8 +124,8 @@ async def seed(shop_id: OwnerShop, session: Session, days: int = 28) -> dict:
 
 @router.post("/reset")
 async def reset(shop_id: OwnerShop, session: Session) -> dict:
-    """Wipe demo activity (attempts, incidents, actions, reports, sale windows).
-    Keeps seeded history and webhook events."""
+    """Wipe demo activity (attempts, incidents, actions, reports, device blocks and trust, sale windows)
+    and switch the guard back on (kill switch off, autopilot on). Keeps seeded history and webhook events."""
     for r in RUNS.values():
         r.cancelled = True
     incident_ids = list(
@@ -112,10 +144,13 @@ async def reset(shop_id: OwnerShop, session: Session) -> dict:
     await session.execute(
         update(GuardState)
         .where(GuardState.shop_id == shop_id)
-        .values(mode=GuardMode.NORMAL, blocked_fingerprints=[], held_skus=[], set_by_incident=None)
+        .values(mode=GuardMode.NORMAL, held_skus=[], set_by_incident=None)
     )
+    await session.execute(delete(DeviceEntry).where(DeviceEntry.shop_id == shop_id))
     await session.execute(
-        update(MerchantSettings).where(MerchantSettings.shop_id == shop_id).values(sale_windows=[])
+        update(MerchantSettings)
+        .where(MerchantSettings.shop_id == shop_id)
+        .values(sale_windows=[], kill_switch=False, autopilot=True)
     )
     audit(session, "owner", "demo.reset")
     await publish(session, "demo.reset", {})

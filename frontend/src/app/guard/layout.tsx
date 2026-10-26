@@ -7,6 +7,6 @@ export const metadata: Metadata = { title: "War Room" };
 // to prefetch for instant navigation.
 export const instant = false;
 
-export default function GuardLayout({ children }: LayoutProps<"/guard">) {
+export default function GuardLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return <GuardShell>{children}</GuardShell>;
 }

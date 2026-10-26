@@ -74,7 +74,7 @@ export default function ShopPage() {
       </footer>
 
       {selected && (
-        <CheckoutSheet product={selected} clientId={config?.paypal_client_id} configError={!!configError} onClose={() => setSelected(null)} />
+        <CheckoutSheet product={selected} clientId={config?.paypal_client_id} configFailed={Boolean(configError)} onClose={() => setSelected(null)} />
       )}
     </div>
   );

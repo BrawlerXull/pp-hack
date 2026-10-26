@@ -12,5 +12,5 @@ async def ensure_shop(session: AsyncSession, shop_id: str, name: str = "Wick & W
     if await session.get(MerchantSettings, shop_id) is None:
         session.add(MerchantSettings(shop_id=shop_id, sale_windows=[]))
     if await session.get(GuardState, shop_id) is None:
-        session.add(GuardState(shop_id=shop_id, blocked_fingerprints=[], held_skus=[]))
+        session.add(GuardState(shop_id=shop_id, held_skus=[]))
     await session.commit()

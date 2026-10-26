@@ -15,6 +15,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import notify
 from app.actions.executor import Executor
 from app.ai import analyst, gemini, reporter
 from app.db.audit import audit
@@ -30,8 +31,10 @@ from app.db.models import (
 )
 from app.detection import baseline as baseline_mod
 from app.detection import features as feat
+from app.detection import normal
 from app.detection import triggers as trig
 from app.events import publish
+from app.guard import devices
 from app.incidents import cadence
 from app.paypal.client import PayPalClient
 from app.policy.engine import PlannedAction, PolicyInput, decide, rules_first, rules_hint
@@ -82,6 +85,8 @@ class IncidentService:
         self.paypal = paypal
         self.reassess_after = reassess_after  # base interval; also the AI-failure backoff unit
         self.verdict_max_age = verdict_max_age
+        # The last tick's 5/15-minute numbers and normal, for the worker heartbeat (dashboard live tiles).
+        self.live: dict[str, Any] | None = None
 
     async def tick(self, shop_id: str, now: datetime | None = None) -> Incident | None:
         """One detector pass for a shop. Safe to call repeatedly. Commits (several times)."""
@@ -92,6 +97,7 @@ class IncidentService:
         rows = await baseline_mod.recent_rows(self.s, shop_id, now - timedelta(minutes=60))
         base = await baseline_mod.load_baseline(self.s, shop_id, now)
         features = feat.compute_all(rows, now, base)
+        self.live = normal.live_snapshot(features, base) | {"at": now.isoformat()}
         fired = trig.evaluate(features, base)
         incident = await open_incident(self.s, shop_id, lock=True)
 
@@ -213,7 +219,8 @@ class IncidentService:
         Catches captures that landed while the AI was deciding and bot devices seen since."""
         if incident.classification is None:
             return
-        sig = trig.signature(rows, incident.opened_at - timedelta(minutes=15), now, base)
+        trusted = await devices.trusted(self.s, incident.shop_id)
+        sig = trig.signature(rows, incident.opened_at - timedelta(minutes=15), now, base, trusted)
         incident.signature = sig.as_dict()
         planned = [
             p for p in await self._plan(incident, ms, sig, features[15], now) if p.type != ActionType.NOTIFY
@@ -264,7 +271,8 @@ class IncidentService:
         gs = await self.s.get(GuardState, incident.shop_id)
         assert gs is not None
         sale = active_sale_window(ms, now)
-        sig = trig.signature(rows, min(incident.opened_at, now) - timedelta(minutes=15), now, base)
+        trusted = await devices.trusted(self.s, incident.shop_id)
+        sig = trig.signature(rows, min(incident.opened_at, now) - timedelta(minutes=15), now, base, trusted)
         rules_acted = await self._rules_first(incident, ms, sig, features[15], fired, now)
         if incident.status != IncidentStatus.OPEN:
             return  # closed by the owner before R0 could act
@@ -278,7 +286,7 @@ class IncidentService:
             sale_window=sale,
             guard_state={
                 "mode": gs.mode,
-                "blocked_devices": len(gs.blocked_fingerprints or []),
+                "blocked_devices": await devices.count_blocked(self.s, incident.shop_id),
                 "held_skus": gs.held_skus,
             },
             actions_so_far=sorted(set(prior)),
@@ -374,7 +382,10 @@ class IncidentService:
         triggers = list(incident.triggers or [])
         verdict_triggers = (incident.assessment_context or {}).get("verdict_triggers", triggers)
 
-        keep = not result.ai_available and cadence.has_real_verdict(incident)
+        # AI_ENABLED=false is the owner switching the AI off, not a failed re-check: the rules take over now,
+        # so blocks and refunds stop riding on a verdict the owner chose not to trust.
+        switched_off = result.fallback_reason == gemini.AI_DISABLED
+        keep = not result.ai_available and not switched_off and cadence.has_real_verdict(incident)
         if keep and (new := cadence.contradicting_triggers(incident)):
             # Guard 1: a kept verdict must not outlive new signals that contradict it.
             audit(
@@ -387,6 +398,7 @@ class IncidentService:
             )
             keep = False
 
+        incident.ai_fallback_reason = None if result.ai_available else result.fallback_reason
         if keep:
             incident.ai_refresh_failed_at = now
             incident.ai_refresh_failures += 1
@@ -410,6 +422,8 @@ class IncidentService:
             incident.prompt_version = analyst.PROMPT_VERSION
             incident.ai_available = result.ai_available
             incident.verdict_at = now
+            incident.dropped_evidence = result.dropped_evidence
+            incident.verdict_features = incident.features
             incident.ai_refresh_failed_at = None
             incident.ai_refresh_failures = 0 if result.ai_available else incident.ai_refresh_failures + 1
             verdict_triggers = triggers
@@ -422,6 +436,7 @@ class IncidentService:
                 confidence=v.confidence,
                 model=result.model_id,
                 dropped_evidence=result.dropped_evidence,
+                numbers_replaced=result.numbers_replaced,
                 first=reason == "first_verdict",
                 reask=reason,
             )
@@ -432,10 +447,13 @@ class IncidentService:
             verdict_triggers=verdict_triggers,
         )
 
-    async def write_report(self, incident: Incident, skip_ai: bool = False) -> Report | None:
+    async def write_report(
+        self, incident: Incident, skip_ai: bool = False, notify_owner: bool = True
+    ) -> Report | None:
         """Commits twice: facts are read in one transaction, Gemini drafts with none open, and the report
         is upserted in another (an upsert: the worker and the owner's regenerate can race). None when the
-        incident was closed while drafting: the close writes the final report."""
+        incident was closed while drafting: the close writes the final report. notify_owner=False (the
+        owner's own regenerate) neither records an alert in the history nor pushes it to the webhook."""
         await self.s.refresh(
             incident
         )  # expire_on_commit=False: the owner may have closed it since we read it
@@ -464,8 +482,13 @@ class IncidentService:
             audit(self.s, "ai", "ai.usage", incident.id, purpose="report", calls=calls)
         report = await self.s.get(Report, incident.id, populate_existing=True)
         assert report is not None
+        if notify_owner:
+            # The alert history (GET /dashboard/alerts): every alert the owner was sent, with its text.
+            audit(self.s, "system", "alert.sent", incident.id, text=report.alert_text, model_id=model_id)
         await publish(self.s, "alert", {"incident_id": incident.id, "text": report.alert_text})
         await self.s.commit()
+        if notify_owner:
+            notify.send(report.alert_text or "", incident.id)  # after commit, in the background
         return report
 
     async def close(self, incident: Incident, rule: str) -> None:
@@ -494,4 +517,10 @@ def incident_event(i: Incident) -> dict[str, Any]:
         "ai_available": i.ai_available,
         "ai_refresh_failed_at": i.ai_refresh_failed_at,
         "rules_hint": i.rules_hint,
+        "trigger_tiers": {t: trig.TRIGGER_TIER[t] for t in i.triggers or [] if t in trig.TRIGGER_TIER},
+        # AI evidence items that did not match our numbers and were dropped (the verdict on record).
+        "dropped_evidence": i.dropped_evidence or 0,
+        "ai_fallback_reason": i.ai_fallback_reason,
+        "model_id": i.model_id,
+        "verdict_at": i.verdict_at,
     }

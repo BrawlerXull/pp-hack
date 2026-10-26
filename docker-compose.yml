@@ -1,0 +1,74 @@
+# One command: docker compose up --build   → shop http://localhost:3000, dashboard /guard, API :8000/docs
+# Reads ../.env if present (PayPal sandbox + Gemini keys). Without it everything still starts: the shop says
+# PayPal is not configured, the Demo lab runs offline simulations and the AI falls back to the fixed rules.
+# Stop local dev servers on :3000/:8000 first (or change the published ports below). Ports are published on
+# loopback only: without .env the owner password is the demo default, which must not be reachable from the
+# venue Wi-Fi.
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql://postgres:postgres@db:5432/checkout_guard
+  PUBLIC_APP_URL: http://localhost:3000
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: checkout_guard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro  # also creates checkout_guard_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d checkout_guard"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: ./backend
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # /livez, not /healthz: /healthz is 503 without PayPal credentials, which is a valid offline setup.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/livez', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker.main"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    depends_on:
+      api:
+        condition: service_healthy  # the API runs the migrations first
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://api:8000
+    environment:
+      BACKEND_URL: http://api:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
