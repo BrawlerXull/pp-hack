@@ -112,7 +112,10 @@ async def summary(
             "genuine_rush": "busy_genuine_rush",
             "paypal_outage": "paypal_issue",
         }.get(inc.classification or "", "investigating")
-    stopped = sum(counts.get(o, 0) for o in (Outcome.BLOCKED, Outcome.CHALLENGED, Outcome.SCA_REQUIRED))
+    stopped = sum(
+        counts.get(o, 0)
+        for o in (Outcome.BLOCKED, Outcome.CHALLENGED, Outcome.SCA_REQUIRED, Outcome.SCA_FAILED)
+    )
     now = datetime.now(UTC)
     ai = await gemini.status()
     sale = active_sale_window(ms, now) if ms else None
@@ -165,10 +168,7 @@ async def attempts(
     if not include_seed:
         q = q.where(CheckoutAttempt.source != "seed")
     rows = (await session.execute(q.order_by(CheckoutAttempt.ts.desc()).limit(limit))).scalars()
-    return [
-        attempt_event(a) | {"capture_id": a.capture_id, "refund_id": a.refund_id, "card_last4": a.card_last4}
-        for a in rows
-    ]
+    return [attempt_event(a) | {"capture_id": a.capture_id, "refund_id": a.refund_id} for a in rows]
 
 
 BUCKET_ORIGIN = datetime(2000, 1, 1, tzinfo=UTC)

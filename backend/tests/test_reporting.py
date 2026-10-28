@@ -412,8 +412,25 @@ async def test_devices_blocked_counts_the_device_table_and_ai_status_is_reported
     f = await reporter.gather_facts(db, inc)
     assert f["devices_blocked"] == "3"
     assert f["ai_status"] == reporter.AI_STATUS["kept"] and f["_ai"] == "kept"
+    # P9: the scorecard decides, so Gemini being down only means "rules" when the scorecard was unsure
+    # too (an attack the scorecard is sure of is a live verdict whoever wrote the words).
     inc.ai_available, inc.ai_refresh_failed_at = False, None
+    assert (await reporter.gather_facts(db, inc))["_ai"] == "live"
+    inc.classification = "unclear"
     assert (await reporter.gather_facts(db, inc))["_ai"] == "rules"
+
+
+async def test_the_report_says_who_decided_and_who_wrote_the_words(db):
+    inc = await attack_incident(db)
+    inc.classifier_version, inc.decided_by, inc.model_id = "scorecard-v1", "scorecard", "template"
+    f = await reporter.gather_facts(db, inc)
+    assert f["decision_path"] == "scorecard-v1; explained by Checkout Guard's own template"
+    inc.decided_by, inc.model_id = "scorecard+gemini_agree", "gemini-x"
+    f = await reporter.gather_facts(db, inc)
+    assert f["decision_path"] == "scorecard-v1, confirmed by the AI second opinion; explained by gemini-x"
+    report = reporter.render(reporter.template(f), f)
+    assert "**Decided by:** scorecard-v1, confirmed by the AI second opinion" in report["report_md"]
+    assert "**Decided by:**" in report["evidence_md"]
 
 
 async def test_an_incident_closed_before_its_first_verdict_does_not_blame_the_ai(db):
@@ -423,7 +440,7 @@ async def test_an_incident_closed_before_its_first_verdict_does_not_blame_the_ai
     f = await reporter.gather_facts(db, inc)
     assert f["_ai"] == "none" and f["ai_status"] == reporter.AI_STATUS["none"]
     text = reporter.render(reporter.template(f), f)["alert_text"]
-    assert "unavailable" not in text and "before the AI gave a verdict" in text
+    assert "unavailable" not in text and "before a verdict was reached" in text
     assert "No action needed" not in text
 
 

@@ -1,19 +1,22 @@
 "use client";
 
-import { Bug, CloudOff, Database, Droplets, Loader2, Moon, PartyPopper, Play, RotateCcw, Square, UserX, type LucideIcon } from "lucide-react";
+import { Bug, CloudOff, Database, Droplets, EyeOff, Loader2, Moon, PartyPopper, Play, RotateCcw, ShieldAlert, ShoppingBag, Square, UserX, type LucideIcon } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { Badge, Button, Card, Empty, PageHeader } from "@/components/guard/ui";
-import { api, type Scenario, type SimRun } from "@/lib/api";
-import { OUTCOME_META, timeAgo } from "@/lib/format";
+import { api, type RunContext, type Scenario, type SimRun, type Summary } from "@/lib/api";
+import { OUTCOME_META, SKU_NAME, timeAgo } from "@/lib/format";
 
 const ABOUT: Record<string, { title: string; text: string; icon: LucideIcon; kind: "attack" | "control" | "ops" }> = {
-  card_testing: { title: "Card-testing attack", text: "A bot farm hammers the cheapest item with a new card each time; about 70% are declined.", icon: Bug, kind: "attack" },
-  account_testing: { title: "Stolen-account testing", text: "Stolen PayPal accounts (wallet), many unique payers, cheapest item.", icon: UserX, kind: "attack" },
-  slow_drip: { title: "Slow drip", text: "One attempt every 12 s: an attacker trying to stay under the radar.", icon: Droplets, kind: "attack" },
+  card_testing: { title: "Card-testing attack", text: "A bot farm hammers the cheapest item with a new card each time. Each run draws its own attacker: 2-7 devices, pace, decline mix.", icon: Bug, kind: "attack" },
+  account_testing: { title: "Stolen-account testing", text: "Stolen PayPal logins (wallet): most orders never get approved, many payers per device, cheapest item.", icon: UserX, kind: "attack" },
+  slow_drip: { title: "Slow drip", text: "One attempt every 7-20 s: an attacker trying to stay under the radar.", icon: Droplets, kind: "attack" },
   flash_sale: { title: "Flash sale", text: "Real customers after an announced sale: returning shoppers, varied baskets, few declines.", icon: PartyPopper, kind: "control" },
   paypal_outage: { title: "PayPal outage", text: "Ordinary customers while PayPal returns errors. Not an attack.", icon: CloudOff, kind: "ops" },
   normal_night: { title: "Normal night", text: "A few ordinary orders.", icon: Moon, kind: "control" },
+  mixed_traffic: { title: "Busy evening", text: "A busy ordinary evening: returning and new shoppers, a few honest second-card retries.", icon: ShoppingBag, kind: "control" },
+  stealth_bot: { title: "Stealth bot", text: "A careful card tester: new device every attempt, one try every 1-5 minutes (slow; caught by the slow-decline trigger).", icon: EyeOff, kind: "attack" },
 };
 
 const KIND = {
@@ -26,6 +29,9 @@ export default function LabPage() {
   const { mutate } = useSWRConfig();
   const { data: scenarios } = useSWR<Scenario[]>("/demo/scenarios");
   const { data: runs } = useSWR<SimRun[]>("/demo/runs", { refreshInterval: 2000 });
+  const { data: summary } = useSWR<Summary>("/dashboard/summary", { refreshInterval: 5000 });
+  const gs = summary?.guard_state;
+  const defencesOn = Boolean(summary?.open_incident || gs?.mode === "sca_all" || gs?.held_skus.length || gs?.blocked_devices);
   const [mode, setMode] = useState<"offline" | "live">("offline");
   const [speed, setSpeed] = useState(3);
   const [busy, setBusy] = useState<string | null>(null);
@@ -45,6 +51,8 @@ export default function LabPage() {
     }
   }
 
+  const reset = () => act("reset", () => api("/demo/reset", { method: "POST" }), "Demo reset (history kept).");
+
   return (
     <>
       <PageHeader
@@ -56,6 +64,29 @@ export default function LabPage() {
           </>
         }
       />
+
+      {defencesOn && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.07] px-4 py-3 text-sm text-amber-100">
+          <ShieldAlert className="size-5 shrink-0 text-amber-300" />
+          <p className="min-w-0 flex-1">
+            <b>Defences from an earlier attack are still on</b>
+            {summary?.open_incident && (
+              <>
+                {" "}(
+                <Link href={`/guard/incidents/${summary.open_incident.id}`} className="underline">
+                  open incident
+                </Link>
+                )
+              </>
+            )}
+            : {describeDefences({ sca_all: gs?.mode === "sca_all", held_skus: gs?.held_skus, blocked_devices: gs?.blocked_devices })}. A new attack
+            will be stopped before it reaches PayPal. Reset the demo to watch an attack from the start.
+          </p>
+          <Button variant="secondary" size="sm" disabled={!!busy} onClick={reset}>
+            <RotateCcw className="size-3.5" /> Reset demo
+          </Button>
+        </div>
+      )}
 
       <Card
         title="Scenarios"
@@ -120,7 +151,7 @@ export default function LabPage() {
           <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => act("seed", () => api("/demo/seed?days=28", { method: "POST" }), "Seeded 28 days of normal history.")}>
             <Database className="size-3.5" /> Seed 28 days of normal history
           </Button>
-          <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => act("reset", () => api("/demo/reset", { method: "POST" }), "Demo reset (history kept).")}>
+          <Button variant="secondary" size="sm" disabled={!!busy} onClick={reset}>
             <RotateCcw className="size-3.5" /> Reset demo
           </Button>
           {message && <span className="text-xs text-ink-3" aria-live="polite">{message}</span>}
@@ -135,7 +166,8 @@ export default function LabPage() {
             {runs.map((r) => {
               const pct = r.total ? (r.done / r.total) * 100 : 0;
               return (
-                <li key={r.run_id} className="flex flex-wrap items-center gap-3 py-3 text-sm">
+                <li key={r.run_id} className="py-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-3">
                   <span className="w-40 font-medium text-ink-1">{ABOUT[r.scenario]?.title ?? r.scenario.replace(/_/g, " ")}</span>
                   <Badge tone={r.mode === "live" ? "info" : "neutral"}>{r.mode}</Badge>
                   <div className="h-1.5 w-32 overflow-hidden rounded-full bg-white/[0.08]">
@@ -158,6 +190,8 @@ export default function LabPage() {
                       <Square className="size-3.5" />
                     </Button>
                   )}
+                  </div>
+                  <RunNote run={r} />
                 </li>
               );
             })}
@@ -165,5 +199,38 @@ export default function LabPage() {
         )}
       </Card>
     </>
+  );
+}
+
+function describeDefences(c: RunContext): string {
+  const parts: string[] = [];
+  if (c.sca_all) parts.push("3-D Secure on every card");
+  if (c.held_skus?.length) parts.push(`${c.held_skus.map((s) => SKU_NAME[s] ?? s).join(", ")} on hold for new shoppers`);
+  if (c.blocked_devices) parts.push(`${c.blocked_devices} device${c.blocked_devices === 1 ? "" : "s"} blocked`);
+  return parts.length ? parts.join(", ") : "an incident is open";
+}
+
+/** One line under each run: its seed (replayable) and why its numbers look the way they do. */
+function RunNote({ run: r }: { run: SimRun }) {
+  const ctx = r.context ?? {};
+  const allStopped = r.done > 0 && r.reached_paypal === 0;
+  return (
+    <p className="mt-1 text-xs text-ink-3">
+      {r.seed !== null && <span className="font-mono">seed {r.seed}</span>}
+      {r.done > 0 && (
+        <>
+          {" · "}
+          {allStopped
+            ? `all ${r.done} stopped by the guard before PayPal`
+            : `${r.reached_paypal} reached ${r.mode === "live" ? "PayPal" : "the (simulated) PayPal step"}, ${r.stopped_by_guard} stopped by the guard`}
+        </>
+      )}
+      {ctx.defences_active && (
+        <span className="text-amber-300">
+          {" · "}started with defences already on ({describeDefences(ctx)})
+        </span>
+      )}
+      {r.mode === "live" && allStopped && <span>{" · "}no PayPal calls were made</span>}
+    </p>
   );
 }

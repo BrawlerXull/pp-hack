@@ -36,7 +36,7 @@ Small shops and nonprofits have no fraud team. They find out after the damage is
 
 ### How it works: four steps and one decision
 1. **Watch.** Every checkout attempt goes through a guard check before the PayPal order is created. PayPal webhooks report every capture, refund and dispute.
-2. **Judge** (the decision). A deterministic detector notices the anomaly. Gemini then decides whether it is a **card-testing attack, an account-testing attack, a genuine rush or a PayPal outage**, and gives its reasons.
+2. **Judge** (the decision). A deterministic detector notices the anomaly. A transparent scorecard then decides whether it is a **card-testing attack, an account-testing attack, a genuine rush or a PayPal outage**, with its reasons; Gemini explains the call to the owner and gives a second opinion only when the scorecard is unsure.
 3. **Act.** A deterministic policy engine applies graduated defences. In order: force 3-D Secure (`SCA_ALWAYS`), pause traffic that looks like the bot, then refund matched attack captures up to a cap.
 4. **Explain.** One plain-English alert at the time, then a morning report and an evidence pack the owner can send to PayPal.
 - **Then stand down:** the defences relax automatically once the attack stops.

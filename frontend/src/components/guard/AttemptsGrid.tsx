@@ -40,7 +40,7 @@ const theme = themeQuartz.withPart(colorSchemeDarkBlue).withParams({
   browserColorScheme: "dark",
 });
 
-const STOPPED: Outcome[] = ["blocked", "challenged", "sca_required"];
+const STOPPED: Outcome[] = ["blocked", "challenged", "sca_required", "sca_failed"];
 
 const FILTERS: { key: string; label: string; test: (a: Attempt) => boolean }[] = [
   { key: "all", label: "All", test: () => true },
@@ -91,11 +91,19 @@ function DeviceCell({ value }: ICellRendererParams<Attempt, string>) {
   );
 }
 
-function MethodCell({ value }: ICellRendererParams<Attempt, Attempt["method"]>) {
-  const Icon = value === "wallet" ? Wallet : CreditCard;
+/** "Card · VISA 1368" when PayPal told us the brand and last 4 (never the number). */
+function methodText(a: Attempt | undefined): string {
+  if (!a) return "";
+  if (a.method === "wallet") return "PayPal";
+  return [a.card_brand, a.card_last4].some(Boolean) ? `Card · ${[a.card_brand, a.card_last4].filter(Boolean).join(" ")}` : "Card";
+}
+
+function MethodCell({ data }: ICellRendererParams<Attempt>) {
+  if (!data) return null;
+  const Icon = data.method === "wallet" ? Wallet : CreditCard;
   return (
     <span className="inline-flex items-center gap-1.5 text-ink-2">
-      <Icon className="size-3.5" aria-hidden /> {value === "wallet" ? "PayPal" : "Card"}
+      <Icon className="size-3.5" aria-hidden /> {methodText(data)}
     </span>
   );
 }
@@ -116,6 +124,10 @@ function SourceCell({ data }: ICellRendererParams<Attempt>) {
 /** The guard's reason for its decision, and PayPal's decline code when it got that far. */
 function whyText(a: Attempt): string {
   const guard = a.guard_reason ? (GUARD_REASON_LABEL[a.guard_reason] ?? a.guard_reason) : "";
+  if (a.outcome === "sca_failed") {
+    const bank = `Bank check failed${a.sca_liability_shift ? ` (liability shift ${a.sca_liability_shift})` : ""}`;
+    return a.guard_reason && a.guard_reason !== "normal" ? `${guard} · ${bank}` : bank;
+  }
   if (a.decline_code) return a.guard_reason && a.guard_reason !== "normal" ? `${guard} · PayPal: ${a.decline_code}` : `PayPal: ${a.decline_code}`;
   return guard;
 }

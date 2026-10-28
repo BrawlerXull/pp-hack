@@ -1,6 +1,7 @@
-"""Incident flow on the real test database: keeping the last good AI verdict through a failed re-check,
-no transaction or row lock held across Gemini/PayPal calls, and re-asking the AI only on material change.
-The AI is always faked (monkeypatched generate_json); nothing here reaches Gemini or PayPal."""
+"""Incident flow on the real test database: what survives a failed Gemini call (the explanation's wording,
+an agreed tie-break), no transaction or row lock held across Gemini/PayPal calls, and re-assessing only on
+material change. The AI is always faked (monkeypatched generate_json); nothing here reaches Gemini or
+PayPal."""
 
 import asyncio
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from app.db import session as db_session
 from app.db.models import (
     Action,
     ActionStatus,
+    ActionType,
     AuditLog,
     CheckoutAttempt,
     GuardState,
@@ -31,13 +33,14 @@ from app.db.models import (
 from app.guard.check import invalidate_cache
 from app.incidents import cadence
 from app.incidents import service as service_mod
+from app.incidents.decision import AGREE_CAP, DECIDED_BY_AGREE, DECIDED_BY_SCORECARD
 from app.incidents.service import IncidentService, release_assessment_claims
 from app.shop.service import fingerprint, place_order
 from app.simulator.runner import to_request
 from app.simulator.scenarios import BOT_UA, card_testing, flash_sale
 from app.simulator.seed import seed_history
 from tests.conftest import SHOP, blocked
-from tests.test_pipeline import fake_ai, run_scenario
+from tests.test_pipeline import fake_ai, force_scorecard, run_scenario
 
 REASSESS = timedelta(minutes=2)
 
@@ -62,12 +65,14 @@ def counting(monkeypatch, classification: str | None, confidence: float = 0.95) 
     return calls
 
 
-async def attack(db, monkeypatch, classification="card_testing", confidence=0.95) -> Incident:
-    counting(monkeypatch, classification, confidence)
+async def attack(db, monkeypatch) -> Incident:
+    """Real card-testing traffic: the scorecard is sure (card_testing, refund floor), Gemini explains."""
+    counting(monkeypatch, "card_testing", 0.95)
     await seed_history(db, SHOP, days=7)
     await run_scenario(db, card_testing, 60)
     incident = await IncidentService(db, None, REASSESS).tick(SHOP)
-    assert incident is not None and incident.classification == classification
+    assert incident is not None and incident.classification == "card_testing"
+    assert incident.decided_by == DECIDED_BY_SCORECARD and incident.confidence >= 0.85
     return incident
 
 
@@ -78,6 +83,9 @@ async def age_verdict(db, incident: Incident, minutes: float) -> None:
     shift = timedelta(minutes=minutes)
     incident.last_assessed_at -= shift
     incident.verdict_at -= shift
+    if ai_at := (incident.assessment_context or {}).get("ai_at"):  # and the last Gemini call (backoff)
+        shifted = (datetime.fromisoformat(ai_at) - shift).isoformat()
+        incident.assessment_context = incident.assessment_context | {"ai_at": shifted}
     await db.commit()
 
 
@@ -105,22 +113,43 @@ async def events(db, incident_id: str) -> list[str]:
     return list((await db.execute(q)).scalars())
 
 
-# ---- item 1: keep the last good verdict when a re-check fails ---------------------------------------
+# ---- item 1 (P9): the scorecard decides; what is "kept" through a failed Gemini call ------------------
+# Before P9 these tests kept the last AI *verdict* through a failed re-check. The scorecard now re-decides
+# on every assessment, so a Gemini failure can only cost the explanation's wording (kept for the same class)
+# or an agreed tie-break (kept, with Guard 1 and Guard 2). Fake confidences like 0.95 no longer appear on
+# the incident: Gemini cannot set a confidence.
 
 
-async def test_failed_recheck_keeps_card_testing_and_still_blocks_and_refunds(db, monkeypatch):
+async def tiebreak_attack(db, monkeypatch, top="card_testing", confidence=0.9) -> Incident:
+    """An incident the scorecard was unsure about (forced) and Gemini agreed with: AGREE_CAP applies."""
+    force_scorecard(monkeypatch, "unclear", confidence, margin=0.1, top=top)
+    counting(monkeypatch, top, 0.95)
+    await seed_history(db, SHOP, days=7)
+    await run_scenario(db, card_testing, 60)
+    incident = await IncidentService(db, None, REASSESS).tick(SHOP)
+    assert incident.classification == top and incident.decided_by == DECIDED_BY_AGREE
+    assert incident.confidence == min(confidence, AGREE_CAP)
+    return incident
+
+
+async def test_failed_explanation_keeps_the_wording_and_the_scorecard_still_blocks_and_refunds(
+    db, monkeypatch
+):
     incident = await attack(db, monkeypatch)
+    confidence = incident.confidence
     fp, late_id = await new_bot_device(db)
     await age_verdict(db, incident, 11)  # verdict older than 10 min: due for a re-check
     calls = counting(monkeypatch, None)
 
     await IncidentService(db, None, REASSESS).tick(SHOP)
     await db.refresh(incident)
-    assert calls == [Verdict]  # the re-check was attempted (and failed); the reporter didn't retry Gemini
-    assert incident.classification == "card_testing" and incident.confidence == 0.95
-    assert incident.model_id == "mock-model" and incident.ai_available  # the badge does not flip
-    assert incident.ai_refresh_failed_at is not None and incident.ai_refresh_failures == 1
-    assert "ai.refresh_failed" in await events(db, incident.id)
+    assert calls == [Verdict]  # the explanation was attempted (and failed); the reporter didn't retry Gemini
+    assert incident.classification == "card_testing" and incident.confidence >= 0.85
+    assert incident.confidence != confidence  # re-decided from the new numbers, not kept
+    assert incident.model_id == "mock-model" and incident.ai_available  # the AI's wording stands
+    assert incident.ai_refresh_failed_at is None and incident.ai_refresh_failures == 1
+    assert incident.ai_fallback_reason == "Gemini quota exhausted"
+    assert "ai.explanation_kept" in await events(db, incident.id)
 
     gs = await db.get(GuardState, SHOP, populate_existing=True)
     assert fp in await blocked(db) and gs.mode == "sca_all" and gs.held_skus == ["SKU-TEALIGHT-3"]
@@ -128,7 +157,7 @@ async def test_failed_recheck_keeps_card_testing_and_still_blocks_and_refunds(db
     assert late.outcome == Outcome.REFUNDED
 
 
-async def test_failed_recheck_keeps_genuine_rush_and_the_checkout_normal(db, monkeypatch):
+async def test_failed_explanation_keeps_genuine_rush_and_the_checkout_normal(db, monkeypatch):
     counting(monkeypatch, "genuine_rush", 0.9)
     await seed_history(db, SHOP, days=7)
     ms = await db.get(MerchantSettings, SHOP)
@@ -144,15 +173,30 @@ async def test_failed_recheck_keeps_genuine_rush_and_the_checkout_normal(db, mon
 
     await IncidentService(db, None, REASSESS).tick(SHOP)
     await db.refresh(incident)
-    assert "ai.refresh_failed" in await events(db, incident.id)
-    assert incident.classification == "genuine_rush" and incident.confidence == 0.9
+    assert "ai.explanation_kept" in await events(db, incident.id)
+    assert incident.classification == "genuine_rush" and incident.confidence >= 0.7
     gs = await db.get(GuardState, SHOP, populate_existing=True)
     assert gs.mode == "normal" and await blocked(db) == [] and gs.held_skus == []
 
 
+async def test_failed_recheck_keeps_an_agreed_tiebreak(db, monkeypatch):
+    incident = await tiebreak_attack(db, monkeypatch)
+    fp, _ = await new_bot_device(db)
+    await age_verdict(db, incident, 11)
+    calls = counting(monkeypatch, None)
+
+    await IncidentService(db, None, REASSESS).tick(SHOP)
+    await db.refresh(incident)
+    assert calls == [Verdict] and "ai.refresh_failed" in await events(db, incident.id)
+    assert incident.classification == "card_testing" and incident.confidence == AGREE_CAP
+    assert incident.decided_by == DECIDED_BY_AGREE and incident.ai_available
+    assert incident.ai_refresh_failed_at is not None and incident.ai_refresh_failures == 1
+    assert fp in await blocked(db)  # R4 still applies to the kept verdict
+
+
 async def test_kept_harmless_verdict_yields_to_a_new_fraud_trigger(db, monkeypatch):
-    # Guard 1: genuine_rush was decided before the fraud triggers fired (simulated by its context).
-    incident = await attack(db, monkeypatch, "genuine_rush", 0.9)
+    # Guard 1: an agreed genuine_rush was decided before the fraud triggers fired (simulated by its context).
+    incident = await tiebreak_attack(db, monkeypatch, top="genuine_rush", confidence=0.6)
     await db.refresh(incident)
     assert set(incident.triggers) & cadence.FRAUD_TRIGGERS
     incident.assessment_context = cadence.context(
@@ -165,15 +209,15 @@ async def test_kept_harmless_verdict_yields_to_a_new_fraud_trigger(db, monkeypat
     await IncidentService(db, None, REASSESS).tick(SHOP)
     await db.refresh(incident)
     assert "ai.kept_verdict_dropped" in await events(db, incident.id)
-    assert incident.classification == "unclear" and incident.model_id == "rules-fallback"
-    assert not incident.ai_available
+    assert incident.classification == "unclear" and incident.decided_by == DECIDED_BY_SCORECARD
+    assert incident.model_id == cadence.TEMPLATE and not incident.ai_available
     gs = await db.get(GuardState, SHOP, populate_existing=True)
     assert gs.mode == "sca_all"
 
 
 async def test_kept_attack_verdict_yields_when_paypal_starts_failing(db, monkeypatch):
     # Guard 1, reverse: shoppers retrying through a PayPal outage look like retrying bots (3+ attempts).
-    incident = await attack(db, monkeypatch)
+    incident = await tiebreak_attack(db, monkeypatch)
     fp, late_id = await new_bot_device(db)
     await db.refresh(incident)
     incident.triggers = sorted({*incident.triggers, "processor_errors"})  # fired after the verdict
@@ -184,15 +228,15 @@ async def test_kept_attack_verdict_yields_when_paypal_starts_failing(db, monkeyp
     await IncidentService(db, None, REASSESS).tick(SHOP)
     await db.refresh(incident)
     assert "ai.kept_verdict_dropped" in await events(db, incident.id)
-    assert incident.model_id == "rules-fallback" and incident.classification != "card_testing"
+    assert incident.model_id == cadence.TEMPLATE and incident.classification != "card_testing"
     assert fp not in await blocked(db)
     late = await db.get(CheckoutAttempt, late_id, populate_existing=True)
     assert late.outcome == Outcome.CAPTURED
 
 
-async def test_stale_kept_verdict_queues_new_refunds_but_keeps_blocking(db, monkeypatch):
-    # Guard 2: the third consecutive failure makes the kept verdict stale.
-    incident = await attack(db, monkeypatch)
+async def test_an_agreed_tiebreak_blocks_but_never_refunds_even_when_kept_stale(db, monkeypatch):
+    # AGREE_CAP keeps an AI-confirmed verdict under the refund floor; Guard 2 still marks it stale.
+    incident = await tiebreak_attack(db, monkeypatch, confidence=0.95)
     fp, late_id = await new_bot_device(db)
     await age_verdict(db, incident, 11)
     incident.ai_refresh_failures, incident.ai_refresh_failed_at = 2, datetime.now(UTC)
@@ -205,18 +249,13 @@ async def test_stale_kept_verdict_queues_new_refunds_but_keeps_blocking(db, monk
     assert fp in await blocked(db)
     late = await db.get(CheckoutAttempt, late_id, populate_existing=True)
     assert late.outcome == Outcome.CAPTURED
-    pending = (
-        await db.execute(select(Action).where(Action.status == ActionStatus.AWAITING_APPROVAL))
-    ).scalars()
-    assert [a.policy_rule for a in pending if a.params["attempt_id"] == late_id] == [
-        "R5_stale_verdict_needs_owner"
-    ]
+    refunds = (await db.execute(select(Action).where(Action.type == ActionType.REFUND))).scalars().all()
+    assert refunds == []
 
 
-async def test_ai_switched_off_mid_incident_drops_the_kept_verdict(db, monkeypatch):
-    # AI_ENABLED=false is not a failed re-check: the old Gemini verdict must not keep driving refunds.
-    incident = await attack(db, monkeypatch)
-    fp, late_id = await new_bot_device(db)
+async def test_ai_switched_off_mid_incident_drops_the_kept_tiebreak(db, monkeypatch):
+    # AI_ENABLED=false is not a failed re-check: the AI-confirmed class must not keep driving blocks.
+    incident = await tiebreak_attack(db, monkeypatch)
     await age_verdict(db, incident, 11)
     off = get_settings().model_copy(update={"ai_enabled": False})
     monkeypatch.setattr(analyst, "get_settings", lambda: off)
@@ -224,10 +263,23 @@ async def test_ai_switched_off_mid_incident_drops_the_kept_verdict(db, monkeypat
     await IncidentService(db, None, REASSESS).tick(SHOP)
     await db.refresh(incident)
     assert "ai.refresh_failed" not in await events(db, incident.id)
-    assert incident.classification == "unclear" and incident.model_id == "rules-fallback"
+    assert incident.classification == "unclear" and incident.model_id == cadence.TEMPLATE
     assert incident.ai_fallback_reason == gemini.AI_DISABLED and not incident.ai_available
-    late = await db.get(CheckoutAttempt, late_id, populate_existing=True)
-    assert late.outcome == Outcome.CAPTURED  # no automatic refund without a live AI verdict
+    assert incident.scorecard["tiebreak"]["outcome"] == "unavailable"
+
+
+async def test_ai_switched_off_the_scorecard_still_decides_and_refunds(db, monkeypatch):
+    off = get_settings().model_copy(update={"ai_enabled": False})
+    monkeypatch.setattr(analyst, "get_settings", lambda: off)
+    calls = counting(monkeypatch, "card_testing")
+    await seed_history(db, SHOP, days=7)
+    await run_scenario(db, card_testing, 60)
+    incident = await IncidentService(db, None, REASSESS).tick(SHOP)
+    assert calls == []  # switched off: no analyst call, and the reporter skips Gemini in the same tick
+    assert incident.classification == "card_testing" and incident.model_id == cadence.TEMPLATE
+    assert incident.ai_fallback_reason == gemini.AI_DISABLED and incident.ai_refresh_failures == 0
+    refunds = (await db.execute(select(Action).where(Action.type == ActionType.REFUND))).scalars().all()
+    assert refunds and all(r.status == ActionStatus.EXECUTED for r in refunds)
 
 
 async def test_successful_recheck_clears_the_failure_state(db, monkeypatch):
@@ -239,8 +291,8 @@ async def test_successful_recheck_clears_the_failure_state(db, monkeypatch):
 
     await IncidentService(db, None, REASSESS).tick(SHOP)
     await db.refresh(incident)
-    assert incident.confidence == 0.97 and incident.ai_refresh_failures == 0
-    assert incident.ai_refresh_failed_at is None
+    assert incident.confidence != 0.97  # Gemini cannot set the confidence: it is the scorecard's
+    assert incident.ai_refresh_failures == 0 and incident.ai_refresh_failed_at is None
 
 
 # ---- item 11: no transaction or lock across Gemini / PayPal -----------------------------------------
@@ -269,7 +321,9 @@ async def test_new_incident_is_visible_and_unlocked_while_the_analyst_waits(db, 
     await seed_history(db, SHOP, days=7)
     await run_scenario(db, card_testing, 60)
     incident = await IncidentService(db, None, REASSESS).tick(SHOP)
-    assert seen == [("open", None)]  # committed before the verdict: the dashboard shows "investigating"
+    # P9: the scorecard's verdict (and its defences) are committed before Gemini is asked to explain it.
+    # It used to be ("open", None): the dashboard showed "investigating" until the AI answered.
+    assert seen == [("open", "card_testing")]
     assert incident.classification == "card_testing" and incident.assessing_since is None
 
 
@@ -444,8 +498,33 @@ async def test_failure_after_the_analyst_releases_the_claim(db, monkeypatch):
     assert incident.classification == "card_testing"
 
 
-async def test_incident_closed_during_the_call_discards_the_verdict(db, monkeypatch):
+async def test_incident_closed_during_the_call_discards_the_explanation(db, monkeypatch):
+    """P9: the scorecard's decision and defences land before the Gemini call, so a close during the call
+    discards only the AI's words. (It used to discard the whole verdict, with nothing but R0 applied.)"""
     good = fake_ai("card_testing", 0.95)
+
+    async def owner_closes_meanwhile(**kw):
+        if kw["schema"] is Verdict:
+            async with db_session.get_sessionmaker()() as other:
+                await other.execute(text("UPDATE incidents SET status = 'closed', closed_at = now()"))
+                await other.commit()
+        return await good(**kw)
+
+    use_ai(monkeypatch, owner_closes_meanwhile)
+    await seed_history(db, SHOP, days=7)
+    await run_scenario(db, card_testing, 60)
+    incident = await IncidentService(db, None, REASSESS).tick(SHOP)
+    await db.refresh(incident)
+    assert incident.status == IncidentStatus.CLOSED and incident.classification == "card_testing"
+    assert incident.model_id == cadence.TEMPLATE  # the AI's text never landed
+    assert "ai.explanation_discarded" in await events(db, incident.id)
+    acts = (await db.execute(select(Action.policy_rule).where(Action.incident_id == incident.id))).scalars()
+    assert {"R0_fraud_signal", "R4_attack"} <= set(acts)
+
+
+async def test_a_tiebreak_closed_during_the_call_is_discarded(db, monkeypatch):
+    good = fake_ai("card_testing", 0.95)
+    force_scorecard(monkeypatch, "unclear", 0.6, margin=0.05, top="card_testing")
 
     async def owner_closes_meanwhile(**kw):
         async with db_session.get_sessionmaker()() as other:
@@ -477,14 +556,18 @@ async def test_assessment_in_flight_elsewhere_is_not_repeated(db, monkeypatch):
     calls = counting(monkeypatch, "card_testing")
 
     await IncidentService(db, None, REASSESS).tick(SHOP)
-    assert calls == []
+    assert calls == []  # the scorecard re-decided; the explanation is left to the claim holder
     incident.assessing_since = datetime.now(UTC) - timedelta(minutes=5)  # a crashed assessor's claim
     await db.commit()
+    await age_verdict(db, incident, 11)
     await IncidentService(db, None, REASSESS).tick(SHOP)
     assert calls == [Verdict]
 
 
-async def test_crash_before_the_first_verdict_is_assessed_on_the_next_tick(db, monkeypatch):
+async def test_crash_during_the_first_explanation_keeps_the_decision_and_releases_the_claim(db, monkeypatch):
+    """P9: the scorecard's first decision is committed before Gemini is called, so a crash in the call
+    loses only the AI's words. (Before, it lost the whole first verdict and the next tick re-asked.)"""
+
     async def crash(**kw):
         raise RuntimeError("worker died mid-call")
 
@@ -495,15 +578,49 @@ async def test_crash_before_the_first_verdict_is_assessed_on_the_next_tick(db, m
         await IncidentService(db, None, REASSESS).tick(SHOP)
     await db.rollback()
     incident = (await db.execute(select(Incident))).scalar_one()
-    assert incident.last_assessed_at is None and incident.assessing_since is None  # claim released
+    assert incident.classification == "card_testing" and incident.assessing_since is None  # released
+    gs = await db.get(GuardState, SHOP, populate_existing=True)
+    assert gs.mode == "sca_all" and await blocked(db)
 
     incident.assessing_since = datetime.now(UTC)  # as if the process died without releasing it
     await db.commit()
     await release_assessment_claims(db)  # worker start
+    await db.refresh(incident)
+    assert incident.assessing_since is None
+
+    # The owner was never alerted about defences that are live: the next tick sends the overdue alert.
+    assert await db.get(Report, incident.id) is None and incident.assessment_context["report_due"]
+    await IncidentService(db, None, REASSESS).tick(SHOP)
+    await db.refresh(incident)
+    report = await db.get(Report, incident.id, populate_existing=True)
+    assert report is not None and report.alert_text
+    assert "report_due" not in incident.assessment_context
+    sent = (await db.execute(select(AuditLog).where(AuditLog.event == "alert.sent"))).scalars().all()
+    assert len(sent) == 1
+    await IncidentService(db, None, REASSESS).tick(SHOP)  # sent once, not on every tick
+    sent = (await db.execute(select(AuditLog).where(AuditLog.event == "alert.sent"))).scalars().all()
+    assert len(sent) == 1
+
+
+async def test_crash_before_a_first_tiebreak_is_assessed_on_the_next_tick(db, monkeypatch):
+    async def crash(**kw):
+        raise RuntimeError("worker died mid-call")
+
+    force_scorecard(monkeypatch, "unclear", 0.6, margin=0.05, top="card_testing")
+    use_ai(monkeypatch, crash)
+    await seed_history(db, SHOP, days=7)
+    await run_scenario(db, card_testing, 60)
+    with pytest.raises(RuntimeError):
+        await IncidentService(db, None, REASSESS).tick(SHOP)
+    await db.rollback()
+    incident = (await db.execute(select(Incident))).scalar_one()
+    assert incident.last_assessed_at is None and incident.assessing_since is None  # claim released
+
     calls = counting(monkeypatch, "card_testing")
     await IncidentService(db, None, REASSESS).tick(SHOP)
     await db.refresh(incident)
     assert calls[0] is Verdict and incident.classification == "card_testing"
+    assert incident.decided_by == DECIDED_BY_AGREE
 
 
 # ---- item 19: re-ask only on material change; usage logging; regenerate limit ----------------------

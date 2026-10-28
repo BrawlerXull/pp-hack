@@ -97,8 +97,8 @@ export default function WarRoom() {
           <ActivityChart points={series ?? []} minutes={CHART_MINUTES} bucketS={BUCKET_S} incident={shown} />
         </Card>
         <Card
-          title="AI analyst"
-          subtitle="Attack, real rush or PayPal outage?"
+          title="Verdict"
+          subtitle="Attack, real rush or PayPal outage? The scorecard decides, the AI explains"
           icon={Sparkles}
           action={
             shown && (

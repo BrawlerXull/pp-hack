@@ -109,6 +109,23 @@ _ISSUES: list[Code] = [
 ]
 BY_NAME: dict[str, Code] = {c.name: c for c in [*PROCESSOR_CODES.values(), *_ISSUES]}
 
+# ERROR codes any client can cause on purpose: capture an order nobody approved, capture twice, reuse an
+# id. They say nothing about PayPal's health, so detection never counts them as outage evidence (a bot
+# could otherwise manufacture "PayPal is failing" and have the policy relax its defences).
+CLIENT_STATE_ERRORS = frozenset(
+    {
+        "ORDER_NOT_APPROVED",
+        "ORDER_ALREADY_CAPTURED",
+        "ORDER_EXPIRED",
+        "ORDER_COMPLETION_IN_PROGRESS",
+        "ORDER_COMPLETED_OR_VOIDED",
+        "PREVIOUS_REQUEST_IN_PROGRESS",
+        "DUPLICATE_REQUEST_ID",
+        "RESOURCE_NOT_FOUND",
+        "INVALID_RESOURCE_ID",
+    }
+)
+
 # Name-on-card triggers that make the sandbox decline a card with that processor code.
 REJECTION_TRIGGERS: dict[str, str] = {
     "CCREJECT-REFUSED": "0500",

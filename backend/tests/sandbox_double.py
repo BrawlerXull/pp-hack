@@ -7,6 +7,8 @@ uses for CCREJECT-* cards is still open (docs/sandbox-findings.md), so both are 
   decline_shape="capture"    → 201, order COMPLETED, capture DECLINED with processor_response code
   decline_shape="create_422" → 422 INSTRUMENT_DECLINED on create (issue name only, no processor code)
 Repeated PayPal-Request-Ids replay the first response, as PayPal's idempotency does.
+Browser card orders (Card Fields) are created without card data and stay CREATED until the test calls
+card_fields_submit(), which stands in for PayPal's hosted fields and 3-D Secure window in the browser.
 """
 
 import itertools
@@ -96,6 +98,7 @@ class SandboxDouble:
     orders: dict[str, _Order] = field(default_factory=dict)
     refunds: dict[str, dict[str, Any]] = field(default_factory=dict)  # capture id → refund
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)  # (method, path, request id)
+    bodies: list[bytes] = field(default_factory=list)  # every request body our server sent
     verify_bodies: list[dict[str, Any]] = field(default_factory=list)
     _replay: dict[str, tuple[int, bytes, dict[str, str]]] = field(default_factory=dict)
     client: Any = None  # PayPalClient wired to this double by the `sandbox` fixture
@@ -113,6 +116,35 @@ class SandboxDouble:
     def complete_3ds(self, order_id: str) -> None:
         """The buyer finished the 3-D Secure page (payer-action link); the order can now be captured."""
         self.orders[order_id].status = "APPROVED"
+
+    def card_fields_submit(
+        self,
+        order_id: str,
+        *,
+        number: str = "4868719166101368",
+        name: str = "Card Holder",
+        liability_shift: str | None = "POSSIBLE",
+        enrollment: str | None = "Y",
+        auth_status: str | None = "Y",
+        bin_details: bool = True,
+        status: str = "APPROVED",
+    ) -> None:
+        """The buyer typed a card into PayPal's hosted fields and the browser submitted it (with the bank's
+        3-D Secure window when it ran). The number goes browser → PayPal: our server never sees it.
+        liability_shift=None: 3-D Secure did not run (no authentication_result)."""
+        o = self.orders[order_id]
+        card = dict(o.card or {}) | {"number": number, "expiry": "2030-11", "name": name}
+        if bin_details:
+            card["_bin"] = number[:6]
+        if liability_shift or enrollment or auth_status:
+            tds = {
+                k: v
+                for k, v in (("enrollment_status", enrollment), ("authentication_status", auth_status))
+                if v
+            }
+            card["_auth"] = {"liability_shift": liability_shift, "three_d_secure": tds}
+        o.card = card
+        o.status = status
 
     def capture_out_of_band(self, order_id: str) -> None:
         """A capture PayPal performed whose response we never saw (timeout, crashed tab)."""
@@ -137,16 +169,23 @@ class SandboxDouble:
                 {"href": f"{SANDBOX_API_BASE}/v2/checkout/orders/{o.id}", "rel": "self", "method": "GET"}
             ],
         }
-        if o.card:
-            body["payment_source"] = {
-                "card": {
-                    "name": o.card.get("name"),
-                    "last_digits": str(o.card.get("number", ""))[-4:],
-                    "expiry": o.card.get("expiry"),
-                    "brand": "VISA",
-                    "type": "CREDIT",
-                }
+        if o.card and o.card.get("number"):
+            card: dict[str, Any] = {
+                "name": o.card.get("name"),
+                "last_digits": str(o.card["number"])[-4:],
+                "expiry": o.card.get("expiry"),
+                "brand": "VISA",
+                "type": "CREDIT",
             }
+            if o.card.get("_bin"):
+                card["bin_details"] = {
+                    "bin": o.card["_bin"],
+                    "issuing_bank": "Test Bank",
+                    "bin_country_code": "US",
+                }
+            if o.card.get("_auth"):
+                card["authentication_result"] = o.card["_auth"]
+            body["payment_source"] = {"card": card}
         if o.status == "PAYER_ACTION_REQUIRED":
             body["links"].append(
                 {
@@ -197,6 +236,7 @@ class SandboxDouble:
     def _idempotent(self, request: httpx.Request, handler: Any, **kw: Any) -> httpx.Response:
         rid = request.headers.get("PayPal-Request-Id")
         self.calls.append((request.method, request.url.path, rid))
+        self.bodies.append(request.content)
         if rid and rid in self._replay:
             status, content, headers = self._replay[rid]
             return httpx.Response(status, content=content, headers=headers)
@@ -223,7 +263,11 @@ class SandboxDouble:
         if card is not None and trigger_code(card.get("name")) and self.decline_shape == "create_422":
             return self._err(422, "INSTRUMENT_DECLINED")
         sca = ((card or {}).get("attributes") or {}).get("verification", {}).get("method") == "SCA_ALWAYS"
-        status = "CREATED" if card is None else ("PAYER_ACTION_REQUIRED" if sca else "APPROVED")
+        if card is None or "number" not in card:
+            # Wallet, or a Card Fields order: the buyer still has to approve / submit the card in the browser.
+            status, sca = "CREATED", False
+        else:
+            status = "PAYER_ACTION_REQUIRED" if sca else "APPROVED"
         order = _Order(self._id("ORD"), status, dict(unit), card)
         self.orders[order.id] = order
         return httpx.Response(200 if sca else 201, json=self._order_json(order))
@@ -238,7 +282,9 @@ class SandboxDouble:
             return self._err(422, "ORDER_ALREADY_CAPTURED")
         if o.status == "PAYER_ACTION_REQUIRED":
             return self._err(422, "PAYER_ACTION_REQUIRED")
-        if o.status == "CREATED":
+        if o.status == "CREATED" and not (o.card or {}).get("number"):
+            # Seen live (Oct 25): after a Card Fields submit with a 3-D Secure challenge the order stays
+            # CREATED with the card attached, and the capture succeeds. Without a card it is not approved.
             return self._err(422, "ORDER_NOT_APPROVED")
         self._capture(o)
         return httpx.Response(201, json=self._order_json(o), headers={"paypal-debug-id": "dbg-cap"})

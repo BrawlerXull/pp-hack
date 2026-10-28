@@ -72,13 +72,13 @@ function AiPill({ ai }: { ai: Summary["system"]["ai"] }) {
     );
   if (ai.mode === "cooling_down")
     return (
-      <Pill tone="warn" title={[ai.reason, "Fixed safety rules decide until then.", lastError].filter(Boolean).join("\n")}>
+      <Pill tone="warn" title={[ai.reason, "The scorecard still decides; explanations use Checkout Guard's own template until then.", lastError].filter(Boolean).join("\n")}>
         AI cooling down{ai.until ? ` until ${hhmm(ai.until)}` : ""}
       </Pill>
     );
   return (
-    <Pill tone="bad" title={[ai.reason, "Fixed safety rules decide; no refunds without an AI verdict.", lastError].filter(Boolean).join("\n")}>
-      Rules only{ai.reason ? ` · ${ai.reason.split(":")[0]}` : ""}
+    <Pill tone="bad" title={[ai.reason, "The scorecard still decides and acts; explanations use Checkout Guard's own template, and unsure cases get no AI second opinion (fixed safety rules).", lastError].filter(Boolean).join("\n")}>
+      AI off · scorecard only{ai.reason ? ` · ${ai.reason.split(":")[0]}` : ""}
     </Pill>
   );
 }

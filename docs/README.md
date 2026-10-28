@@ -11,17 +11,18 @@ The docs draw on two input documents: *Checkout Guard: Idea in Simple Words* ("I
 | 1 | [01-product-and-strategy.md](01-product-and-strategy.md) | Problem, product concept, pitch, requirements traceability, prize and sponsor strategy |
 | 2 | [02-architecture.md](02-architecture.md) | System architecture (**Python FastAPI backend + Next.js frontend**), diagrams, repo layout, deployment, security |
 | 3 | [03-backend-design.md](03-backend-design.md) | Python backend modules, API contract, data model, worker, PayPal integration details |
-| 4 | [04-ai-design.md](04-ai-design.md) | Detector, Gemini analyst, policy engine, reports, AG Studio agent, evaluation |
+| 4 | [04-ai-design.md](04-ai-design.md) | Detector, scorecard classifier (decides), Gemini explainer and tie-breaker, policy engine, reports, AG Studio agent, evaluation |
 | 5 | [05-roadmap.md](05-roadmap.md) | Phases, dates, owners, definitions of done, fallbacks |
 | 6 | [06-demo-and-submission.md](06-demo-and-submission.md) | Demo video script, backup plan, pitch deck, judge Q&A, risk register, compliance checklist |
 | 7 | [sandbox-findings.md](sandbox-findings.md) | P1 sandbox spike results + live AI evaluation |
+| 8 | [eval-detection.md](eval-detection.md) | Offline detection eval (generated): triggers and scorecard on 12 simulated scenarios × 20 seeds, and what still fails |
 
 **Labels:** **[F]** confirmed fact · **[A]** assumption · **[R]** recommendation.
 
 ## Decisions so far
 1. **Separate Python backend.** FastAPI handles all PayPal calls, detection, AI, policy, actions and webhooks. Next.js is **frontend only**: the demo shop's pages and the owner dashboard.
 2. **Our own demo shop**, not WooCommerce (that's a stretch goal).
-3. **AI:** Google Gemini (`gemini-3.5-flash`, with `gemini-2.5-flash` and `gemini-flash-lite-latest` as fallbacks), using JSON-schema structured output.
+3. **AI:** Google Gemini (`gemini-3.5-flash`, with `gemini-2.5-flash` and `gemini-flash-lite-latest` as fallbacks), using JSON-schema structured output. Since P9 a deterministic scorecard decides the classification; Gemini explains it and breaks ties.
 4. **Sponsor prizes:**
    - **AG Grid** is the main target: AG Studio dashboard plus Studio Agent Framework.
    - **Render** for hosting.

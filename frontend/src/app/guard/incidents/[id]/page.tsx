@@ -154,7 +154,7 @@ export default function IncidentPage() {
       )}
 
       <div className="grid gap-6 xl:grid-cols-3">
-        <Card title="AI analyst verdict" icon={Sparkles} className="xl:col-span-2">
+        <Card title="Verdict" icon={Sparkles} className="xl:col-span-2">
           <VerdictCard incident={inc} />
         </Card>
         <Card title="Owner alerts" icon={Smartphone}>

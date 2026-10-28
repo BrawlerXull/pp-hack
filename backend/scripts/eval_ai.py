@@ -1,7 +1,12 @@
-"""Live AI evaluation: does Gemini tell attacks, rushes and outages apart?
+"""Live AI evaluation: scorecard alone vs Gemini alone vs both (the production path).
 
-Builds features from each simulated scenario (no database, no PayPal), runs the real analyst, and
-scores the verdicts. Usage: uv run python scripts/eval_ai.py [--runs 2]
+Builds features from each simulated scenario (no database, no PayPal), runs the deterministic scorecard
+and the real analyst (Gemini, as the independent second opinion), and scores three columns:
+  scorecard  app/detection/classifier.py on its own (what decides in production)
+  gemini     the analyst's own classification (what decided before P9)
+  both       app/incidents/decision.combine: Gemini only breaks the scorecard's ties
+Needs GEMINI_API_KEY and spends quota. Usage: uv run python scripts/eval_ai.py [--runs 2]
+The offline, no-AI eval of the scorecard and triggers is scripts/eval_detection.py.
 
 flash_sale_no_hint is the false-positive test: the same real-customer rush with no owner-announced sale
 window, so the model has to read it from the traffic. A miss at confidence >= 0.70 would block (and above
@@ -17,8 +22,10 @@ from datetime import UTC, datetime, timedelta
 import typer
 
 from app.ai import analyst
+from app.detection import classifier
 from app.detection.features import AttemptRow, Baseline, card_key, compute_all
 from app.detection.triggers import evaluate
+from app.incidents.decision import combine
 from app.shop.catalog import PRODUCTS
 from app.shop.service import classify, email_domain, fingerprint, offline_result
 from app.simulator.runner import to_request
@@ -99,7 +106,8 @@ def baseline() -> Baseline:
 async def main(runs: int) -> None:
     now = datetime.now(UTC)
     base = baseline()
-    score: dict[bool, list[int]] = {False: [0, 0], True: [0, 0]}  # separate? → [correct, total]
+    # separate? → approach → [correct, total]
+    score = {sep: {k: [0, 0] for k in ("scorecard", "gemini", "both")} for sep in (False, True)}
     for name, case in CASES.items():
         expected = case.expected
         for r in range(max(runs, case.min_seeds)):
@@ -116,21 +124,29 @@ async def main(runs: int) -> None:
                 actions_so_far=[],
                 sample=[x for x in rows if x.ts > now - timedelta(minutes=15)],
             )
+            card = classifier.classify(feats, base, sale_active=sale is not None)
             t0 = time.time()
             res = await analyst.analyse(inp, feats)
             v = res.verdict
-            ok = v.classification in expected
-            score[case.separate][0] += ok
-            score[case.separate][1] += 1
-            print(
-                f"{'PASS' if ok else 'FAIL'} {name:<18} triggers={','.join(fired) or '-':<45} "
-                f"→ {v.classification:<15} "
-                f"conf={v.confidence:.2f} evidence={len(v.evidence)} dropped={res.dropped_evidence} "
-                f"{res.model_id} {time.time() - t0:.1f}s"
+            both = combine(
+                card, v if res.ai_available else None, model_id=res.model_id, verified=res.verified
             )
-            print(f"     {v.summary}")
-    print(f"\nAccuracy: {score[False][0]}/{score[False][1]}")
-    print(f"Unannounced rush (flash_sale_no_hint): {score[True][0]}/{score[True][1]}")
+            answers = {
+                "scorecard": card.classification,
+                "gemini": v.classification,
+                "both": both.classification,
+            }
+            for k, cls in answers.items():
+                score[case.separate][k][0] += cls in expected
+                score[case.separate][k][1] += 1
+            print(
+                f"{name:<18} triggers={','.join(fired) or '-':<45} "
+                + " ".join(f"{k}={c}{'' if c in expected else '(x)'}" for k, c in answers.items())
+                + f" gemini_conf={v.confidence:.2f} dropped={res.dropped_evidence} {res.model_id} "
+                f"{time.time() - t0:.1f}s"
+            )
+    for sep, title in ((False, "Accuracy"), (True, "Unannounced rush (flash_sale_no_hint)")):
+        print(f"\n{title}: " + ", ".join(f"{k} {c}/{n}" for k, (c, n) in score[sep].items()))
 
 
 def cli(runs: int = typer.Option(1, help="Runs per scenario (different seeds)")) -> None:

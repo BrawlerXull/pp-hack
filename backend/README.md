@@ -7,7 +7,7 @@ The backend has two processes:
 | Process | Command | Does |
 |---|---|---|
 | API | `uv run uvicorn app.main:app --port 8000` | Shop order API, guard check, PayPal webhooks, dashboard API + live stream, demo controls |
-| Worker | `uv run python -m app.worker.main` | Every 5 s (`DETECT_INTERVAL_S`): applies verified webhooks, expires device blocks, re-sends refunds left in flight, runs the detector, asks the AI, enforces the policy, de-escalates. Beats a heartbeat the dashboard shows as the "Detector" pill |
+| Worker | `uv run python -m app.worker.main` | Every 5 s (`DETECT_INTERVAL_S`): applies verified webhooks, expires device blocks, re-sends refunds left in flight, runs the detector and the scorecard, asks Gemini to explain (or break a tie), enforces the policy, de-escalates. Beats a heartbeat the dashboard shows as the "Detector" pill |
 
 ## How a checkout is protected
 
@@ -16,18 +16,19 @@ browser/bot ─► POST /shop/orders ─► guard check ─► PayPal Orders v2 
                                     (block / challenge / 3-D Secure / allow)            │
 PayPal ─► POST /webhooks/paypal ─► verified + stored ─► worker applies ─────────────────┤
                                                                                          ▼
-worker: features (1/5/15/60 min) ─► triggers ─► Gemini verdict ─► policy engine ─► executor
-        attack / rush / outage      (deterministic)  (AI, with reasons) (fixed rules)   (3DS, block, hold SKU,
-                                                                                         capped PayPal refunds)
-                                                              ─► reporter: alert, morning report, evidence pack
+worker: features (1/5/10/15/60 min) ─► triggers ─► scorecard ─► policy engine ─► executor
+                                  (Poisson, binomial, (attack / rush /  (fixed rules)   (3DS, block, hold SKU,
+                                   CUSUM)              outage; Gemini                    capped PayPal refunds)
+                                                       breaks ties)
+                                  ─► Gemini explains the decision ─► reporter: alert, morning report, evidence pack
 ```
 
-- **AI judges, rules decide.** Gemini classifies the incident and explains it. [app/policy/engine.py](app/policy/engine.py) decides what may happen. The AI never moves money.
+- **Deterministic code decides, the AI explains.** The scorecard [app/detection/classifier.py](app/detection/classifier.py) classifies the incident; Gemini explains it and breaks ties only when the scorecard is unsure. [app/policy/engine.py](app/policy/engine.py) decides what may happen. The AI never moves money.
 - **No invented numbers.**
   - Every number the AI cites as evidence is checked against our own computed features; mismatches are dropped.
   - Reports use `{{placeholders}}` that are filled from the database.
-- **Rules first.** A fraud-tier trigger switches 3-D Secure on (policy R0) before the AI is asked, so a slow or failing Gemini never leaves a burst undefended.
-- **Fallbacks.** If Gemini is down or over quota, the next model is tried; a per-model circuit breaker (shared through Postgres) skips paused models. If none answers, the verdict is the labelled rules fallback ("unclear") and the policy's R3 family decides: 3-D Secure; with a fraud signal, no sale and PayPal working, also blocking only unmistakable bot devices and holding the targeted item (R3b); notify only for a returning-customer rush (R3c) or PayPal errors (R3d). Never a refund. `AI_ENABLED=false` gives the same fallback without any call, labelled "AI disabled".
+- **Rules first.** A fraud-tier trigger switches 3-D Secure on (policy R0) before any verdict, and a confident scorecard verdict's defences are committed before Gemini is called, so a slow or failing Gemini never leaves a burst undefended.
+- **Fallbacks.** If Gemini is down or over quota, the next model is tried; a per-model circuit breaker (shared through Postgres) skips paused models. If none answers, the scorecard still decides and acts (refunds included when it is sure) and the text is our own template. Only an unsure scorecard loses something: no second opinion, so it stays "unclear" and the policy's R3 family decides: 3-D Secure; with a fraud signal, no sale and PayPal working, also blocking only unmistakable bot devices and holding the targeted item (R3b); notify only for a returning-customer rush (R3c) or PayPal errors (R3d). `AI_ENABLED=false` works the same without any call, labelled "AI disabled".
 - **Privacy.** The AI sees aggregated features plus 20 masked rows: email domain, 8-character device prefix, SKU and outcome. It never sees card numbers, names, emails or credentials.
 
 ## Setup

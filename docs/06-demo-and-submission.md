@@ -15,7 +15,7 @@
 **Backup plan:**
 - Keep a recorded sandbox session (fixtures + screen capture). The app's **"Replay recorded run"** mode shows the banner *"Replay of recorded sandbox session from <date>"*.
 - Never mix replay into live footage without the label.
-- If Gemini is down, the rule fallback is shown with the "AI unavailable" badge.
+- If Gemini is down, the scorecard still decides; the verdict shows "Explained by: Checkout Guard's own template" and the header pill "AI off · scorecard only".
 
 ## 2. Pitch deck (8 slides)
 1. Problem

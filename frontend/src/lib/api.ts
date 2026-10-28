@@ -59,6 +59,7 @@ export type Outcome =
   | "blocked"
   | "challenged"
   | "sca_required"
+  | "sca_failed"
   | "refunded";
 
 export type CheckoutResult = {
@@ -70,6 +71,17 @@ export type CheckoutResult = {
   order_status: string | null;
   capture_id: string | null;
   decline_code: string | null;
+};
+
+// POST /shop/orders/{id}/capture. liability_shift: the bank's 3-D Secure answer for a card (YES, POSSIBLE,
+// NO, UNKNOWN), null when 3-D Secure did not run.
+export type CaptureResult = {
+  order_id: string;
+  outcome: Outcome;
+  capture_id: string | null;
+  decline_code: string | null;
+  decline_category: string | null;
+  liability_shift: string | null;
 };
 
 export type Classification = "card_testing" | "account_testing" | "genuine_rush" | "paypal_outage" | "unclear";
@@ -86,15 +98,55 @@ export type IncidentSummary = {
   ai_available: boolean;
   // Last AI re-check failed and the previous AI verdict was kept (the badge keeps showing that model).
   ai_refresh_failed_at: string | null;
-  // What the triggers alone suggest; shown with a rules-fallback verdict, never used as the classification.
+  // What the triggers alone suggest; shown next to an "unclear" verdict, never used as the classification.
   rules_hint?: RulesHint | null;
   trigger_tiers?: Record<string, TriggerTier>;
   // AI evidence items that did not match our computed numbers and were dropped before display.
   dropped_evidence?: number;
   // Why the last assessment could not use the AI (rules fallback or kept verdict); null when it answered.
   ai_fallback_reason?: string | null;
+  // Who wrote the verdict's words: a Gemini model id, or "template" (Checkout Guard's own wording).
   model_id: string | null;
   verdict_at: string | null;
+  // P9: the deterministic scorecard decides the classification; Gemini explains it or breaks a tie.
+  classifier_version?: string | null;
+  decided_by?: DecidedBy | null;
+  class_probs?: Record<string, number> | null;
+  class_margin?: number | null;
+  scorecard?: Scorecard | null;
+};
+
+export type DecidedBy = "scorecard" | "scorecard+gemini_agree" | "gemini_disagree_unclear";
+
+export type ScoreReason = {
+  cls: string;
+  feature: string | null; // null: context that is not a feature (the owner's sale window)
+  window_min: number;
+  observed: number | null;
+  points: number;
+  text: string;
+  supporting: boolean;
+};
+
+export type Tiebreak = {
+  outcome: "agree" | "disagree" | "unavailable" | "unverified";
+  gemini: Classification | null;
+  model: string | null;
+};
+
+export type Scorecard = {
+  version: string;
+  classification: Classification;
+  confidence: number;
+  top_class: Classification;
+  runner_up: Classification;
+  margin: number;
+  probabilities: Record<string, number>;
+  scores: Record<string, number>;
+  window_min: number;
+  top_reasons: ScoreReason[];
+  notes: string[];
+  tiebreak: Tiebreak | null;
 };
 
 export type TriggerTier = "volume" | "fraud" | "ops" | "holding";
@@ -177,6 +229,8 @@ export type Attempt = {
   capture_id?: string | null;
   refund_id?: string | null;
   card_last4?: string | null;
+  card_brand?: string | null;
+  sca_liability_shift?: string | null;
 };
 
 // t: bucket start (bucket_s wide). minute: the same, older name.
@@ -253,6 +307,20 @@ export type SimRun = {
   started_at: string;
   finished_at: string | null;
   error: string | null;
+  seed: number | null;
+  context: RunContext;
+  stopped_by_guard: number;
+  reached_paypal: number;
 };
+
+/** Defences already in place when a demo run started (they explain a run that never reached PayPal). */
+export type RunContext = Partial<{
+  open_incident: string | null;
+  open_incident_class: Classification | null;
+  sca_all: boolean;
+  held_skus: string[];
+  blocked_devices: number;
+  defences_active: boolean;
+}>;
 
 export type LiveEvent = { kind: string; data: Record<string, unknown> };

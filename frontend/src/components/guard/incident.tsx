@@ -19,11 +19,12 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useState } from "react";
-import { api, ApiError, type ActionRow, type AlertRow, type IncidentDetail } from "@/lib/api";
+import { api, ApiError, type ActionRow, type AlertRow, type Classification, type IncidentDetail, type IncidentSummary } from "@/lib/api";
 import {
   ACTION_LABEL,
   ACTION_MECHANISM,
   CLASSIFICATION_LABEL,
+  DECIDED_BY_LABEL,
   FEATURE_LABEL,
   RULES_HINT_LABEL,
   classificationTone,
@@ -67,6 +68,66 @@ export function ConfidenceRing({ value, tone, size = 72 }: { value: number; tone
   );
 }
 
+const CLASS_ORDER: Classification[] = ["card_testing", "account_testing", "genuine_rush", "paypal_outage"];
+const BAR_COLOR: Record<string, string> = {
+  card_testing: "bg-red-400",
+  account_testing: "bg-red-300",
+  genuine_rush: "bg-sky-400",
+  paypal_outage: "bg-amber-400",
+};
+
+/** The scorecard's per-class probabilities: what decided the classification (not the AI). */
+export function ClassBars({ probs }: { probs: Record<string, number> }) {
+  return (
+    <ul className="space-y-1">
+      {CLASS_ORDER.filter((c) => c in probs).map((c) => {
+        const pct = Math.round((probs[c] ?? 0) * 100);
+        return (
+          <li key={c} className="flex items-center gap-2 text-xs text-ink-2">
+            <span className="w-32 shrink-0 truncate">{CLASSIFICATION_LABEL[c]}</span>
+            <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+              <div className={`h-full ${BAR_COLOR[c]}`} style={{ width: `${pct}%` }} />
+            </div>
+            <span className="w-9 shrink-0 text-right tabular-nums">{pct}%</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Who decided (the scorecard, with the tie-break outcome) and who wrote the words (Gemini or template). */
+export function DecisionSource({ incident }: { incident: IncidentSummary }) {
+  const tb = incident.scorecard?.tiebreak;
+  const explainer = incident.model_id && incident.model_id !== "template" && incident.model_id !== "rules-fallback" ? incident.model_id : null;
+  return (
+    <div className="space-y-0.5 text-xs text-ink-2">
+      <p>
+        <span className="text-ink-3">Decided by:</span>{" "}
+        <span className="font-medium text-ink-1">{incident.classifier_version ?? "AI analyst (before the scorecard)"}</span>
+        {incident.decided_by && incident.decided_by !== "scorecard" && <span> · {DECIDED_BY_LABEL[incident.decided_by]}</span>}
+      </p>
+      {tb && (
+        <p>
+          <span className="text-ink-3">AI second opinion:</span>{" "}
+          {tb.outcome === "agree"
+            ? `agreed${tb.model ? ` (${tb.model})` : ""}: confidence capped, never raised`
+            : tb.outcome === "disagree"
+              ? `read it as ${tb.gemini ? CLASSIFICATION_LABEL[tb.gemini] : "something else"}, so it stays unclear (soft defences only)`
+              : tb.outcome === "unverified"
+                ? "its numbers did not match ours: the scorecard's call stands"
+                : `unavailable${incident.ai_fallback_reason ? ` (${incident.ai_fallback_reason})` : ""}: the scorecard's call stands`}
+        </p>
+      )}
+      <p className="flex items-center gap-1">
+        {explainer ? <Sparkles className="size-3 text-violet-300" /> : <Bot className="size-3" />}
+        <span className="text-ink-3">Explained by:</span> {explainer ?? "Checkout Guard's own template"}
+        {incident.ai_fallback_reason && !tb && <span className="text-amber-300"> (AI: {incident.ai_fallback_reason})</span>}
+      </p>
+    </div>
+  );
+}
+
 /** Shown when the AI cited numbers that didn't match ours: those claims never reach the screen or the policy. */
 export function DroppedBadge({ count }: { count: number }) {
   if (count <= 0) return null;
@@ -86,52 +147,57 @@ export function VerdictCard({ incident, compact = false }: { incident: IncidentD
       <div className="scan relative flex items-center gap-4 overflow-hidden rounded-xl border border-violet-400/20 bg-violet-500/[0.06] p-4">
         <Loader2 className="size-5 animate-spin text-violet-300" />
         <div>
-          <p className="text-sm font-medium text-ink-1">The AI analyst is reading the traffic…</p>
+          <p className="text-sm font-medium text-ink-1">Scoring the traffic…</p>
           <p className="text-xs text-ink-3">Fixed rules already switched on 3-D Secure if fraud declines were seen.</p>
         </div>
       </div>
     );
   }
-  const tone = incident.ai_available ? classificationTone(v.classification) : "neutral";
+  // The scorecard decides the class (P9); ai_available only says whether Gemini wrote the explanation.
+  const tone = classificationTone(v.classification);
   const shown = compact ? v.evidence.slice(0, 3) : v.evidence;
   const dropped = incident.dropped_evidence ?? 0;
+  const leaning = v.classification === "unclear" && incident.scorecard ? CLASSIFICATION_LABEL[incident.scorecard.top_class] : null;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-4">
-        {incident.ai_available ? (
-          <ConfidenceRing value={v.confidence} tone={tone} />
-        ) : (
-          <span className="flex size-[72px] shrink-0 items-center justify-center rounded-full bg-white/[0.04] ring-1 ring-white/10">
-            <Bot className="size-7 text-ink-3" />
-          </span>
-        )}
+        <ConfidenceRing value={v.confidence} tone={tone} />
         <div className="min-w-0">
-          <p className="text-xl font-semibold tracking-tight text-ink-1">
-            {incident.ai_available ? CLASSIFICATION_LABEL[v.classification] : "Fixed rules in charge"}
-          </p>
+          <p className="text-xl font-semibold tracking-tight text-ink-1">{CLASSIFICATION_LABEL[v.classification]}</p>
+          {leaning && <p className="text-xs text-ink-3">leaning {leaning.toLowerCase()}</p>}
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <Badge tone="neutral">
+              <ShieldCheck className="size-3 text-sky-300" /> {incident.classifier_version ?? "scorecard"}
+            </Badge>
             {incident.ai_available ? (
               <Badge tone="neutral">
-                <Sparkles className="size-3 text-violet-300" /> {incident.model_id}
+                <Sparkles className="size-3 text-violet-300" /> explained by {incident.model_id}
               </Badge>
             ) : (
-              <Badge tone="warn">AI unavailable{incident.ai_fallback_reason ? `: ${incident.ai_fallback_reason}` : ""}</Badge>
+              <Badge tone="warn">AI unavailable{incident.ai_fallback_reason ? `: ${incident.ai_fallback_reason}` : ""}: template text</Badge>
             )}
-            {incident.ai_available && v.trend !== "stable" && <Badge tone={v.trend === "escalating" ? "bad" : "good"}>{v.trend}</Badge>}
+            {v.trend !== "stable" && <Badge tone={v.trend === "escalating" ? "bad" : "good"}>{v.trend}</Badge>}
             {incident.verdict_at && <span className="text-xs text-ink-3">updated {timeAgo(incident.verdict_at)}</span>}
           </div>
         </div>
       </div>
 
-      {incident.ai_available && incident.ai_refresh_failed_at && (
+      {!compact && (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <DecisionSource incident={incident} />
+          {incident.class_probs && <ClassBars probs={incident.class_probs} />}
+        </div>
+      )}
+
+      {incident.ai_refresh_failed_at && (
         <p className="rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
           AI re-check failed {timeAgo(incident.ai_refresh_failed_at)} ({incident.ai_refresh_failures}×)
           {incident.ai_fallback_reason ? `: ${incident.ai_fallback_reason}` : ""}. Keeping the earlier verdict; new refunds wait for your approval if this persists.
         </p>
       )}
-      {!incident.ai_available && incident.rules_hint && (
-        <p className="text-xs text-ink-2">Fixed rules saw {RULES_HINT_LABEL[incident.rules_hint]}. This is not an AI verdict.</p>
+      {v.classification === "unclear" && incident.rules_hint && (
+        <p className="text-xs text-ink-2">Fixed rules saw {RULES_HINT_LABEL[incident.rules_hint]}. This is a hint, not a classification.</p>
       )}
 
       <p className="text-[15px] leading-relaxed text-ink-1/90">{v.summary}</p>
@@ -140,7 +206,7 @@ export function VerdictCard({ incident, compact = false }: { incident: IncidentD
       {shown.length > 0 && (
         <ul className="space-y-1.5">
           {shown.map((e, i) => {
-            // Our own number and the ×N from our stored baseline; the AI's text is only the "why".
+            // Our own number and the ×N from our stored baseline; the text is only the "why".
             const ours = incident.evidence_vs_normal?.[i];
             const observed = ours?.feature === e.feature && ours.observed !== null ? ours.observed : e.observed;
             const vsNormal = ours?.feature === e.feature && ours.multiplier != null && ours.normal != null ? ours : null;
@@ -170,7 +236,7 @@ export function VerdictCard({ incident, compact = false }: { incident: IncidentD
 
       {v.uncertainty_notes && !/^\s*(none|n\/a)?\.?\s*$/i.test(v.uncertainty_notes) && <p className="text-xs text-ink-3">Note: {v.uncertainty_notes}</p>}
       <p className="flex items-center gap-1.5 border-t border-white/[0.06] pt-3 text-[11px] text-ink-3">
-        <ShieldCheck className="size-3.5" /> Numbers checked against Checkout Guard&apos;s own records. The AI advises; fixed rules decide.
+        <ShieldCheck className="size-3.5" /> Numbers checked against Checkout Guard&apos;s own records. The scorecard decides, fixed rules act, the AI only explains.
       </p>
     </div>
   );
@@ -328,7 +394,7 @@ const WAIT_REASON: Record<string, string> = {
   R5_weak_match_needs_owner: "weak match",
   R5_sca_passed_needs_owner: "buyer passed 3-D Secure, which bots rarely do",
   R5_over_cap_needs_owner: "above your auto-refund limit",
-  R5_stale_verdict_needs_owner: "the AI verdict is out of date",
+  R5_stale_verdict_needs_owner: "the AI-confirmed verdict is out of date",
 };
 const MATCH_REASON: Record<string, string> = {
   strong_fingerprint: "device used several cards or accounts",

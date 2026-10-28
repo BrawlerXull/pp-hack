@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import CheckoutAttempt, Decision, Method, Outcome, Source, new_id
 from app.events import publish
 from app.guard.check import GuardContext, GuardVerdict, check, lock_device
-from app.paypal import codes
+from app.paypal import codes, three_ds
 from app.paypal.client import PayPalClient
 from app.paypal.orders import (
     CardDetails,
@@ -70,7 +70,7 @@ class OfflinePlan:
     A card decline's code comes from the CCREJECT-* trigger in the card name (as in the sandbox);
     `decline_code` is the 422 issue used when there is no trigger (wallet declines)."""
 
-    outcome: Literal["approve", "decline", "error"]
+    outcome: Literal["approve", "decline", "error", "pending"]
     decline_code: str = "INSTRUMENT_DECLINED"
     is_bot: bool = True  # bots can't complete a 3-D Secure challenge; real shoppers can
 
@@ -103,6 +103,7 @@ def apply_result(attempt: CheckoutAttempt, res: OrderResult) -> None:
     """Copy a PayPal (or simulated) order result onto the attempt row. A row that is already CAPTURED or
     REFUNDED is never downgraded: a late failure (timeout, racing request) does not undo a real capture,
     which would drop it from refund matching and show a charged buyer as declined."""
+    apply_card(attempt, res.card)
     c = classify(res, attempt.method)
     if attempt.outcome in {Outcome.CAPTURED, Outcome.REFUNDED} and c.outcome != Outcome.CAPTURED:
         return
@@ -117,6 +118,21 @@ def apply_result(attempt: CheckoutAttempt, res: OrderResult) -> None:
     attempt.paypal_debug_id = res.debug_id
 
 
+def apply_card(attempt: CheckoutAttempt, card: three_ds.CardInfo | None) -> None:
+    """What PayPal says about the card (brand, last 4, BIN, expiry, 3-D Secure result) onto the attempt, so a
+    browser card order feeds detection's card features like a simulated one. Only fields PayPal sent."""
+    if card is None:
+        return
+    attempt.card_brand = card.brand or attempt.card_brand
+    attempt.card_last4 = card.last4 or attempt.card_last4
+    attempt.card_bin6 = card.bin6 or attempt.card_bin6
+    attempt.card_expiry = card.expiry or attempt.card_expiry
+    if card.three_ds_ran:
+        attempt.sca_liability_shift = card.liability_shift
+        attempt.sca_enrollment = card.enrollment
+        attempt.sca_auth_status = card.auth_status
+
+
 def offline_result(plan: OfflinePlan, force_sca: bool, method: str, card: CardDetails | None) -> OrderResult:
     oid = f"SIM-{uuid.uuid4().hex[:12].upper()}"
     latency = random.randint(180, 650)
@@ -124,6 +140,9 @@ def offline_result(plan: OfflinePlan, force_sca: bool, method: str, card: CardDe
         return OrderResult(503, None, None, None, None, "SERVICE_UNAVAILABLE", None, latency)
     if force_sca and method == Method.CARD and plan.is_bot:
         return OrderResult(200, oid, "PAYER_ACTION_REQUIRED", None, None, None, None, latency)
+    if plan.outcome == "pending":
+        # A wallet order the buyer never approves: PayPal leaves it CREATED (an abandoned or failed login).
+        return OrderResult(201, oid, "CREATED", None, None, None, None, latency)
     if plan.outcome == "decline":
         trigger = codes.trigger_code(card.name) if card else None
         if trigger:
@@ -194,6 +213,9 @@ async def place_order(
                 custom_id=custom_id(req.shop_id, attempt.id),
                 card=req.card,
                 force_sca=force_sca and req.method == Method.CARD,
+                # A browser card payment: PayPal's Card Fields carry the number, our order carries none.
+                card_fields=req.method == Method.CARD and req.card is None,
+                # The shop lives at /shop on this branch (the landing page took /).
                 return_url=f"{app_url}/shop?3ds=return",
                 cancel_url=f"{app_url}/shop?3ds=cancel",
             )
@@ -232,7 +254,7 @@ def custom_id(shop_id: str, attempt_id: str) -> str:
 
 
 async def capture_web_order(
-    session: AsyncSession, paypal: PayPalClient, shop_id: str, order_id: str
+    session: AsyncSession, paypal: PayPalClient, shop_id: str, order_id: str, *, record_only: bool = False
 ) -> CheckoutAttempt | None:
     """Capture a browser order after buyer approval (wallet) or card-fields submit.
 
@@ -240,7 +262,16 @@ async def capture_web_order(
     PayPal. When PayPal's answer is unknown (timeout, 5xx) or says ORDER_ALREADY_CAPTURED, the order
     itself is read and decides. The row is re-read under a short lock only after PayPal answered (no
     lock is held across the call), and apply_result never downgrades a capture that a racing request
-    or the webhook committed meanwhile."""
+    or the webhook committed meanwhile.
+
+    Every browser order is read first. A card submitted to a wallet order is refused: it would skip the
+    guard's card decision and 3-D Secure. A browser card order (Card Fields) is captured only once it is
+    APPROVED and its 3-D Secure result allows it (app/paypal/three_ds.py): the browser saying "verified"
+    is not proof. If the order can't be read, a card order is left as it is (fail closed; the buyer can
+    retry). A refusal is stored as SCA_FAILED without a capture call, and is final for that order.
+
+    record_only: the browser reports that the card check failed or was cancelled. Nothing is captured;
+    an order with a card on it (or waiting on the bank) is recorded as SCA_FAILED."""
     attempt = (
         await session.execute(
             select(CheckoutAttempt).where(
@@ -252,6 +283,15 @@ async def capture_web_order(
         return None
     if attempt.outcome in {Outcome.CAPTURED, Outcome.REFUNDED} and attempt.capture_id:
         return attempt
+    if attempt.outcome == Outcome.SCA_FAILED:
+        return attempt  # refused once: never captured later, whatever the order says now
+    card_info: three_ds.CardInfo | None = None
+    if attempt.source == Source.WEB:
+        done, card_info = await _web_gate(session, paypal, attempt, order_id, record_only)
+        if done is not None:
+            return done
+    if record_only:
+        return attempt
     tries = attempt.capture_tries or 0
     captured = await capture_order(paypal, order_id, tries)
     res: OrderResult | None = captured
@@ -262,11 +302,75 @@ async def capture_web_order(
             res = order
         elif already:
             res = None  # PayPal says captured but we can't read it: leave the row for the webhook
-    attempt = await session.get(CheckoutAttempt, attempt.id, with_for_update=True, populate_existing=True)
-    assert attempt is not None
     if res is not None:
-        if 400 <= res.http < 500:
-            attempt.capture_tries = tries + 1  # a definitive refusal: the next capture is a new request
+        res.card = three_ds.merge(card_info, res.card)
+    return await _store(session, attempt.id, res, refused=res is not None and 400 <= res.http < 500)
+
+
+async def _web_gate(
+    session: AsyncSession, paypal: PayPalClient, attempt: CheckoutAttempt, order_id: str, record_only: bool
+) -> tuple[CheckoutAttempt | None, three_ds.CardInfo | None]:
+    """Read a browser order before capturing it. Returns (attempt, _) when the caller must stop there
+    (captured already, refused, or not capturable yet), else (None, the card PayPal reported)."""
+    is_card = attempt.method == Method.CARD
+    if record_only and not is_card:
+        return attempt, None
+    order = await get_order(paypal, order_id)
+    if order.http == 200 and order.capture_status:
+        return await _store(session, attempt.id, order), None  # already captured (racing request or retry)
+    if order.http != 200:
+        # A card order is never captured blind (fail closed; the buyer can retry). A wallet order keeps
+        # the old path: the capture's own answer, then the order read, decide.
+        return (attempt if is_card else None), None
+    card = order.card
+    if not is_card:
+        if card is not None:
+            # Created as a wallet order (no card decision, no 3-D Secure), then paid by card: refused.
+            return await _store(session, attempt.id, None, sca_failed=order, as_card=True), None
+        return None, None
+    if order.status == "CREATED" and card is None:
+        return attempt, None  # no card submitted yet: nothing to capture or record
+    sca_required = attempt.guard_decision == Decision.ALLOW_WITH_SCA
+    browser_gave_up = record_only and (card is not None or order.status == "PAYER_ACTION_REQUIRED")
+    if browser_gave_up or not three_ds.capture_allowed(card, order.status, sca_required):
+        return await _store(session, attempt.id, None, sca_failed=order), None
+    if record_only:
+        return attempt, None
+    # Card Fields: after a 3-D Secure challenge the sandbox leaves the order CREATED (not APPROVED) with the
+    # card and its authentication_result attached (seen live, Oct 25). The 3-D Secure rule above has already
+    # passed, and PayPal itself refuses a capture the card wasn't authorised for, so CREATED-with-a-card is
+    # capturable. Anything else (no card yet, PAYER_ACTION_REQUIRED, ...) still waits.
+    if order.status != "APPROVED" and not (order.status == "CREATED" and card is not None):
+        return attempt, None
+    return None, card
+
+
+async def _store(
+    session: AsyncSession,
+    attempt_id: str,
+    res: OrderResult | None,
+    *,
+    refused: bool = False,
+    sca_failed: OrderResult | None = None,
+    as_card: bool = False,
+) -> CheckoutAttempt:
+    """Apply a capture result (or a 3-D Secure refusal) to the attempt under a short row lock."""
+    attempt = await session.get(CheckoutAttempt, attempt_id, with_for_update=True, populate_existing=True)
+    assert attempt is not None
+    if sca_failed is not None:
+        apply_card(attempt, sca_failed.card)
+        if as_card:
+            attempt.method = Method.CARD  # record the instrument PayPal saw, not the one the browser claimed
+        if attempt.outcome not in {Outcome.CAPTURED, Outcome.REFUNDED}:
+            attempt.outcome = Outcome.SCA_FAILED
+            attempt.order_status = sca_failed.status
+            attempt.decline_code = attempt.decline_category = attempt.processor_code = None
+            attempt.paypal_debug_id = sca_failed.debug_id
+        await publish(session, "attempt", attempt_event(attempt))
+    elif res is not None:
+        if refused:
+            # A definitive refusal: the next capture is a new request.
+            attempt.capture_tries = (attempt.capture_tries or 0) + 1
         apply_result(attempt, res)
         await publish(session, "attempt", attempt_event(attempt))
     await session.commit()
@@ -291,4 +395,8 @@ def attempt_event(a: CheckoutAttempt) -> dict[str, Any]:
         "outcome": a.outcome,
         "decline_code": a.decline_code,
         "decline_category": a.decline_category,
+        # What PayPal said about a card (owner-only stream): brand, last 4, the bank's 3-D Secure answer.
+        "card_brand": a.card_brand,
+        "card_last4": a.card_last4,
+        "sca_liability_shift": a.sca_liability_shift,
     }

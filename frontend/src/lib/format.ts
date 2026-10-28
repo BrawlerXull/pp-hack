@@ -67,13 +67,14 @@ export const OUTCOME_META: Record<Outcome, { label: string; tone: Tone; color: s
   challenged: { label: "Human check", tone: "bad", color: "var(--color-series-stopped)" },
   sca_required: { label: "3-D Secure", tone: "info", color: "var(--color-series-stopped)" },
   refunded: { label: "Refunded", tone: "info", color: "var(--color-series-refunded)" },
+  sca_failed: { label: "3-D Secure failed", tone: "bad", color: "var(--color-series-stopped)" },
 };
 
 /** The activity chart folds the eight outcomes into five stories, in validated palette order. */
 export const SERIES = [
   { key: "paid", label: "Paid", color: "#3987e5", outcomes: ["captured"] },
   { key: "declined", label: "Declined by bank", color: "#d95926", outcomes: ["declined"] },
-  { key: "stopped", label: "Stopped by Checkout Guard", color: "#199e70", outcomes: ["blocked", "challenged", "sca_required"] },
+  { key: "stopped", label: "Stopped by Checkout Guard", color: "#199e70", outcomes: ["blocked", "challenged", "sca_required", "sca_failed"] },
   { key: "refunded", label: "Refunded before dispute", color: "#c98500", outcomes: ["refunded"] },
   { key: "error", label: "PayPal error", color: "#9085e9", outcomes: ["error"] },
 ] as const satisfies readonly { key: string; label: string; color: string; outcomes: readonly Outcome[] }[];
@@ -92,7 +93,7 @@ export const ACTION_LABEL: Record<ActionRow["type"], string> = {
   REFUND: "Refund",
   NOTIFY: "Owner notified",
   DEESCALATE: "Stood down: checkout back to normal",
-  RELAX: "Extra checks switched off: the AI judged it was not fraud",
+  RELAX: "Extra checks switched off: judged not to be fraud",
 };
 
 /** How each defence uses PayPal, shown next to the action so the integration is visible. */
@@ -113,13 +114,13 @@ const RULE_LABEL: Record<string, string> = {
   R3b_ai_down_fraud_signal: "AI unavailable: fixed rules acted on fraud signals",
   R3c_returning_customer_rush: "Mostly returning customers: notify only",
   R3d_processor_trouble_notify_only: "Processor errors only: notify, don't add friction",
-  R4_attack: "AI verdict: attack (≥ 70% confident)",
+  R4_attack: "Scorecard verdict: attack (≥ 70% confident)",
   R4_attack_during_sale_soft_only: "Attack during your sale: 3-D Secure only, no blocks",
-  R5_refund_matched: "AI ≥ 85% confident · matched the attack signature · within your cap",
+  R5_refund_matched: "Verdict ≥ 85% confident · strong match to the attack · within your cap",
   R5_over_cap_needs_owner: "Above your auto-refund limit: needs your approval",
   R5_weak_match_needs_owner: "Weak match to the attack: needs your approval",
   R5_sca_passed_needs_owner: "Buyer passed 3-D Secure, which bots rarely do: needs your approval",
-  R5_stale_verdict_needs_owner: "AI verdict is out of date: needs your approval",
+  R5_stale_verdict_needs_owner: "Verdict is out of date: needs your approval",
   always_notify: "Owner kept in the loop",
   owner_closed: "You stood the guard down",
   auto_deescalate_quiet: "Quiet again: defences switched off automatically",
@@ -127,9 +128,98 @@ const RULE_LABEL: Record<string, string> = {
 
 export function ruleLabel(rule: string): string {
   if (RULE_LABEL[rule]) return RULE_LABEL[rule];
-  if (rule.startsWith("R2_relax_")) return "AI judged it harmless: extra checks switched off";
-  if (rule.startsWith("R2_")) return "AI judged it harmless: notify only";
+  if (rule.startsWith("R2_relax_")) return "Judged harmless: extra checks switched off";
+  if (rule.startsWith("R2_")) return "Judged harmless: notify only";
   return rule.replace(/_/g, " ");
+}
+
+export const FEATURE_LABEL: Record<string, string> = {
+  attempts: "Attempts",
+  attempts_per_min: "Attempts per minute",
+  velocity_z: "Speed vs normal (z-score)", // incidents from before P9
+  expected_attempts: "Normal attempts for this hour",
+  velocity_surprise: "Volume surprise (−log10 p)",
+  decline_rate: "Decline rate",
+  decline_surprise: "Decline surprise (−log10 p)",
+  fraud_declines: "Declines coded as fraud",
+  fraud_decline_share: "Share of declines coded as fraud",
+  error_rate: "PayPal error rate",
+  captured: "Payments that went through",
+  blocked_or_challenged: "Stopped by the guard",
+  sca_required: "Stopped by 3-D Secure",
+  unique_fingerprints: "Distinct devices",
+  top_fingerprint_share: "Share from busiest device",
+  unique_cards_ratio: "New card per attempt",
+  unique_payers_ratio: "New PayPal account per attempt",
+  top_sku_share: "Share on one item",
+  cheapest_sku_share: "Share on cheapest item",
+  cheapest_sku_attempts: "Attempts on cheapest item",
+  cheapest_sku_cards: "Distinct cards on cheapest item",
+  cheapest_sku_payers: "Distinct PayPal accounts on cheapest item",
+  cheapest_sku_decline_rate: "Decline rate on cheapest item",
+  avg_amount: "Average amount",
+  new_email_domain_share: "Never-seen email domains",
+  known_customer_share: "Returning customers",
+  wallet_share: "PayPal wallet share",
+  cards_per_device_max: "Most cards on one device",
+  cards_per_device_p90: "Cards per device (90th pct)",
+  payers_per_device_max: "Most PayPal accounts on one device",
+  payers_per_device_p90: "PayPal accounts per device (90th pct)",
+  aged_wallet_orders: "Wallet orders old enough to approve",
+  unapproved_wallet_share: "Wallet orders never approved",
+  interarrival_cv: "Timing irregularity (1 ≈ human)",
+  error_devices: "Devices hit by errors",
+  error_top_device_share: "Errors from one device",
+  error_known_share: "Errors hitting returning customers",
+  error_top_sku_share: "Errors on one item",
+  distinct_skus: "Distinct items",
+  sku_entropy: "Basket variety (0-1)",
+  amount_cv: "Amount spread",
+  probing_decline_share: "Declines for wrong CVV/expiry",
+  customer_decline_share: "Declines that are honest bad luck",
+  processor_share: "Failures that are PayPal errors",
+  non_customer_declines: "Fraud, guessing or unexplained declines",
+  slow_decline_cusum: "Slow-decline build-up (CUSUM)",
+  multi_card_devices: "Devices with 3+ cards",
+  suspect_declines: "Stolen-card or guessing declines",
+  suspect_decline_devices: "Devices with stolen-card or guessing declines",
+  client_errors: "Errors a client caused (not counted)",
+};
+
+export const DECIDED_BY_LABEL: Record<string, string> = {
+  scorecard: "scorecard",
+  "scorecard+gemini_agree": "scorecard, confirmed by the AI second opinion",
+  gemini_disagree_unclear: "scorecard unsure, AI disagreed: stays unclear",
+};
+
+const RATIO_FEATURES = new Set([
+  "decline_rate",
+  "fraud_decline_share",
+  "cheapest_sku_decline_rate",
+  "error_rate",
+  "top_fingerprint_share",
+  "unique_cards_ratio",
+  "unique_payers_ratio",
+  "top_sku_share",
+  "cheapest_sku_share",
+  "new_email_domain_share",
+  "known_customer_share",
+  "wallet_share",
+  "unapproved_wallet_share",
+  "error_top_device_share",
+  "error_known_share",
+  "error_top_sku_share",
+  "probing_decline_share",
+  "customer_decline_share",
+  "processor_share",
+]);
+
+export function featureValue(feature: string, v: number | null | undefined): string {
+  if (v === null || v === undefined) return "–";
+  if (RATIO_FEATURES.has(feature)) return `${Math.round(v * 100)}%`;
+  if (feature === "avg_amount") return money(v);
+  if (feature === "velocity_z") return `${v > 100 ? Math.round(v) : v.toFixed(1)}×σ`;
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
 
 export const TRIGGER_LABEL: Record<string, string> = {
@@ -138,6 +228,7 @@ export const TRIGGER_LABEL: Record<string, string> = {
   decline_spike: "Decline spike",
   fraud_declines: "Bank fraud codes",
   cheap_sku_card_cycling: "Cards cycling on cheapest item",
+  slow_declines: "Slow run of declines",
   processor_errors: "PayPal errors",
   blocked_activity: "Blocked devices still trying",
 };
@@ -176,56 +267,6 @@ export const RULES_HINT_LABEL: Record<RulesHint, string> = {
   returning_customer_rush: "mostly returning customers, few declines",
   unusual_volume: "unusual volume",
 };
-
-export const FEATURE_LABEL: Record<string, string> = {
-  attempts: "Attempts",
-  attempts_per_min: "Attempts per minute",
-  velocity_z: "Speed vs normal",
-  decline_rate: "Decline rate",
-  fraud_declines: "Declines coded as fraud",
-  fraud_decline_share: "Declines coded as fraud",
-  error_rate: "PayPal error rate",
-  captured: "Payments that went through",
-  blocked_or_challenged: "Stopped by the guard",
-  sca_required: "Stopped by 3-D Secure",
-  unique_fingerprints: "Distinct devices",
-  top_fingerprint_share: "Share from busiest device",
-  unique_cards_ratio: "New card per attempt",
-  unique_payers_ratio: "New PayPal account per attempt",
-  top_sku_share: "Share on one item",
-  cheapest_sku_share: "Share on cheapest item",
-  cheapest_sku_attempts: "Attempts on cheapest item",
-  cheapest_sku_cards: "Distinct cards on cheapest item",
-  cheapest_sku_payers: "PayPal accounts on cheapest item",
-  cheapest_sku_decline_rate: "Decline rate on cheapest item",
-  avg_amount: "Average amount",
-  new_email_domain_share: "Never-seen email domains",
-  known_customer_share: "Returning customers",
-  wallet_share: "PayPal wallet share",
-};
-
-const RATIO_FEATURES = new Set([
-  "decline_rate",
-  "fraud_decline_share",
-  "cheapest_sku_decline_rate",
-  "error_rate",
-  "top_fingerprint_share",
-  "unique_cards_ratio",
-  "unique_payers_ratio",
-  "top_sku_share",
-  "cheapest_sku_share",
-  "new_email_domain_share",
-  "known_customer_share",
-  "wallet_share",
-]);
-
-export function featureValue(feature: string, v: number | null | undefined): string {
-  if (v === null || v === undefined) return "–";
-  if (RATIO_FEATURES.has(feature)) return `${Math.round(v * 100)}%`;
-  if (feature === "avg_amount") return money(v);
-  if (feature === "velocity_z") return `${v > 100 ? Math.round(v) : v.toFixed(1)}×σ`;
-  return Number.isInteger(v) ? String(v) : v.toFixed(2);
-}
 
 export const SKU_NAME: Record<string, string> = {
   "SKU-TEALIGHT-3": "Tea-light pack",

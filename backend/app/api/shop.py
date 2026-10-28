@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_paypal
 from app.config import Settings, get_settings
-from app.db.models import Decision
+from app.db.models import CheckoutAttempt, Decision
 from app.db.session import get_session
 from app.guard.check import GuardContext, check, issue_challenge_token
 from app.paypal.client import PayPalClient
@@ -112,7 +112,23 @@ async def create(
 async def capture(
     order_id: str, session: Session, paypal: PayPal, settings: Annotated[Settings, Depends(get_settings)]
 ) -> dict:
+    """Capture after PayPal approval (button) or Card Fields submit. Card orders are captured only when
+    their 3-D Secure result allows it; outcome `sca_failed` means the bank's check did not pass."""
     attempt = await capture_web_order(session, paypal, settings.shop_id, order_id)
+    return _capture_answer(order_id, attempt)
+
+
+@router.post("/orders/{order_id}/card-result")
+async def card_result(
+    order_id: str, session: Session, paypal: PayPal, settings: Annotated[Settings, Depends(get_settings)]
+) -> dict:
+    """Card Fields reported a failed or cancelled submit: record the bank's answer, never capture. Without
+    this the row would stay CREATED and the dashboard would miss real 3-D Secure failures."""
+    attempt = await capture_web_order(session, paypal, settings.shop_id, order_id, record_only=True)
+    return _capture_answer(order_id, attempt)
+
+
+def _capture_answer(order_id: str, attempt: CheckoutAttempt | None) -> dict:
     if attempt is None:
         raise HTTPException(404, "unknown order")
     return {
@@ -120,6 +136,8 @@ async def capture(
         "outcome": attempt.outcome,
         "capture_id": attempt.capture_id,
         "decline_code": attempt.decline_code,
+        "decline_category": attempt.decline_category,
+        "liability_shift": attempt.sca_liability_shift,
     }
 
 

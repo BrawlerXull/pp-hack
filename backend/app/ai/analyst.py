@@ -1,8 +1,13 @@
-"""AI analyst: decides whether an anomaly is an attack, a genuine rush or a PayPal outage.
+"""AI analyst: explains the scorecard's decision, and gives a second opinion when the scorecard is unsure.
 
+The classification is decided by app/detection/classifier.py (deterministic). Gemini is used for:
+  explain()  the owner-facing summary of a decision already made (its own reading is recorded, never used)
+  analyse()  an independent second opinion when the scorecard says "unclear" or its margin is small; it
+             is not shown the scorecard's answer, and app/incidents/decision.combine decides what an
+             agreement or a disagreement is worth (it can only confirm, never upgrade)
 Privacy: the model only ever sees aggregated features and a few masked rows (email domain,
 8-char fingerprint prefix, SKU, amount, outcome). No card numbers, names, emails, tokens or credentials.
-The verdict is advice; app/policy/engine.py decides what actually happens.
+Whatever it says is advice; app/policy/engine.py decides what actually happens.
 """
 
 import json
@@ -13,13 +18,15 @@ from typing import Any
 import structlog
 
 from app.ai.gemini import AI_DISABLED, AIUnavailable, generate_json
-from app.ai.schemas import Evidence, Verdict
+from app.ai.schemas import ATTACK_CLASSES, Evidence, Verdict
 from app.config import get_settings
+from app.detection.classifier import ScoreResult
 from app.detection.features import WINDOWS_MIN, AttemptRow, Baseline, FeatureKey, Features, lookup
 
-PROMPT_VERSION = "analyst-v3"
+PROMPT_VERSION = "analyst-v4"
 log = structlog.get_logger()
 
+# Second opinion (analyse): the model classifies on its own, without seeing the scorecard's answer.
 SYSTEM = """You are Checkout Guard's fraud analyst for a small online shop that takes PayPal payments.
 A deterministic detector flagged unusual checkout traffic. Decide what it is from the traffic pattern:
 
@@ -27,7 +34,8 @@ A deterministic detector flagged unusual checkout traffic. Decide what it is fro
   decline rate, declines PayPal codes as fraud (fraud_declines, fraud_decline_share: stolen, lost,
   restricted cards) or as guessing (wrong CVV/expiry), a new card on almost every attempt
   (cheapest_sku_cards), many email domains never seen before, few repeat customers, tiny amounts.
-- account_testing: the same but with stolen PayPal accounts (wallet payments, many unique payer ids,
+- account_testing: the same but with stolen PayPal accounts (wallet payments, several PayPal accounts
+  per device (payers_per_device_max), wallet orders never approved (unapproved_wallet_share),
   restricted-account declines).
 - genuine_rush: real customers arriving at once. Signs: varied items and basket sizes, returning
   customers (known_customer_share) and common email domains, a low decline rate whose declines are
@@ -51,6 +59,24 @@ Rules:
   from our own data.
 """
 
+# Explanation (explain): the decision is made; the model only puts it into words for the owner.
+EXPLAIN_SYSTEM = """You explain a decision that Checkout Guard's deterministic scorecard has already made
+about unusual checkout traffic at a small online shop that takes PayPal payments. You do not decide
+anything and you cannot change the decision.
+
+The input has `decision` (the classification, the scorecard's confidence and its main reasons, with
+numbers from our own data) and the traffic it was decided from.
+
+Write for a non-technical shop owner:
+- summary: one or two short, calm sentences on what is happening and why the scorecard thinks so.
+- evidence: two to four of the most telling features from the input. Copy `observed` exactly from the
+  given window (rates are 0-1 fractions, not percentages).
+- uncertainty_notes: anything in the traffic that points the other way, or an empty string.
+- Set `classification` and `confidence` exactly to the decision's values.
+- Never write digits or numbers in `summary`, in an evidence `why` or in `uncertainty_notes`: describe
+  the pattern in words. The real numbers are shown next to your text from our own data.
+"""
+
 _SAFE = re.compile(r"[^a-z0-9.\-]")
 
 
@@ -69,6 +95,13 @@ class AnalystResult:
     numbers_replaced: int = 0
     # Owner-facing reason the AI could not answer (quota, timeout…), with ai_available=False.
     fallback_reason: str | None = None
+    # At least one evidence item matched our numbers (a second opinion without any does not count).
+    verified: bool = True
+    # explain(): the class the model itself named; recorded in the audit log, never used.
+    gemini_view: str | None = None
+    # explain(): the model answered, but its text was replaced by Checkout Guard's template (it argued for
+    # another class, or misread our numbers). The words must not be credited to the model.
+    template_text: bool = False
 
 
 def build_input(
@@ -234,6 +267,35 @@ def _friendly(exc: Exception) -> str:
     return "Gemini request failed"
 
 
+RECOMMENDED: dict[str, list[str]] = {
+    "card_testing": ["SCA_ON", "BLOCK_FP", "HOLD_SKU", "REFUND_MATCHED", "NOTIFY"],
+    "account_testing": ["SCA_ON", "BLOCK_FP", "HOLD_SKU", "REFUND_MATCHED", "NOTIFY"],
+    "genuine_rush": ["NOTIFY"],
+    "paypal_outage": ["NOTIFY"],
+    "unclear": ["SCA_ON", "NOTIFY"],
+}
+
+
+def template_verdict(
+    classification: str, confidence: float, score: ScoreResult, notes: list[str] | None = None
+) -> Verdict:
+    """The verdict text when Gemini does not write it: our own wording around the scorecard's reasons.
+    No recommendations: a fixed list is not advice anyone gave (the reporter would print "recommended
+    only" next to it)."""
+    evidence = score.evidence()
+    summary = deterministic_summary(classification, evidence)
+    if classification == "unclear" and score.top_class:
+        summary += f" The scorecard leaned towards {score.top_class.replace('_', ' ')}."
+    return Verdict(
+        classification=classification,
+        confidence=round(confidence, 3),
+        summary=summary,
+        evidence=evidence,
+        recommended_actions=[],
+        uncertainty_notes=" ".join(notes or []),
+    )
+
+
 def fallback_verdict(reason: str) -> Verdict:
     return Verdict(
         classification="unclear",
@@ -254,8 +316,9 @@ def _fallback(reason: str) -> AnalystResult:
 
 
 async def analyse(analyst_input: dict[str, Any], features: dict[int, Features]) -> AnalystResult:
+    """Independent second opinion (the tie-break). The input never contains the scorecard's answer."""
     if not get_settings().ai_enabled:
-        return _fallback(AI_DISABLED)  # switched off on purpose: no call, no quota, the rules decide
+        return _fallback(AI_DISABLED)  # switched off on purpose: no call, no quota; the scorecard decides
     prompt = "Classify this checkout activity.\n\n" + json.dumps(analyst_input, default=str)
     for attempt in range(2):
         try:
@@ -274,8 +337,80 @@ async def analyse(analyst_input: dict[str, Any], features: dict[int, Features]) 
                 verdict.confidence = min(verdict.confidence, 0.6)
                 verdict.uncertainty_notes += " Evidence could not be verified against computed features."
             return AnalystResult(
-                verdict, model_id, ai_available=True, dropped_evidence=dropped, numbers_replaced=replaced
+                verdict,
+                model_id,
+                ai_available=True,
+                dropped_evidence=dropped,
+                numbers_replaced=replaced,
+                verified=bool(kept),
             )
         log.info("analyst_retry_unverified_evidence", dropped=dropped)
         prompt += "\n\nYour previous evidence values did not match the input. Copy `observed` exactly."
     raise AssertionError("unreachable")
+
+
+async def explain(
+    analyst_input: dict[str, Any],
+    features: dict[int, Features],
+    score: ScoreResult,
+    classification: str,
+    confidence: float,
+) -> AnalystResult:
+    """Owner-facing words for a decision already made. The returned verdict always carries the decided
+    classification and confidence; the model's text is kept only if it argues for that decision, cites
+    at least one number we computed (when it cites any) and passes the number guard."""
+    if not get_settings().ai_enabled:
+        return _fallback(AI_DISABLED)
+    decision = {
+        "classification": classification,
+        "confidence": round(confidence, 3),
+        "reasons": [
+            {
+                "feature": r.feature,
+                "window_min": r.window_min,
+                "observed": round(r.observed, 3),
+                "why": r.text,
+            }
+            for r in score.top_reasons()
+            if r.feature is not None and r.observed is not None
+        ],
+    }
+    prompt = "Explain this decision.\n\n" + json.dumps(analyst_input | {"decision": decision}, default=str)
+    try:
+        verdict, model_id = await generate_json(system=EXPLAIN_SYSTEM, prompt=prompt, schema=Verdict)
+    except AIUnavailable as exc:
+        return _fallback(_friendly(exc))
+
+    view = verdict.classification
+    kept, dropped = validate_evidence(verdict, features)
+    verdict.classification, verdict.confidence = classification, round(confidence, 3)
+    verdict.evidence = kept or score.evidence()
+    replaced = number_guard(verdict, features)
+    off_topic = view != classification and not (view in ATTACK_CLASSES and classification in ATTACK_CLASSES)
+    template_text = off_topic or (dropped and not kept)
+    # Recommendations only ever for the decided class: a model reading another class must not have its
+    # advice (refunds for what we called real customers) printed in the owner's report.
+    allowed = RECOMMENDED.get(classification, [])
+    verdict.recommended_actions = [a for a in verdict.recommended_actions if a in allowed]
+    if template_text:
+        # Text that argues for another class, or reads our numbers wrongly, is not an explanation of this
+        # decision: use our own wording, no advice and no trend from it, and say so.
+        verdict.summary = deterministic_summary(classification, score.evidence())
+        verdict.uncertainty_notes = (
+            "The AI read the traffic differently, so this explanation is Checkout Guard's own wording."
+            if off_topic
+            else "The AI's numbers did not match the computed data, so this is Checkout Guard's own wording."
+        )
+        verdict.recommended_actions = []
+        verdict.trend = "stable"
+        replaced += 1
+    return AnalystResult(
+        verdict,
+        model_id,
+        ai_available=True,
+        dropped_evidence=dropped,
+        numbers_replaced=replaced,
+        verified=bool(kept),
+        gemini_view=view,
+        template_text=template_text,
+    )
