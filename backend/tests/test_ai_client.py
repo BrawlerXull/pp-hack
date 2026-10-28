@@ -300,3 +300,57 @@ async def test_every_request_is_recorded_for_the_usage_audit(fake):
     fake(m1=['{"ok": true}'], m2=['{"ok": true}'], m3=['{"ok": true}'])  # m1 may still be paused
     await call()  # outside track_usage: logged only, nothing collected
     assert len(calls) == 3
+
+
+# ---- backup key (GEMINI_API_KEY_2) -----------------------------------------------------------------
+
+
+@pytest.fixture
+def backup(fake, monkeypatch):
+    """A second key with its own scripted client; returns a function to script that client."""
+    gemini.get_settings().gemini_api_key_2 = "backup-key"
+
+    def script(**steps: list[Any]) -> FakeModels:
+        models = FakeModels({"m1": [], "m2": [], "m3": []} | steps)
+        client = SimpleNamespace(aio=SimpleNamespace(models=models))
+        monkeypatch.setattr(gemini, "_backup_client", lambda key: client)
+        return models
+
+    return script
+
+
+async def test_backup_key_answers_once_every_model_is_over_quota_on_the_first(fake, backup):
+    first = fake(m1=[quota_error()], m2=[quota_error()], m3=[quota_error()])
+    second = backup(m1=['{"ok": true}'])
+    out, model_id = await call()
+    assert out.ok and model_id == "m1-001"
+    assert first.calls == ["m1", "m2", "m3"] and second.calls == ["m1"]
+    # Each key keeps its own pauses: the first key's quota does not pause the backup's models.
+    assert gemini._breaker.usable(["m1", "m2", "m3"], T0) == []
+    assert gemini._backup_breaker.usable(["m1", "m2", "m3"], T0) == ["m1", "m2", "m3"]
+    assert not await gemini.cooling_down()
+
+
+async def test_first_key_paused_goes_straight_to_the_backup(fake, backup):
+    first = fake(m1=[quota_error()], m2=[quota_error()], m3=[quota_error()])
+    backup(m1=['{"ok": true}', '{"ok": false}'])
+    await call()
+    second = backup(m1=['{"ok": false}'])
+    out, _ = await call()
+    assert not out.ok and first.calls == ["m1", "m2", "m3"] and second.calls == ["m1"]
+
+
+async def test_rejected_first_key_falls_through_to_the_backup(fake, backup):
+    first = fake(m1=[bad_key()])
+    second = backup(m1=['{"ok": true}'])
+    out, _ = await call()
+    assert out.ok and first.calls == ["m1"] and second.calls == ["m1"]
+
+
+async def test_both_keys_spent_reports_quota(fake, backup):
+    fake(m1=[quota_error()], m2=[quota_error()], m3=[quota_error()])
+    backup(m1=[quota_error()], m2=[quota_error()], m3=[quota_error()])
+    with pytest.raises(gemini.AIUnavailable) as err:
+        await call()
+    assert err.value.reason == breaker.FRIENDLY[CooldownReason.QUOTA]
+    assert await gemini.cooling_down()

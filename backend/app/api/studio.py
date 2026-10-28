@@ -21,6 +21,7 @@ from app.api.deps import OwnerShop
 from app.config import get_settings
 from app.db.models import Action, ActionType, CheckoutAttempt, Incident
 from app.db.session import get_session
+from app.detection.features import reached_paypal
 
 router = APIRouter(prefix="/studio", tags=["studio"])
 Session = Annotated[AsyncSession, Depends(get_session)]
@@ -120,6 +121,7 @@ async def studio_data(
                 "outcome": a.outcome,
                 "decline_code": a.decline_code,
                 "decline_category": a.decline_category,
+                "reached_paypal": reached_paypal(a.outcome, a.decline_code),
                 "incident_id": incident_of(a.ts),
             }
             for a in attempts
@@ -134,6 +136,7 @@ async def studio_data(
                 "confidence": i.confidence,
                 "model_id": i.model_id,
                 "ai_available": i.ai_available,
+                "classifier_version": i.classifier_version,
                 "triggers": ", ".join(i.triggers or []),
                 "rules_hint": i.rules_hint,
                 "dropped_evidence": i.dropped_evidence,

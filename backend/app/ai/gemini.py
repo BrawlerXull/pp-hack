@@ -2,6 +2,8 @@
 
 Callers get `(parsed_model, model_id)` or an `AIUnavailable` they must handle with a deterministic fallback.
 Models paused by the breaker (app/ai/breaker.py) are skipped; when all are paused no call is made at all.
+An optional second key (GEMINI_API_KEY_2) gets the same chain, with its own breaker, once the first key's
+models have all failed (typically its quota is spent).
 Every call made inside `track_usage()` is recorded with its token counts, so callers can audit the cost.
 """
 
@@ -35,6 +37,7 @@ class AIUnavailable(RuntimeError):
 
 
 _breaker = brk.Breaker()
+_backup_breaker = brk.Breaker()  # the same, for GEMINI_API_KEY_2
 store: brk.BreakerStore = brk.DbStore()
 _usage: ContextVar[list[dict[str, Any]] | None] = ContextVar("gemini_usage", default=None)
 # This process's last Gemini answer and last failure, for the worker heartbeat (dashboard AI pill).
@@ -85,6 +88,25 @@ def _client() -> genai.Client:
     return genai.Client(api_key=key)
 
 
+@lru_cache
+def _backup_client(key: str) -> genai.Client:
+    return genai.Client(api_key=key)
+
+
+def client_for(key: str) -> genai.Client:
+    return _client() if key == get_settings().gemini_api_key else _backup_client(key)
+
+
+def lanes(settings: Settings | None = None) -> list[tuple[str, brk.Breaker]]:
+    """Each API key with its own breaker: the primary first, then the backup key when one is set."""
+    settings = settings or get_settings()
+    out = [(settings.gemini_api_key, _breaker)] if settings.gemini_api_key else []
+    backup = settings.gemini_api_key_2
+    if backup and backup != settings.gemini_api_key:
+        out.append((backup, _backup_breaker))
+    return out
+
+
 def _thinking(model: str) -> types.ThinkingConfig | None:
     # Light reasoning keeps verdicts fast (seconds, not tens of seconds) without hurting accuracy
     # on this task (scripts/eval_ai.py).
@@ -107,10 +129,13 @@ async def cooling_down() -> bool:
     Also true when AI_ENABLED=false: no model will answer."""
     if not get_settings().ai_enabled:
         return True
-    key = get_settings().gemini_api_key
-    if key:
-        await _sync_from_store(key)
-    return not _breaker.usable(models(), _now())
+    chain, now = models(), _now()
+    for key, breaker in lanes() or [("", _breaker)]:  # no key: generate_json reports that, not a pause
+        if key:
+            await _sync_from_store(key, breaker)
+        if breaker.usable(chain, now):
+            return False
+    return True
 
 
 def _reason(cds: list[brk.Cooldown]) -> str:
@@ -121,10 +146,10 @@ def _reason(cds: list[brk.Cooldown]) -> str:
     return brk.FRIENDLY[next(iter(reasons))] if reasons else "Gemini request failed"
 
 
-async def _sync_from_store(key: str) -> None:
+async def _sync_from_store(key: str, breaker: brk.Breaker | None = None) -> None:
     shared = await store.load(key)
     if shared is not None:
-        _breaker.state = shared
+        (breaker or _breaker).state = shared
 
 
 async def status() -> dict[str, Any]:
@@ -146,9 +171,16 @@ async def status() -> dict[str, Any]:
         }
         for m in chain
     ]
+    backup = lanes(settings)[1:]
+    if backup:
+        await _sync_from_store(backup[0][0], _backup_breaker)
+    backup_usable = bool(backup) and bool(_backup_breaker.usable(chain, now))
     if len(paused) < len(chain):
         state = "ok" if not paused else "degraded"
         detail = "configured" if not paused else f"configured; paused {_breaker.describe(chain, now)}"
+    elif backup_usable:
+        state = "degraded"
+        detail = f"using the backup key; first key: {_reason(list(paused.values()))}"
     else:
         key_bad = any(cd.reason == CooldownReason.BAD_KEY for cd in paused.values())
         state = "key_rejected" if key_bad else "cooling_down"
@@ -166,59 +198,78 @@ async def generate_json[T: BaseModel](
     if not key:
         raise AIUnavailable("GEMINI_API_KEY not set", "no Gemini API key configured")
     chain = models(settings)
-    await _sync_from_store(key)
-    now = _now()
-    usable = _breaker.usable(chain, now)
-    if not usable:
-        cds = [cd for m in chain if (cd := _breaker.blocked(m, now))]
-        raise AIUnavailable(f"all Gemini models cooling down: {_breaker.describe(chain, now)}", _reason(cds))
-
     last_error: Exception | None = None
     tripped: list[brk.Cooldown] = []
-    for model in usable:
-        res = None
-        try:
-            res = await asyncio.wait_for(
-                _client().aio.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system,
-                        response_mime_type="application/json",
-                        response_schema=schema,
-                        temperature=temperature,
-                        thinking_config=_thinking(model),
+    paused: list[brk.Cooldown] = []
+    rejected: tuple[str, Exception, brk.Cooldown] | None = None
+    tried_any = False
+    for key, breaker in lanes(settings):
+        await _sync_from_store(key, breaker)
+        now = _now()
+        usable = breaker.usable(chain, now)
+        paused += [cd for m in chain if (cd := breaker.blocked(m, now))]
+        for model in usable:
+            tried_any = True
+            res = None
+            try:
+                res = await asyncio.wait_for(
+                    client_for(key).aio.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system,
+                            response_mime_type="application/json",
+                            response_schema=schema,
+                            temperature=temperature,
+                            thinking_config=_thinking(model),
+                        ),
                     ),
-                ),
-                timeout=settings.ai_timeout_s,
-            )
-            _record_usage(model, res)  # billed even if the JSON below turns out unusable
-            parsed = (
-                res.parsed if isinstance(res.parsed, schema) else schema.model_validate_json(res.text or "")
-            )
-            if _breaker.clear(model):
-                await store.clear(key, model)
-            _last.update(model=res.model_version or model, at=_now())
-            return parsed, res.model_version or model
-        except AIUnavailable:
-            raise
-        except Exception as exc:  # timeout, quota, bad JSON…: log, maybe pause the model, try the next one
-            last_error = exc
-            error = f"{type(exc).__name__}: {str(exc)[:200]}"
-            if res is None:  # no response at all (timeout, quota, 5xx); a bad-JSON reply is already recorded
-                _record_usage(model, error=error)
-            trip = brk.classify(exc)
-            # Shown on the dashboard: the classified reason only, never the raw SDK text (URLs, project ids).
-            shown = brk.FRIENDLY[trip.reason] if trip else f"unusable answer ({type(exc).__name__})"
-            _last.update(error=f"{model}: {shown}", error_at=_now())
-            log.warning("gemini_call_failed", model=model, error=error, pause=trip and trip.reason)
-            if trip is None:
-                continue
-            name, cd = _breaker.trip(model, trip, _now(), error)
-            tripped.append(cd)
-            await store.save(key, name, cd)
-            if trip.all_models:  # same key for every model: trying the rest only burns time
-                raise AIUnavailable(f"Gemini API key rejected: {error}", _reason([cd])) from exc
+                    timeout=settings.ai_timeout_s,
+                )
+                _record_usage(model, res)  # billed even if the JSON below turns out unusable
+                parsed = (
+                    res.parsed
+                    if isinstance(res.parsed, schema)
+                    else schema.model_validate_json(res.text or "")
+                )
+                if breaker.clear(model):
+                    await store.clear(key, model)
+                _last.update(model=res.model_version or model, at=_now())
+                return parsed, res.model_version or model
+            except AIUnavailable:
+                raise
+            # Timeout, quota, bad JSON…: log, maybe pause the model, try the next one.
+            except Exception as exc:
+                last_error = exc
+                error = f"{type(exc).__name__}: {str(exc)[:200]}"
+                # No response at all (timeout, quota, 5xx); a bad-JSON reply is already recorded.
+                if res is None:
+                    _record_usage(model, error=error)
+                trip = brk.classify(exc)
+                # Shown on the dashboard: the classified reason only, never the raw SDK text (URLs, ids).
+                shown = brk.FRIENDLY[trip.reason] if trip else f"unusable answer ({type(exc).__name__})"
+                _last.update(error=f"{model}: {shown}", error_at=_now())
+                log.warning(
+                    "gemini_call_failed",
+                    model=model,
+                    backup_key=breaker is _backup_breaker,
+                    error=error,
+                    pause=trip and trip.reason,
+                )
+                if trip is None:
+                    continue
+                name, cd = breaker.trip(model, trip, _now(), error)
+                tripped.append(cd)
+                await store.save(key, name, cd)
+                if trip.all_models:  # same key for every model: trying the rest only burns time
+                    rejected = (error, exc, cd)
+                    break
+    if not tried_any:
+        detail = _breaker.describe(chain, _now())
+        raise AIUnavailable(f"all Gemini models cooling down: {detail}", _reason(paused))
+    if rejected is not None and last_error is rejected[1]:
+        error, exc, cd = rejected
+        raise AIUnavailable(f"Gemini API key rejected: {error}", _reason([cd])) from exc
     raise AIUnavailable(
         f"all Gemini models failed: {last_error}", _reason(tripped) if tripped else None
     ) from last_error

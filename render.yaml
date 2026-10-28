@@ -62,6 +62,8 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: GEMINI_API_KEY_2
+        sync: false
       - key: PUBLIC_APP_URL  # the frontend's public URL, e.g. https://checkout-guard-web.onrender.com
         sync: false
       - key: NOTIFY_WEBHOOK_URL
@@ -87,6 +89,8 @@ services:
       - key: PAYPAL_WEBHOOK_ID
         sync: false
       - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY_2
         sync: false
       - key: NOTIFY_WEBHOOK_URL
         sync: false

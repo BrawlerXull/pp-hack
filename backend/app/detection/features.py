@@ -288,6 +288,14 @@ def _client_error(r: AttemptRow) -> bool:
     return r.outcome == Outcome.ERROR and r.decline_code in CLIENT_STATE_ERRORS
 
 
+def reached_paypal(outcome: str, decline_code: str | None) -> bool:
+    """The decline rate's denominator: the guard's own blocks and challenges never reach a bank, and an
+    error a client caused on purpose says nothing about PayPal. The War Room and AG Studio both use this."""
+    if outcome in {Outcome.BLOCKED, Outcome.CHALLENGED}:
+        return False
+    return not (outcome == Outcome.ERROR and decline_code in CLIENT_STATE_ERRORS)
+
+
 def _slow_decline_cusum(w: list[AttemptRow], window_min: int, now: datetime, baseline: Baseline) -> float:
     """CUSUM over one-minute bins of "this minute had a fraud, probing or unexplained decline". A bin counts
     once however many declines it holds (1 for a fraud or probing refusal, UNKNOWN_DECLINE_WEIGHT for only
@@ -322,9 +330,7 @@ def compute(rows: list[AttemptRow], window_min: int, now: datetime, baseline: Ba
 
     # Blocked or challenged never reached PayPal; a client-caused error tells us nothing about PayPal.
     f.client_errors = sum(_client_error(r) for r in w)
-    reached = [
-        r for r in w if r.outcome not in {Outcome.BLOCKED, Outcome.CHALLENGED} and not _client_error(r)
-    ]
+    reached = [r for r in w if reached_paypal(r.outcome, r.decline_code)]
     f.reached_paypal = len(reached)
     f.declined = sum(r.outcome == Outcome.DECLINED for r in reached)
     f.errors = sum(r.outcome == Outcome.ERROR for r in reached)

@@ -310,3 +310,69 @@ async def test_studio_data_links_attempts_to_the_incident_they_fell_in(client, d
     )
     assert {a["type"]: a["amount"] for a in data["actions"]} == {"REFUND": 3.0, "SCA_ON": None}
     assert data["ai"]["available"] is False  # no key in tests
+
+
+async def test_studio_decline_rate_counts_only_attempts_that_reached_paypal(client, db):
+    # Same denominator as the War Room: a blocked or challenged attempt never reached a bank.
+    now = datetime.now(UTC)
+    db.add_all(
+        [
+            _attempt(now - timedelta(minutes=3), outcome="declined"),
+            _attempt(now - timedelta(minutes=3), outcome="captured"),
+            _attempt(now - timedelta(minutes=2), outcome="blocked"),
+            _attempt(now - timedelta(minutes=2), outcome="challenged"),
+            _attempt(now - timedelta(minutes=1), outcome="sca_failed"),
+        ]
+    )
+    await db.commit()
+    data = (await client.get("/studio/data?hours=1")).json()
+    reached = {a["outcome"]: a["reached_paypal"] for a in data["attempts"]}
+    assert reached == {
+        "declined": True,
+        "captured": True,
+        "blocked": False,
+        "challenged": False,
+        "sca_failed": True,
+    }
+
+
+async def test_agent_turn_moves_to_the_backup_key_when_the_first_is_out_of_quota(client, ai_key, monkeypatch):
+    monkeypatch.setattr(ai_key, "gemini_api_key_2", "backup-key")
+    spent = FakeClient(*[RuntimeError("429 RESOURCE_EXHAUSTED") for _ in gemini.models()])
+    spare = FakeClient(_reply(_part(text="from the backup key")))
+    monkeypatch.setattr(gemini, "_client", lambda: spent)
+    monkeypatch.setattr(gemini, "_backup_client", lambda key: spare)
+    res = await client.post("/studio/agent/turn", json=TURN)
+    assert res.status_code == 200 and res.json()["output"][0]["content"][0]["text"] == "from the backup key"
+    assert [c["model"] for c in spent.calls] == gemini.models()
+    assert [c["model"] for c in spare.calls] == gemini.models()[:1]
+
+
+def test_ref_loops_are_cut_so_every_model_accepts_the_query_tool():
+    schema = {
+        "type": "object",
+        "properties": {
+            "expr": {"$ref": "#/$defs/Expr"},
+            "filter": {"$ref": "#/$defs/Filter"},
+        },
+        "$defs": {
+            "Field": {"type": "string"},
+            "Expr": {
+                "anyOf": [{"$ref": "#/$defs/Field"}, {"type": "array", "items": {"$ref": "#/$defs/Expr"}}]
+            },
+            "Filter": {"anyOf": [{"type": "string"}, {"$ref": "#/$defs/Group"}]},
+            "Group": {
+                "type": "object",
+                "properties": {"filters": {"type": "array", "items": {"$ref": "#/$defs/Filter"}}},
+            },
+        },
+    }
+    out = studio_agent.break_ref_loops(schema)
+    defs = out["$defs"]
+    assert defs["Expr"]["anyOf"][0] == {"$ref": "#/$defs/Field"}  # non-cyclic references stay
+    assert "$ref" not in json.dumps(defs["Expr"]["anyOf"][1])  # self-reference cut
+    # Exactly one edge of the Filter ↔ Group cycle is cut.
+    assert ("$ref" in json.dumps(defs["Filter"])) != ("$ref" in json.dumps(defs["Group"]))
+    assert out["properties"] == schema["properties"]
+    plain = {"type": "object", "properties": {"a": {"type": "string"}}}
+    assert studio_agent.break_ref_loops(plain) is plain

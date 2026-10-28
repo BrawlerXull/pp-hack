@@ -75,6 +75,62 @@ def clean_schema(schema: Any) -> Any:
     return out
 
 
+def break_ref_loops(schema: Any) -> Any:
+    """Gemini rejects a `$ref` cycle unless it passes through an optional property, and some models
+    (flash-lite) apply that strictly. AG Studio's query schema has two: an expression nests expressions,
+    and a filter group nests filters. Each reference that closes a cycle becomes an open schema (any
+    value); AG Studio validates the tool's arguments itself, so nothing reaches the dashboard unchecked."""
+    if not isinstance(schema, dict):
+        return schema
+    defs_key = "$defs" if "$defs" in schema else "definitions" if "definitions" in schema else None
+    defs = schema.get(defs_key) if defs_key else None
+    if not isinstance(defs, dict):
+        return schema
+    prefix = f"#/{defs_key}/"
+
+    def refs(node: Any) -> set[str]:
+        if isinstance(node, dict):
+            found = {node["$ref"][len(prefix) :]} if str(node.get("$ref", "")).startswith(prefix) else set()
+            return found.union(*(refs(v) for k, v in node.items() if k != "$ref"))
+        if isinstance(node, list):
+            return set().union(*(refs(v) for v in node))
+        return set()
+
+    # Depth-first over the definitions; an edge into a definition still on the stack closes a cycle.
+    back: dict[str, set[str]] = {}
+    state: dict[str, int] = {}  # 1 on the stack, 2 done
+
+    def visit(name: str) -> None:
+        state[name] = 1
+        for target in sorted(refs(defs[name])):
+            if target not in defs:
+                continue
+            if state.get(target) == 1:
+                back.setdefault(name, set()).add(target)
+            elif target not in state:
+                visit(target)
+        state[name] = 2
+
+    for name in defs:
+        if name not in state:
+            visit(name)
+    if not back:
+        return schema
+
+    def cut(node: Any, targets: set[str]) -> Any:
+        if isinstance(node, dict):
+            ref = str(node.get("$ref", ""))
+            if ref.startswith(prefix) and ref[len(prefix) :] in targets:
+                return {"description": f"A nested {ref[len(prefix) :]} (same shape)"}
+            return {k: cut(v, targets) for k, v in node.items()}
+        if isinstance(node, list):
+            return [cut(v, targets) for v in node]
+        return node
+
+    new_defs = {name: cut(body, back[name]) if name in back else body for name, body in defs.items()}
+    return {**schema, defs_key: new_defs}
+
+
 def to_contents(items: list[dict[str, Any]]) -> list[types.Content]:
     """AG Studio conversation items → Gemini contents. Consecutive items of one role share a turn, so a
     model's parallel function calls and the user's matching function responses each stay together."""
@@ -149,7 +205,9 @@ def to_tools(tools: list[dict[str, Any]] | None) -> list[types.Tool] | None:
         types.FunctionDeclaration(
             name=t["name"],
             description=t.get("description") or "",
-            parameters_json_schema=clean_schema(t.get("parameters") or {"type": "object", "properties": {}}),
+            parameters_json_schema=break_ref_loops(
+                clean_schema(t.get("parameters") or {"type": "object", "properties": {}})
+            ),
         )
         for t in tools or []
     ]
@@ -292,26 +350,33 @@ async def run_turn(request: dict[str, Any]) -> dict[str, Any]:
     wanted = (request.get("model") or {}).get("id")
     order = [wanted, *[m for m in chain if m != wanted]] if wanted in chain else chain
     contents = to_contents(items)
-    client = gemini._client()
     last: Exception | None = None
-    for model in order:
-        try:
-            res = await asyncio.wait_for(
-                client.aio.models.generate_content(
-                    model=model, contents=contents, config=build_config(request, model)
-                ),
-                timeout=TURN_TIMEOUT_S,
-            )
-            return from_response(res, model)
-        except TurnError:
-            raise
-        except Exception as exc:  # every provider failure is reported to the chat
-            last = exc
-            log.warning(
-                "studio_agent_turn_failed", model=model, error=f"{type(exc).__name__}: {str(exc)[:200]}"
-            )
-            if not _retryable(exc):
-                break
+    # The whole chain on the first key, then again on the backup key (GEMINI_API_KEY_2) if one is set.
+    for n, (key, _breaker) in enumerate(gemini.lanes(settings)):
+        client = gemini.client_for(key)
+        for model in order:
+            try:
+                res = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=model, contents=contents, config=build_config(request, model)
+                    ),
+                    timeout=TURN_TIMEOUT_S,
+                )
+                return from_response(res, model)
+            except TurnError:
+                raise
+            except Exception as exc:  # every provider failure is reported to the chat
+                last = exc
+                log.warning(
+                    "studio_agent_turn_failed",
+                    model=model,
+                    backup_key=n > 0,
+                    error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                )
+                if not _retryable(exc):
+                    break
+        if last is not None and not _retryable(last):
+            break
     raise TurnError(
         502, "ai_failed", f"Gemini could not complete this step: {type(last).__name__}: {str(last)[:160]}"
     )

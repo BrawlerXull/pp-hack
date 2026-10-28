@@ -33,6 +33,8 @@ class Settings(BaseSettings):
 
     # AI (Gemini)
     gemini_api_key: str = ""
+    # Optional second key (another project's quota): tried only after every model failed on the first key.
+    gemini_api_key_2: str = ""
     gemini_model: str = "gemini-3.5-flash"
     # Tried in order when the primary is overloaded (503), over quota or times out.
     gemini_fallback_models: str = "gemini-2.5-flash,gemini-flash-lite-latest"

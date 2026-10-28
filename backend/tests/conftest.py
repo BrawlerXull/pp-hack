@@ -91,6 +91,8 @@ def no_network(monkeypatch):
     monkeypatch.setattr(gemini, "_client", no_gemini)
     # Breaker state is process-global: start each test clean, in memory unless a test opts into the DB store.
     monkeypatch.setattr(gemini, "_breaker", breaker.Breaker())
+    monkeypatch.setattr(gemini, "_backup_breaker", breaker.Breaker())
+    monkeypatch.setattr(gemini, "_backup_client", lambda key: no_gemini())
     monkeypatch.setattr(gemini, "store", breaker.MemoryStore())
     yield leaks
     if leaks:

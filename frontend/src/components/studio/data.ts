@@ -22,6 +22,8 @@ export type StudioAttempt = {
   outcome: Outcome;
   decline_code: string | null;
   decline_category: string | null;
+  // Same rule as the War Room's decline rate: the guard's own blocks never reach a bank.
+  reached_paypal: boolean;
   incident_id: string | null;
 };
 
@@ -34,6 +36,7 @@ export type StudioIncident = {
   confidence: number | null;
   model_id: string | null;
   ai_available: boolean;
+  classifier_version: string | null;
   triggers: string;
   rules_hint: string | null;
   dropped_evidence: number;
@@ -74,7 +77,7 @@ const TRAFFIC: Record<string, string> = {
   normal_night: "Simulated normal night",
 };
 
-const STOPPED = new Set<Outcome>(["blocked", "challenged", "sca_required"]);
+const STOPPED = new Set<Outcome>(["blocked", "challenged", "sca_required", "sca_failed"]);
 
 // The War Room chart's five groups. Studio colours legend entries in alphabetical order, and ./theme.ts orders its
 // palette to match, so each result keeps its War Room colour here too.
@@ -158,6 +161,7 @@ export function buildStudioData(p: StudioPayload): AgDataSourcesDefinition<Guard
     incidentId: a.incident_id ?? "",
     incident: a.incident_id ? (incidentNames.get(a.incident_id) ?? a.incident_id) : "No incident",
     attempts: 1,
+    reached: a.reached_paypal ? 1 : 0,
     paid: a.outcome === "captured" ? 1 : 0,
     declined: a.outcome === "declined" ? 1 : 0,
     stopped: STOPPED.has(a.outcome) ? 1 : 0,
@@ -172,7 +176,12 @@ export function buildStudioData(p: StudioPayload): AgDataSourcesDefinition<Guard
     status: i.status === "open" ? "Active" : "Closed",
     verdict: i.classification ? CLASSIFICATION_LABEL[i.classification] : "Unclassified",
     confidence: i.confidence ?? 0,
-    judgedBy: i.ai_available ? (i.model_id ?? "AI") : "Fixed rules (AI unavailable)",
+    // The scorecard decides the class (P9); the AI only explains it. Older incidents were judged by the AI.
+    judgedBy: i.classifier_version
+      ? `${i.classifier_version}${i.ai_available && i.model_id ? `, explained by ${i.model_id}` : ""}`
+      : i.ai_available
+        ? (i.model_id ?? "AI")
+        : "Fixed rules (AI unavailable)",
     triggers: i.triggers,
     droppedClaims: i.dropped_evidence,
     refunds: i.refunds,
@@ -226,6 +235,7 @@ export function buildStudioData(p: StudioPayload): AgDataSourcesDefinition<Guard
           ["incidentId", "Incident ID", "textFormat", undefined, true],
           ["incident", "Incident", "textFormat", "The incident this attempt fell in, or No incident."],
           ["attempts", "Attempts", "integerFormat"],
+          ["reached", "Reached PayPal", "integerFormat", "Attempts that got to PayPal (not blocked or challenged by the guard)."],
           ["paid", "Paid", "integerFormat"],
           ["declined", "Declined", "integerFormat"],
           ["stopped", "Stopped by guard", "integerFormat"],
@@ -274,7 +284,13 @@ export function buildStudioData(p: StudioPayload): AgDataSourcesDefinition<Guard
     ],
     relationships: [manyToOne("attempt-incident", "attempts.incidentId", "incidents.id"), manyToOne("action-incident", "actions.incidentId", "incidents.id")],
     expressions: [
-      ratio("declineRate", "Decline rate", "Declined by bank / attempts.", "attempts.declined", "attempts.attempts"),
+      ratio(
+        "declineRate",
+        "Decline rate",
+        "Declined by bank / attempts that reached PayPal (the guard's own blocks never reach a bank), as in the War Room.",
+        "attempts.declined",
+        "attempts.reached",
+      ),
       ratio("stoppedShare", "Stopped share", "Stopped by the guard / attempts.", "attempts.stopped", "attempts.attempts"),
     ],
   };
