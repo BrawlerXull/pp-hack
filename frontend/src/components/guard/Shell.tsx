@@ -8,6 +8,7 @@ import useSWR, { SWRConfig } from "swr";
 import { DemoDock } from "@/components/guard/DemoDock";
 import { api, ApiError, fetcher } from "@/lib/api";
 import { useLiveUpdates } from "@/lib/live";
+import { DemoNotice } from "./DemoNotice";
 import { SystemPills } from "./SystemPills";
 import { LiveDot } from "./ui";
 
@@ -127,6 +128,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         <div className="border-b border-white/[0.06] bg-night-900/50 px-4 py-2.5 backdrop-blur sm:px-6 md:sticky md:top-0 md:z-20 lg:px-8">
           <SystemPills live={live} />
         </div>
+        <DemoNotice />
         <main className="mx-auto w-full max-w-[1400px] flex-1 space-y-6 p-4 pb-28 sm:p-6 sm:pb-28 lg:p-8 lg:pb-28">
           {backendDown && (
             <p className="rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-2 text-sm text-red-200">

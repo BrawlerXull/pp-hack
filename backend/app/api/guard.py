@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_shop_key
 from app.db.session import get_session
-from app.guard.check import GuardContext, check
+from app.guard.check import GuardContext, check_within_budget
 
 router = APIRouter(prefix="/v1/guard", tags=["guard"])
 
@@ -36,8 +36,11 @@ async def guard_check(
     shop_id: Annotated[str, Depends(require_shop_key)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> CheckOut:
-    v = await check(
-        session, GuardContext(shop_id, body.sku, body.method, body.fingerprint_hash, body.challenge_token)
+    # Fail-open: a slow guard answers allow (or the last known defences) rather than hold up the shop.
+    v = await check_within_budget(
+        session,
+        GuardContext(shop_id, body.sku, body.method, body.fingerprint_hash, body.challenge_token),
+        lock=False,
     )
     return CheckOut(
         decision=v.decision,

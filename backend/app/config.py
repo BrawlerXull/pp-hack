@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     detect_interval_s: float = 5.0
     reassess_interval_s: float = 120.0
 
+    # The guard check gets this long before the checkout goes on without it (fail-open, app/guard/check.py).
+    guard_check_budget_ms: int = 800
+
+    # Shared hosted demo (only with SIMULATOR_ENABLED, app/simulator/janitor.py): re-seed the "normal"
+    # history when its newest day is this old, and stand the demo down to defaults after this many idle
+    # minutes (no checkout attempt, no owner action). 0 switches either off.
+    demo_reseed_after_h: int = 36
+    demo_idle_restore_min: int = 30
+
     # Optional: also push each owner alert to a Slack incoming webhook or an ntfy topic URL (app/notify.py).
     notify_webhook_url: str = ""
     notify_timeout_s: float = 3.0

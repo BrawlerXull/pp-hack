@@ -124,6 +124,7 @@ const RULE_LABEL: Record<string, string> = {
   always_notify: "Owner kept in the loop",
   owner_closed: "You stood the guard down",
   auto_deescalate_quiet: "Quiet again: defences switched off automatically",
+  demo_idle_restore: "Demo idle: stood down to its defaults for the next visitor",
 };
 
 export function ruleLabel(rule: string): string {
@@ -249,6 +250,7 @@ export const GUARD_REASON_LABEL: Record<string, string> = {
   device_velocity: "Fast retries: challenged",
   sku_on_hold: "Item on hold for new shoppers",
   sca_mode: "3-D Secure on for every card",
+  guard_unavailable: "Guard too slow: let through (fail-open)",
 };
 
 export const ACTION_SHORT: Record<string, string> = {

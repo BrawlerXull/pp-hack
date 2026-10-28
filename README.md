@@ -19,7 +19,7 @@ Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox*
 1. **Product page** (`/`): what Checkout Guard does, attack vs flash sale, the PayPal capabilities it uses, and what's real vs simulated.
    **Shop** (`/shop`): the demo store "Wick & Wax". *Buy now* opens a real PayPal sandbox checkout (JS SDK v6): the PayPal button (log in with the sandbox buyer above) or **Pay by card** (PayPal-hosted card fields; the sheet lists sandbox test cards). The backend runs the guard check before it creates the order. After an attack has switched 3-D Secure on, pay by card with `4868719166101368` (the bank challenge passes and the payment goes through) and with `4868719181895556` (the challenge fails: not charged, and the War Room shows **3-D Secure failed**).
 2. **Shop owner → log in** with the judge password. You land on the **War Room**.
-3. If the War Room has no normal history to compare against, open **Demo lab → Seed 28 days of normal history** once.
+3. The 28 days of normal history are seeded automatically and renewed before they age out. To re-seed by hand: **Demo lab → Seed 28 days of normal history**.
 4. **Simulation bar (bottom of every dashboard page) → Card-testing attack** (150 offline attempts over about 2 minutes). Watch:
    - The **status pills** in the header: AI, detector, PayPal, simulator and live updates.
    - The **status hero**: the checkout state, the live defences (3-D Secure, blocked devices, held items), and the **Watch → Judge → Act → Explain** pipeline:
@@ -34,6 +34,11 @@ Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox*
    - The **Blocked devices** card: each blocked device links to its incident, and **Unblock and trust** marks it as a trusted shopper.
 5. **Open the incident**. It shows the **detect → judge → decide strip** (triggers and their tier, who judged, which policy rules ran), the verdict with the scorecard's reasons and our numbers ("×12 vs normal"), the actions taken, refunds waiting for approval (**Refund / Keep**), the attack signature, the morning report, and an **evidence pack for PayPal** to copy or download.
 6. **Simulation bar → Flash sale**. It announces a 2-hour sale window and sends a rush of mostly returning customers. Expect no blocks and no refunds: the scorecard calls it a genuine rush (policy R2) or the rules see a returning-customer rush (R3c). **Reset** clears the demo.
+
+   The hosted demo is shared by everyone who logs in:
+   - A banner says when another visitor changed something ("Another visitor ran a card-testing simulation 2 min ago").
+   - Another visitor can't start a run within 30 seconds of yours.
+   - After 30 idle minutes the demo stands itself down: it closes the open incident and keeps its report, switches the defences off, unblocks devices and restores the default settings.
 7. **Investigate** (AG Studio): every attempt, incident and action from the last 48 hours as an editable report, with our own **AI verdict** and **Defence timeline** widgets. Click a bar to cross-filter the page. **Ask the Guard analyst** opens the AI assistant: ask "What happened in the last incident?" or "Investigate the latest attack", and it reads the incident through Checkout Guard's tools and has Studio's dashboard team build the page. With *Auto-investigate* on, a new incident gets its own investigation page without asking.
 8. **Settings**: autopilot, kill switch, refund caps, stand-down time, "I'm running a sale".
 9. Optional: the **attacker terminal** for a split screen, `uv run python scripts/attack.py card_testing --url https://<frontend-host>/api --password <judge password>` (see [Attacker terminal](#attacker-terminal)).
@@ -87,7 +92,7 @@ Why not let the LLM decide: a Gemini call takes 3 to 25 seconds, free-tier quota
 - **Privacy.** The AI sees aggregated features plus 20 masked rows: SKU, amount, outcome, decline code, an 8-character device prefix and the email domain (stripped to a safe character set). It never sees card numbers, names, emails or credentials.
 
 **When Gemini is down, everything still works:**
-1. If a model fails (429 quota, 503 overload, timeout), the next one is tried.
+1. If a model fails (429 quota, 503 overload, timeout), the next one is tried. If every model fails on `GEMINI_API_KEY`, the same chain is tried on the optional `GEMINI_API_KEY_2`, which has its own breaker.
 2. A per-model **circuit breaker**, shared by the API and the worker through Postgres, pauses a failing model. It honours Gemini's `retryDelay`, pauses for an hour on a daily quota, and pauses every model until restart on a rejected key. Gemini is then retried on a 2/4/8-minute backoff; the scorecard never waits for it.
 3. With no model answering, the scorecard still decides and acts (including refunds when it is sure), and the text is our own template. Only an **unsure** scorecard loses something: no second opinion, so the policy's R3b/R3d rules apply (the same as when Gemini agrees with an unsure scorecard). Whether Gemini wrote the explanation never changes the defences.
 4. A failed explanation keeps the AI's last wording for the same class. A failed re-check of a tie-break the AI had agreed to keeps that agreed class ("kept"); it yields to new triggers that contradict it, and after 3 failures or 20 minutes it is stale.
@@ -139,6 +144,8 @@ Why not let the LLM decide: a Gemini call takes 3 to 25 seconds, free-tier quota
 - **Guard check.** On every checkout ([app/guard/check.py](backend/app/guard/check.py)) the guard checks the kill switch, then blocked devices, then device velocity (6+ attempts or 2+ declines in 10 minutes → challenge), then held items, then 3-D Secure mode.
 - **Device blocks** expire after 24 hours. A device the owner unblocks is **trusted** for 30 days.
 - **Stand down.** After `deescalate_after_min` quiet minutes (10 by default) the incident closes and the checkout goes back to its state before the incident.
+
+**If the guard itself is slow, the checkout still works (fail-open).** The guard check gets `GUARD_CHECK_BUDGET_MS` (default 800 ms). If it runs over or the database errors, the payment goes on with the last guard state the server saw: blocked devices stay blocked and 3-D Secure stays on, but the per-device velocity count and the item hold are skipped. With no recent state the payment is allowed and recorded as *Guard too slow: let through*. The public `/v1/guard/check` API behaves the same way.
 
 ## Run it
 

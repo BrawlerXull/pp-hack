@@ -12,6 +12,7 @@ from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from app import visitor
 from app.actions.executor import DisputedCapture, Executor, action_event
 from app.ai import gemini
 from app.api.deps import OwnerShop, get_broadcaster, get_paypal
@@ -150,7 +151,39 @@ async def summary(
             "refunded": counts.get(Outcome.REFUNDED, 0),
             "refunded_amount": f"{sum((Decimal(a) for a in refunded if a), Decimal('0')):.2f}",
         },
+        "demo_activity": await demo_activity(session, now) if settings.simulator_enabled else None,
     }
+
+
+DEMO_ACTIVITY_WINDOW = timedelta(minutes=30)
+
+
+async def demo_activity(session: AsyncSession, now: datetime) -> dict[str, Any] | None:
+    """The shared demo's latest change, when this visitor did not make it: another visitor's action (everyone
+    logs in with the same password) or the janitor's idle stand-down. None when the latest is this visitor's
+    own, or there is none in 30 min."""
+    me = visitor.current()
+    rows = (
+        await session.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.ts > now - DEMO_ACTIVITY_WINDOW,
+                (AuditLog.actor == "owner") | (AuditLog.event == "demo.idle_restore"),
+            )
+            .order_by(AuditLog.ts.desc())
+            .limit(50)
+        )
+    ).scalars()
+    for row in rows:
+        by = (row.data or {}).get("visitor")
+        if row.event == "demo.idle_restore":
+            return {"kind": "idle_restore", "event": row.event, "at": row.ts, "data": row.data}
+        if by and by == me:
+            return None  # you acted since: whatever came before is already on your screen
+        if by:
+            data = {k: v for k, v in (row.data or {}).items() if k in ("scenario", "mode")}
+            return {"kind": "other_visitor", "event": row.event, "at": row.ts, "data": data}
+    return None
 
 
 @router.get("/attempts")

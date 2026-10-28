@@ -3,6 +3,7 @@
 Only mounted when SIMULATOR_ENABLED=true. Everything created here is tagged source=simulator/seed.
 """
 
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import visitor
 from app.api.deps import OwnerShop, get_paypal, require_simulator
 from app.db.audit import audit
 from app.db.models import (
@@ -49,6 +51,10 @@ class RunIn(BaseModel):
     announce_sale: bool = False
 
 
+# Another visitor's run just started: theirs would blur into yours. Your own reruns are not held back.
+OTHER_VISITOR_COOLDOWN_S = 30.0
+_last_start: dict[str, tuple[float, str | None]] = {}  # shop -> (monotonic time, visitor id)
+
 SALE_WINDOW = timedelta(hours=2)
 SALE_NOTE = "Autumn sale announced on Instagram (simulated)"
 
@@ -71,6 +77,16 @@ async def run(
     if active := active_run():
         message = f"a {active.scenario} run is still going: stop it or wait for it to finish"
         raise HTTPException(409, {"code": "run_active", "message": message, "run_id": active.id})
+    me = visitor.current()
+    started, by = _last_start.get(shop_id, (0.0, None))
+    wait = OTHER_VISITOR_COOLDOWN_S - (time.monotonic() - started)
+    if wait > 0 and by != me:
+        message = f"another visitor started a run moments ago: try again in {int(wait) + 1} s"
+        raise HTTPException(
+            429,
+            {"code": "other_visitor_run", "message": message},
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
     if body.announce_sale:
         if scenario not in SCENARIOS or (body.mode == "live" and scenario in OFFLINE_ONLY):
             raise HTTPException(400, f"cannot run {scenario} ({body.mode})")
@@ -90,6 +106,9 @@ async def run(
         r = start_run(shop_id, scenario, body.mode, paypal, body.count, body.speed, body.seed, context)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    _last_start[shop_id] = (time.monotonic(), me)
+    audit(session, "owner", "demo.run_started", scenario=scenario, mode=body.mode, run_id=r.id)
+    await session.commit()
     return {
         "run_id": r.id,
         "scenario": r.scenario,

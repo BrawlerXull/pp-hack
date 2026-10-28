@@ -1,9 +1,11 @@
 import hmac
+import secrets
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
+from app import visitor
 from app.config import Settings, get_settings
 from app.events import Broadcaster
 from app.paypal.client import PayPalClient
@@ -25,10 +27,11 @@ def _serializer(settings: Settings) -> URLSafeTimedSerializer:
 
 
 def issue_session(settings: Settings) -> str:
-    return _serializer(settings).dumps({"role": "owner", "shop": settings.shop_id})
+    # v: this login's visitor id (app/visitor.py); everyone shares the owner password in the demo.
+    return _serializer(settings).dumps({"role": "owner", "shop": settings.shop_id, "v": secrets.token_hex(4)})
 
 
-def require_owner(
+async def require_owner(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
     authorization: Annotated[str | None, Header()] = None,
@@ -43,6 +46,7 @@ def require_owner(
         data = _serializer(settings).loads(token, max_age=SESSION_MAX_AGE_S)
     except BadSignature as exc:
         raise HTTPException(401, "invalid session") from exc
+    visitor.set_current(data.get("v"))  # async dependency: the endpoint runs in this same context
     return data["shop"]
 
 

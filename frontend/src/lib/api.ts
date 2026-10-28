@@ -192,6 +192,13 @@ export type SystemStatus = {
   live: { "5m": LiveWindow; "15m": LiveWindow; at: string } | null;
 };
 
+export type DemoActivity = {
+  kind: "other_visitor" | "idle_restore";
+  event: string;
+  at: string;
+  data: Record<string, unknown>;
+};
+
 export type Summary = {
   status: GuardStatus;
   open_incident: IncidentSummary | null;
@@ -199,6 +206,8 @@ export type Summary = {
   switches: { kill_switch: boolean; autopilot: boolean };
   sale_window: { end: string; note: string } | null;
   guard_state: { mode: "normal" | "sca_all"; blocked_devices: number; held_skus: string[] };
+  // Shared hosted demo: the latest change another visitor made, or the idle stand-down (30 min window).
+  demo_activity?: DemoActivity | null;
   last_24h: {
     attempts: number;
     captured: number;

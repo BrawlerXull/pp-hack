@@ -23,15 +23,23 @@ CREATED) before calling PayPal, so N parallel requests from one device are count
 at most `attempts` of them reach PayPal. Declines are only known once PayPal answers, so the decline limit
 only slows a device down from its next request on.
 
+Fail-open: check_within_budget() gives the check GUARD_CHECK_BUDGET_MS. If it runs over (lock contention,
+a slow or failing database), the checkout goes on with the last guard state this process saw (at most
+10 min old): blocked devices stay blocked and 3-D Secure stays on, but the velocity count and the SKU hold
+are skipped. With no such state the payment is allowed, recorded as guard_unavailable. A slow guard must
+never take the shop's checkout down with it.
+
 The challenge is a demo click-through ("I'm a real shopper"): /shop/challenge issues a token with no real
 proof. The token tier is a convenience for people, not a bot barrier; a production shop would issue it only
 after a server-verified captcha.
 """
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+import structlog
 from itsdangerous import BadSignature, TimestampSigner
 from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,7 +48,10 @@ from app.config import get_settings
 from app.db.models import CheckoutAttempt, Decision, GuardMode, GuardState, MerchantSettings, Method, Outcome
 from app.guard import devices
 
+log = structlog.get_logger()
+
 CACHE_TTL_S = 2.0
+STALE_STATE_MAX_S = 600.0  # fail-open uses the last state seen if it is at most this old
 CHALLENGE_MAX_AGE_S = 600
 
 
@@ -197,3 +208,48 @@ async def check(session: AsyncSession, ctx: GuardContext) -> GuardVerdict:
     if st.mode == GuardMode.SCA_ALL and ctx.method == Method.CARD:
         return GuardVerdict(Decision.ALLOW_WITH_SCA, "sca_mode", st.incident_id)
     return GuardVerdict(Decision.ALLOW, "normal")
+
+
+def fail_open_verdict(ctx: GuardContext) -> GuardVerdict:
+    """The check could not finish in time: keep the defences this process last saw, let the rest through."""
+    st = _cache.get(ctx.shop_id)
+    if st is None or time.monotonic() - st.loaded_at > STALE_STATE_MAX_S:
+        return GuardVerdict(Decision.ALLOW, "guard_unavailable")
+    if st.kill_switch:
+        return GuardVerdict(Decision.ALLOW, "guard_disabled")
+    if ctx.fingerprint_hash in st.blocked:
+        return GuardVerdict(Decision.BLOCK, "fingerprint_blocked", st.incident_id)
+    if st.mode == GuardMode.SCA_ALL and ctx.method == Method.CARD:
+        return GuardVerdict(Decision.ALLOW_WITH_SCA, "sca_mode", st.incident_id)
+    return GuardVerdict(Decision.ALLOW, "guard_unavailable")
+
+
+async def check_within_budget(session: AsyncSession, ctx: GuardContext, *, lock: bool) -> GuardVerdict:
+    """check() (after lock_device() when `lock`) within GUARD_CHECK_BUDGET_MS, else fail_open_verdict().
+    On a timeout or database error the session is rolled back, so the caller can still record the attempt;
+    the device lock is gone with it, so parallel requests from one device are not serialised then."""
+    budget = get_settings().guard_check_budget_ms / 1000
+    started = time.monotonic()
+
+    async def guarded() -> GuardVerdict:
+        if lock:
+            await lock_device(session, ctx.shop_id, ctx.fingerprint_hash)
+        return await check(session, ctx)
+
+    try:
+        return await asyncio.wait_for(guarded(), timeout=budget)
+    except Exception as exc:  # timeout or the database failing: the checkout must go on without the guard
+        verdict = fail_open_verdict(ctx)
+        log.warning(
+            "guard_check_failed_open",
+            shop=ctx.shop_id,
+            error=type(exc).__name__,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+            decision=verdict.decision,
+            reason=verdict.reason,
+        )
+        try:
+            await session.rollback()
+        except Exception:  # the connection may be gone too; the caller's next statement gets a fresh one
+            log.warning("guard_check_rollback_failed", shop=ctx.shop_id)
+        return verdict

@@ -1,6 +1,9 @@
 """Background worker: webhook processing, the detector loop, expiring device blocks, and re-sending
 refunds left in flight (crash or lost PayPal answer) with their original PayPal-Request-Id.
 
+With SIMULATOR_ENABLED it also keeps the shared demo usable (app/simulator/janitor.py): re-seeding the
+normal history before it ages out, and standing an idle demo down to its defaults.
+
 It also beats a heartbeat (app/worker/heartbeat.py) the dashboard shows on every page.
 
 Run: `uv run python -m app.worker.main`. A Postgres advisory lock makes sure only one worker is
@@ -26,9 +29,11 @@ from app.incidents.service import IncidentService, release_assessment_claims
 from app.incidents.webhook_processor import process_pending
 from app.log_config import configure_logging
 from app.paypal.client import PayPalClient
+from app.simulator import janitor
 from app.worker import heartbeat
 
 LOCK_KEY = 0x0C6E_A12D  # arbitrary, stable advisory-lock id
+JANITOR_INTERVAL_S = 60.0
 log = structlog.get_logger()
 
 
@@ -53,6 +58,7 @@ async def run() -> None:
         await breaker.reset_until_restart()
         state: dict[str, Any] = {}
         beating = asyncio.create_task(heartbeat.run(sessions, datetime.now(UTC), state, stop))
+        next_janitor = 0.0
 
         while not stop.is_set():
             try:
@@ -68,6 +74,14 @@ async def run() -> None:
                     svc = IncidentService(s, paypal, timedelta(seconds=settings.reassess_interval_s))
                     await svc.tick(settings.shop_id)
                 state["live"] = svc.live
+                if settings.simulator_enabled and loop.time() >= next_janitor:
+                    next_janitor = loop.time() + JANITOR_INTERVAL_S
+                    async with sessions() as s:
+                        await janitor.reseed_if_stale(s, settings.shop_id, datetime.now(UTC), settings)
+                    async with sessions() as s:
+                        await janitor.restore_if_idle(
+                            s, paypal, settings.shop_id, datetime.now(UTC), settings
+                        )
                 state["last_tick_at"] = datetime.now(UTC)
             except Exception as exc:
                 log.exception("worker_tick_failed")

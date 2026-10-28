@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import CheckoutAttempt, Decision, Method, Outcome, Source, new_id
 from app.events import publish
-from app.guard.check import GuardContext, GuardVerdict, check, lock_device
+from app.guard.check import GuardContext, GuardVerdict, check_within_budget
 from app.paypal import codes, three_ds
 from app.paypal.client import PayPalClient
 from app.paypal.orders import (
@@ -161,10 +161,10 @@ async def place_order(
 ) -> CheckoutResult:
     product = PRODUCTS[req.sku]
     fp = fingerprint(req.device_id, req.user_agent)
-    # Held until the attempt row below is committed: parallel requests from one device are counted in turn.
-    await lock_device(session, req.shop_id, fp)
-    verdict: GuardVerdict = await check(
-        session, GuardContext(req.shop_id, req.sku, req.method, fp, req.challenge_token)
+    # The device lock is held until the attempt row below is committed: parallel requests from one device
+    # are counted in turn. Past the time budget the checkout goes on without the guard (fail-open).
+    verdict: GuardVerdict = await check_within_budget(
+        session, GuardContext(req.shop_id, req.sku, req.method, fp, req.challenge_token), lock=True
     )
 
     attempt = CheckoutAttempt(
