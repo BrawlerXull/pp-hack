@@ -27,7 +27,7 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
   const activeSale = form.sale_windows.find((w) => new Date(w.start) <= now && now <= new Date(w.end));
 
   async function save(next = form) {
-    const limits = [next.max_auto_refund_per_txn, next.max_auto_refund_per_incident, next.deescalate_after_min];
+    const limits = [next.max_auto_refund_per_txn, next.max_auto_refund_per_incident, next.max_auto_refund_per_day, next.deescalate_after_min];
     if (limits.some((v) => v === "" || !Number.isFinite(Number(v)) || Number(v) < 0)) {
       setError("Limits must be numbers of 0 or more.");
       return;
@@ -82,6 +82,7 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
           <div className="grid gap-4 sm:grid-cols-2">
             <NumberField label="Max auto-refund per payment" prefix="$" value={form.max_auto_refund_per_txn} onChange={(v) => set("max_auto_refund_per_txn", v)} />
             <NumberField label="Max auto-refund per incident" prefix="$" value={form.max_auto_refund_per_incident} onChange={(v) => set("max_auto_refund_per_incident", v)} />
+            <NumberField label="Max auto-refund per day (all incidents)" prefix="$" value={form.max_auto_refund_per_day} onChange={(v) => set("max_auto_refund_per_day", v)} />
             <NumberField label="Stand down after quiet for" suffix="min" value={form.deescalate_after_min} onChange={(v) => set("deescalate_after_min", v)} />
           </div>
           <p className="mt-4 text-xs text-ink-3">Anything above these limits is queued for your approval.</p>

@@ -50,6 +50,16 @@ export const fetcher = <T,>(path: string) => api<T>(path);
 
 export type Product = { sku: string; name: string; price: string; description: string };
 
+// GET /shop/config: public keys the shop page needs. turnstile_site_key is "" when the human check is a click-through.
+export type ShopConfig = {
+  paypal_client_id: string;
+  environment: "sandbox";
+  currency: string;
+  turnstile_site_key: string;
+  turnstile_test_keys: boolean;
+  contact_email: string;
+};
+
 export type Decision = "allow" | "allow_with_sca" | "challenge" | "block";
 export type Outcome =
   | "created"
@@ -300,6 +310,7 @@ export type MerchantSettings = {
   kill_switch: boolean;
   max_auto_refund_per_txn: string | number;
   max_auto_refund_per_incident: string | number;
+  max_auto_refund_per_day: string | number;
   deescalate_after_min: string | number;
   sale_windows: SaleWindow[];
 };

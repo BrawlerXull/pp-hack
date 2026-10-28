@@ -6,7 +6,7 @@ The backend has two processes:
 
 | Process | Command | Does |
 |---|---|---|
-| API | `uv run uvicorn app.main:app --port 8000` | Shop order API, guard check, PayPal webhooks, dashboard API + live stream, demo controls |
+| API | `uv run uvicorn app.main:app --port 8000 --no-proxy-headers` | Shop order API, guard check, PayPal webhooks, dashboard API + live stream, demo controls |
 | Worker | `uv run python -m app.worker.main` | Every 5 s (`DETECT_INTERVAL_S`): applies verified webhooks, expires device blocks, re-sends refunds left in flight, runs the detector and the scorecard, asks Gemini to explain (or break a tie), enforces the policy, de-escalates. Beats a heartbeat the dashboard shows as the "Detector" pill |
 
 ## How a checkout is protected
@@ -68,7 +68,7 @@ The sandbox business account must have **Advanced Credit and Debit Card Payments
 ## Running a demo
 
 ```bash
-uv run uvicorn app.main:app --port 8000 &
+uv run uvicorn app.main:app --port 8000 --no-proxy-headers &
 uv run python -m app.worker.main &
 
 curl -c /tmp/cg -X POST localhost:8000/auth/login -H 'content-type: application/json' -d '{"password":"guard-demo"}'

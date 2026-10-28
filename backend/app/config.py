@@ -61,6 +61,21 @@ class Settings(BaseSettings):
     detect_interval_s: float = 5.0
     reassess_interval_s: float = 120.0
 
+    # Proxies in front of the API that each append the address they saw to X-Forwarded-For. The client IP is
+    # the entry that many places from the right (the left-most one is whatever the client typed). 0 (the
+    # default): ignore the header and use the connection's address. Local dev must stay 0: the Next.js
+    # rewrite forwards the browser's header unchanged, so trusting it would trust what the client typed.
+    # On Render, 1: its edge appends the client address and Next passes it on to the private API. Check a
+    # deploy with GET /dashboard/network-check.
+    trusted_proxy_hops: int = 0
+
+    # Human check before a challenged checkout (Cloudflare Turnstile). The defaults are Cloudflare's public
+    # test keys: the widget always passes and says "for testing only". Empty secret: a plain click-through.
+    turnstile_site_key: str = "1x00000000000000000000AA"
+    turnstile_secret_key: str = "1x0000000000000000000000000000000AA"
+    # Shown to a shopper the guard blocked, so a false positive has somewhere to go.
+    shop_contact_email: str = "help@wickandwax.example"
+
     # The guard check gets this long before the checkout goes on without it (fail-open, app/guard/check.py).
     guard_check_budget_ms: int = 800
 

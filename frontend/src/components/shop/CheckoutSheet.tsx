@@ -19,8 +19,10 @@ import {
 import { CheckCircle2, CreditCard, Loader2, ShieldAlert, ShieldCheck, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, type CaptureResult, type CheckoutResult, type Product } from "@/lib/api";
+import useSWR from "swr";
+import { api, ApiError, fetcher, type CaptureResult, type CheckoutResult, type Product, type ShopConfig } from "@/lib/api";
 import { getDeviceId } from "@/lib/device";
+import { Turnstile } from "./Turnstile";
 
 type Phase =
   | { kind: "idle" }
@@ -169,6 +171,7 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
   const [challengeToken, setChallengeToken] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [sca, setSca] = useState(false);
+  const { data: shopConfig } = useSWR<ShopConfig>("/shop/config", fetcher);
   const [paying, setPaying] = useState(false);
   const [cardValid, setCardValid] = useState(false);
   const onValidity = useCallback((e: CardFieldsEventPayload) => setCardValid(cardFieldsValid(e)), []);
@@ -279,10 +282,13 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
     await submit(orderId); // the outcome arrives through onCardSubmitted / onCardError
   }
 
-  async function verifyHuman() {
+  async function verifyHuman(turnstileToken?: string) {
     setVerifying(true);
     try {
-      const res = await api<{ challenge_token: string }>("/shop/challenge", { method: "POST", json: { device_id: getDeviceId() } });
+      const res = await api<{ challenge_token: string }>("/shop/challenge", {
+        method: "POST",
+        json: { device_id: getDeviceId(), turnstile_token: turnstileToken ?? null },
+      });
       setChallengeToken(res.challenge_token);
       setPhase({ kind: "idle" });
     } catch {
@@ -353,13 +359,31 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
           <p className="mt-1 text-sm text-orange-900/80">
             We&apos;re seeing unusual activity on this item, so first-time shoppers are asked to confirm they&apos;re human.
           </p>
-          <button
-            onClick={verifyHuman}
-            disabled={verifying}
-            className="mt-3 inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-60"
-          >
-            {verifying && <Loader2 className="size-4 animate-spin" />} I&apos;m a real shopper
-          </button>
+          {shopConfig?.turnstile_site_key ? (
+            <div className="mt-3">
+              <Turnstile
+                siteKey={shopConfig.turnstile_site_key}
+                onToken={(token) => verifyHuman(token)}
+                onError={() => setPhase({ kind: "error", message: "The human check could not load. Please try again." })}
+              />
+              {verifying && (
+                <p className="mt-1 flex items-center gap-1.5 text-xs text-orange-900/70">
+                  <Loader2 className="size-3 animate-spin" /> Checking…
+                </p>
+              )}
+              {shopConfig.turnstile_test_keys && (
+                <p className="mt-1 text-[11px] text-orange-900/60">Demo: Cloudflare Turnstile with its test keys, so it always passes.</p>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => verifyHuman()}
+              disabled={verifying || !shopConfig}
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-2 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-60"
+            >
+              {verifying && <Loader2 className="size-4 animate-spin" />} I&apos;m a real shopper
+            </button>
+          )}
         </div>
       )}
       {challengeToken && phase.kind === "idle" && (
@@ -369,7 +393,15 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
       )}
       {phase.kind === "blocked" && (
         <p className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
-          This checkout can&apos;t be completed from this device right now. If you think this is a mistake, contact the shop.
+          This checkout can&apos;t be completed from this device right now. If you think this is a mistake,{" "}
+          {shopConfig?.contact_email ? (
+            <a className="font-medium underline" href={`mailto:${shopConfig.contact_email}?subject=Checkout%20blocked`}>
+              email us at {shopConfig.contact_email}
+            </a>
+          ) : (
+            "contact the shop"
+          )}{" "}
+          and we&apos;ll sort it out.
         </p>
       )}
       {phase.kind === "error" && (

@@ -1,9 +1,10 @@
 """Deterministic feature extraction over rolling windows of checkout attempts.
 
-Everything here is computed from our own attempt rows. IP addresses are deliberately not a feature: the
-shop's ip_hash comes from the left-most X-Forwarded-For entry (app/api/shop.client_ip), which the client
-sets freely, so "cards per IP" would be whatever the attacker wants it to be. Devices, cards and PayPal
-payers are counted separately and never mixed.
+Everything here is computed from our own attempt rows. IP addresses are not a feature here: the simulator
+has none, so the scorecard could not be tuned on them, and a network is shared by everyone behind one
+carrier NAT. The guard check uses the network (app/guard/signals.py) for one soft rule instead: many
+fresh devices with declines from one network get a human check. Devices, cards and PayPal payers are
+counted separately and never mixed.
 """
 
 import math

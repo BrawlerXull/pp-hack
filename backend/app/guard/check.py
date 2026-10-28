@@ -8,15 +8,19 @@ Decision order (first match wins):
   3. device velocity: this device made 6+ attempts or had 2+ declines in 10 min → challenge
      (a valid challenge token lets it through up to 12 attempts / 4 declines; past that → block until its
      attempts age out of the window, since another challenge could not let it through anyway)
-  4. SKU on hold + first-time fingerprint without a valid challenge token → challenge
-  5. SCA mode + card payment   → allow_with_sca (order is created with 3-D Secure SCA_ALWAYS)
-  6. otherwise                 → allow
+  4. network velocity: 6+ devices with 3+ declines from this device's network (IPv4 /24) in 10 min, and no
+     valid challenge token → challenge (a bot that rotates its device id on every request)
+  5. SKU on hold + first-time fingerprint without a valid challenge token → challenge
+  6. SCA mode + card payment   → allow_with_sca (order is created with 3-D Secure SCA_ALWAYS)
+  7. otherwise                 → allow
 
 The velocity breaker works with no incident open and no AI: it slows one device down within seconds,
-while detection needs a burst across the shop. It keys on the device fingerprint, never on the IP: the IP
-comes from X-Forwarded-For (spoofable) and is shared by every shopper behind one carrier NAT. The
-fingerprint comes from a client-supplied device id, so a bot that rotates ids escapes this check; the
-shop-wide triggers (cheap_sku_card_cycling, decline_spike) are what catch that.
+while detection needs a burst across the shop. It keys on the device: a signed cookie the shop server
+issued (app/api/shop.py), or the client's own device id when it sends no cookie. A bot that drops cookies
+and rotates ids escapes it, so the network rule (4) counts devices per network instead (app/guard/signals.py:
+the client IP counted from the right of X-Forwarded-For, so it cannot be typed in). A network is shared by
+everyone behind one carrier NAT or office, so that rule only challenges (a person passes the human check),
+and only when the network also brings several declines.
 
 Parallel requests: place_order takes lock_device() before check() and commits the attempt row (outcome
 CREATED) before calling PayPal, so N parallel requests from one device are counted one after another and
@@ -69,6 +73,16 @@ class DeviceLimits:
 DEVICE_LIMITS = DeviceLimits()
 
 
+@dataclass(frozen=True)
+class NetworkLimits:
+    window: timedelta = timedelta(minutes=10)
+    devices: int = 6
+    declines: int = 3
+
+
+NETWORK_LIMITS = NetworkLimits()
+
+
 @dataclass
 class GuardContext:
     shop_id: str
@@ -76,6 +90,7 @@ class GuardContext:
     method: str
     fingerprint_hash: str
     challenge_token: str | None = None
+    ip_net_hash: str | None = None  # app/guard/signals.py; None for callers that know no client IP
 
 
 @dataclass
@@ -174,6 +189,22 @@ async def _device_activity(
     return attempts, declines
 
 
+async def _network_activity(
+    session: AsyncSession, shop_id: str, net: str, window: timedelta
+) -> tuple[int, int]:
+    """(distinct devices, declines) from this network in the window, before this attempt."""
+    q = select(
+        func.count(func.distinct(CheckoutAttempt.fingerprint_hash)),
+        func.count().filter(CheckoutAttempt.outcome == Outcome.DECLINED),
+    ).where(
+        CheckoutAttempt.shop_id == shop_id,
+        CheckoutAttempt.ip_net_hash == net,
+        CheckoutAttempt.ts > func.now() - window,
+    )
+    devices_seen, declines = (await session.execute(q)).one()
+    return devices_seen, declines
+
+
 def device_over_limit(
     attempts: int, declines: int, has_token: bool, lim: DeviceLimits = DEVICE_LIMITS
 ) -> bool:
@@ -202,6 +233,11 @@ async def check(session: AsyncSession, ctx: GuardContext) -> GuardVerdict:
         return GuardVerdict(Decision.BLOCK, "device_velocity_limit", st.incident_id)
     if device_over_limit(attempts, declines, has_token):
         return GuardVerdict(Decision.CHALLENGE, "device_velocity", st.incident_id)
+    if ctx.ip_net_hash and not has_token:
+        lim = NETWORK_LIMITS
+        net_devices, net_declines = await _network_activity(session, ctx.shop_id, ctx.ip_net_hash, lim.window)
+        if net_devices >= lim.devices and net_declines >= lim.declines:
+            return GuardVerdict(Decision.CHALLENGE, "network_velocity", st.incident_id)
     if ctx.sku in st.held_skus and not has_token:
         if not await _is_known_customer(session, ctx.shop_id, ctx.fingerprint_hash, st.updated_at):
             return GuardVerdict(Decision.CHALLENGE, "sku_on_hold", st.incident_id)

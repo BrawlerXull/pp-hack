@@ -24,4 +24,6 @@ USER guard
 
 EXPOSE 8000
 # PORT is set by Render; 8000 locally. --proxy-headers: the shop reads the client IP behind Render's proxy.
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
+# --no-proxy-headers: uvicorn must not replace the client address with X-Forwarded-For (with '*' anyone
+# could set it); the app reads that header itself, counting TRUSTED_PROXY_HOPS from the right.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-proxy-headers"]

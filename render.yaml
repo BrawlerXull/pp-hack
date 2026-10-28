@@ -28,6 +28,10 @@ envVarGroups:
         value: gemini-3.5-flash
       - key: GEMINI_FALLBACK_MODELS
         value: gemini-2.5-flash,gemini-flash-lite-latest
+      # Render's edge appends the client address to X-Forwarded-For and the Next.js rewrite passes it on to
+      # the private API unchanged. Check it after a deploy: GET /api/dashboard/network-check (logged in).
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
       - key: AI_ENABLED
         value: "true"
       - key: SIMULATOR_ENABLED

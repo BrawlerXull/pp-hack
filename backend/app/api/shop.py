@@ -1,8 +1,17 @@
-"""The demo shop's own server (what a merchant's checkout backend would do)."""
+"""The demo shop's own server (what a merchant's checkout backend would do).
+
+Device identity: the first checkout call from a browser gets a signed cookie holding its device id, and
+every later call is keyed on the cookie, whatever device id the body claims. A bot that keeps its cookies
+can no longer rotate ids; one that drops them looks like a new device each time, which the guard's
+network rule catches (app/guard/check.py). Callers without cookies (API clients) are keyed on their id.
+"""
 
 from typing import Annotated, Literal
 
+import httpx
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from itsdangerous import BadSignature, Signer
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,13 +19,23 @@ from app.api.deps import get_paypal
 from app.config import Settings, get_settings
 from app.db.models import CheckoutAttempt, Decision
 from app.db.session import get_session
-from app.guard.check import GuardContext, check, issue_challenge_token
+from app.guard import signals
+from app.guard.check import GuardContext, check_within_budget, issue_challenge_token
 from app.paypal.client import PayPalClient
 from app.paypal.orders import generate_client_token
 from app.shop.catalog import PRODUCTS
 from app.shop.service import CheckoutRequest, CheckoutResult, capture_web_order, fingerprint, place_order
 
+log = structlog.get_logger()
 router = APIRouter(prefix="/shop", tags=["shop"])
+DEVICE_COOKIE = "cg_dev"
+DEVICE_COOKIE_MAX_AGE_S = 365 * 24 * 3600
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+TURNSTILE_TEST_SITE_KEYS = {
+    "1x00000000000000000000AA",  # always passes
+    "2x00000000000000000000AB",  # always blocks
+    "3x00000000000000000000FF",  # forces an interactive challenge
+}
 Session = Annotated[AsyncSession, Depends(get_session)]
 PayPal = Annotated[PayPalClient, Depends(get_paypal)]
 
@@ -47,11 +66,40 @@ class PrecheckIn(BaseModel):
 
 class ChallengeIn(BaseModel):
     device_id: str = Field(min_length=6, max_length=80)
+    # Cloudflare Turnstile's token from the widget; required when TURNSTILE_SECRET_KEY is set.
+    turnstile_token: str | None = Field(default=None, max_length=4096)
 
 
 def client_ip(request: Request) -> str | None:
-    fwd = request.headers.get("x-forwarded-for")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else None)
+    """Counted from the right of X-Forwarded-For (app/guard/signals.py): the left end is client-written."""
+    return signals.client_ip(
+        request.headers.get("x-forwarded-for"),
+        request.client.host if request.client else None,
+        get_settings().trusted_proxy_hops,
+    )
+
+
+def _device_signer(settings: Settings) -> Signer:
+    return Signer(settings.session_secret, salt="cg-device")
+
+
+def device_id(request: Request, response: Response, claimed: str, settings: Settings) -> str:
+    """The cookie's device id when it carries a valid one; else the claimed id, now pinned in a cookie."""
+    raw = request.cookies.get(DEVICE_COOKIE)
+    if raw:
+        try:
+            return _device_signer(settings).unsign(raw).decode()
+        except BadSignature:
+            pass
+    response.set_cookie(
+        DEVICE_COOKIE,
+        _device_signer(settings).sign(claimed).decode(),
+        max_age=DEVICE_COOKIE_MAX_AGE_S,
+        httponly=True,
+        samesite="lax",
+        secure=settings.environment == "production",
+    )
+    return claimed
 
 
 @router.get("/products")
@@ -64,8 +112,15 @@ def products() -> list[ProductOut]:
 
 @router.get("/config")
 def config(settings: Annotated[Settings, Depends(get_settings)]) -> dict:
-    # The client id is public by design (it's in every PayPal button's script URL).
-    return {"paypal_client_id": settings.paypal_client_id, "environment": "sandbox", "currency": "USD"}
+    # The client id and the Turnstile site key are public by design (they are in the page's scripts).
+    return {
+        "paypal_client_id": settings.paypal_client_id,
+        "environment": "sandbox",
+        "currency": "USD",
+        "turnstile_site_key": settings.turnstile_site_key if settings.turnstile_secret_key else "",
+        "turnstile_test_keys": settings.turnstile_site_key in TURNSTILE_TEST_SITE_KEYS,
+        "contact_email": settings.shop_contact_email,
+    }
 
 
 @router.post("/client-token")
@@ -94,7 +149,7 @@ async def create(
             shop_id=settings.shop_id,
             sku=body.sku,
             method=body.method,
-            device_id=body.device_id,
+            device_id=device_id(request, response, body.device_id, settings),
             user_agent=request.headers.get("user-agent"),
             ip=client_ip(request),
             email=body.email,
@@ -142,21 +197,56 @@ def _capture_answer(order_id: str, attempt: CheckoutAttempt | None) -> dict:
 
 
 @router.post("/challenge")
-def challenge(body: ChallengeIn, request: Request) -> dict:
-    """Human check passed in the browser → short-lived token bound to this device fingerprint."""
-    fp = fingerprint(body.device_id, request.headers.get("user-agent"))
-    return {"challenge_token": issue_challenge_token(fp), "expires_in": 600}
+async def challenge(
+    body: ChallengeIn,
+    request: Request,
+    response: Response,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict:
+    """Human check → short-lived token bound to this device fingerprint. With TURNSTILE_SECRET_KEY set (the
+    default is Cloudflare's always-pass test key) the Turnstile token is verified with Cloudflare first;
+    without one it is the old click-through, and the answer says so."""
+    verified_by = "click_through"
+    if settings.turnstile_secret_key:
+        token = body.turnstile_token
+        if not token or not await _turnstile_ok(token, client_ip(request), settings):
+            failed = {"code": "human_check_failed", "message": "The human check did not pass."}
+            raise HTTPException(403, failed)
+        test_keys = settings.turnstile_site_key in TURNSTILE_TEST_SITE_KEYS
+        verified_by = "turnstile_test" if test_keys else "turnstile"
+    device = device_id(request, response, body.device_id, settings)
+    fp = fingerprint(device, request.headers.get("user-agent"))
+    return {"challenge_token": issue_challenge_token(fp), "expires_in": 600, "verified_by": verified_by}
+
+
+async def _turnstile_ok(token: str, ip: str | None, settings: Settings) -> bool:
+    data = {"secret": settings.turnstile_secret_key, "response": token, **({"remoteip": ip} if ip else {})}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.post(TURNSTILE_VERIFY_URL, data=data)
+        ok = bool(res.json().get("success"))
+    except (httpx.HTTPError, ValueError) as exc:
+        log.warning("turnstile_verify_failed", error=type(exc).__name__)
+        return False
+    if not ok:
+        log.info("turnstile_rejected", codes=res.json().get("error-codes"))
+    return ok
 
 
 @router.post("/precheck")
 async def precheck(
     body: PrecheckIn,
     request: Request,
+    response: Response,
     session: Session,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> dict:
     """Ask the guard before showing the PayPal button, so a challenge is shown up front instead of
     after PayPal's popup has opened. Not logged as an attempt; /shop/orders enforces the same check."""
-    fp = fingerprint(body.device_id, request.headers.get("user-agent"))
-    v = await check(session, GuardContext(settings.shop_id, body.sku, body.method, fp, body.challenge_token))
+    fp = fingerprint(
+        device_id(request, response, body.device_id, settings), request.headers.get("user-agent")
+    )
+    net = signals.ip_net_hash(client_ip(request))
+    ctx = GuardContext(settings.shop_id, body.sku, body.method, fp, body.challenge_token, net)
+    v = await check_within_budget(session, ctx, lock=False)
     return {"decision": v.decision, "reason": v.reason}

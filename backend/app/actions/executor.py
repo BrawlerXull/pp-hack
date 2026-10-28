@@ -35,7 +35,12 @@ from app.policy.engine import PlannedAction
 
 log = structlog.get_logger()
 REFUND_LOOKBACK = timedelta(minutes=15)  # captures shortly before the incident opened still count
-REFUND_NOTE = "Refunded by the merchant: this payment was flagged as unauthorised card testing."
+# Shown to the cardholder by PayPal. Neutral: the card's owner is usually the victim, not the attacker.
+REFUND_NOTE = (
+    "Refunded by the merchant as a precaution after unusual activity at checkout. "
+    "If this was your purchase, please contact the shop to order again."
+)
+DAILY_CAP_WINDOW = timedelta(hours=24)
 MAX_REFUND_FAILURES = 3  # definitive PayPal refusals before a capture stops being re-tried
 SWEEP_AFTER = timedelta(minutes=5)  # well past the client's worst case (30 s timeout, 3 retries)
 MAX_SWEEPS = 6
@@ -260,6 +265,20 @@ class Executor:
         )
         return sum((Decimal(a) for a in rows.scalars() if a), Decimal("0"))
 
+    async def _refunded_last_day(self, shop_id: str) -> Decimal:
+        """Refunds across every incident in the last 24 h (executed or in flight), for the daily cap."""
+        rows = await self.s.execute(
+            select(Action.params["amount"].as_string())
+            .join(Incident, Incident.id == Action.incident_id)
+            .where(
+                Incident.shop_id == shop_id,
+                Action.type == ActionType.REFUND,
+                Action.status.in_([ActionStatus.EXECUTED, ActionStatus.IN_FLIGHT]),
+                Action.created_at > func.now() - DAILY_CAP_WINDOW,
+            )
+        )
+        return sum((Decimal(a) for a in rows.scalars() if a), Decimal("0"))
+
     async def refund_matched(self, incident: Incident, p: PlannedAction) -> list[Action]:
         """Commits after each capture. The capture row is locked and re-read first: an owner approve or
         another incident refunding the same capture waits, then sees REFUNDED; the partial unique index on
@@ -303,6 +322,7 @@ class Executor:
                 await self.s.commit()
                 continue
             total = await self._refunded_total(incident)
+            day_total = await self._refunded_last_day(incident.shop_id)
             # Passed 3-D Secure: captured under the guard's SCA_ALWAYS, or a browser card whose cardholder the
             # bank verified (liability YES) in normal mode. A bot can't pass the bank's challenge, so these
             # are never auto-refunded. POSSIBLE is not enough here: it usually means attempts processing
@@ -322,6 +342,7 @@ class Executor:
                 attempt.amount > ms.max_auto_refund_per_txn
                 or total + attempt.amount > ms.max_auto_refund_per_incident
             )
+            over_daily_cap = day_total + attempt.amount > ms.max_auto_refund_per_day
             needs_owner = p.needs_approval or not ms.autopilot  # autopilot may have been turned off since
             # The most telling reason first: the owner sees "passed 3-D Secure" or "weak match" even when
             # autopilot is off or the verdict is stale, so the warning never hides behind a generic rule.
@@ -333,6 +354,8 @@ class Executor:
                 rule = p.rule
             elif over_cap:
                 rule = "R5_over_cap_needs_owner"
+            elif over_daily_cap:
+                rule = "R5_over_daily_cap_needs_owner"
             else:
                 rule = None
             if rule is not None:

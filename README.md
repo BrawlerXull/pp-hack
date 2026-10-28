@@ -53,7 +53,7 @@ Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox*
 | Gemini calls (explanations, tie-break second opinions, report writer) | The PayPal outage scenario (injected processor errors; offline only) |
 | Postgres, worker, live dashboard (server-sent events) | 28 days of seeded "normal" history (`source=seed`) |
 | Optional alert push to Slack or ntfy (`NOTIFY_WEBHOOK_URL`) | The phone on the War Room is a mock-up of the owner's phone, showing the real alert texts |
-| | The "I'm a real shopper" challenge is a click-through. A production shop would use a server-verified captcha |
+| The human check is Cloudflare Turnstile, verified on our server with Cloudflare | It runs with Cloudflare's public test keys, so it always passes (the widget says so). Set `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` for a real one |
 
 ## PayPal APIs we call
 
@@ -131,7 +131,8 @@ Why not let the LLM decide: a Gemini call takes 3 to 25 seconds, free-tier quota
 | **R5** | Attack, confidence ≥ 0.85, outside a sale | Refund the matched attack captures. Only the scorecard on its own reaches 0.85: an AI-confirmed tie-break is capped at 0.80 |
 
 **Refund limits (R5):**
-- **Caps.** Per transaction $10 and per incident $100 by default (Settings). Above a cap, a refund waits for the owner. Autopilot off means every refund waits.
+- **Caps.** Per transaction $10, per incident $100 and per day $250 across all incidents (rolling 24 hours) by default (Settings). Above a cap, a refund waits for the owner. Autopilot off means every refund waits.
+- **Neutral note.** The refund's note to the cardholder says it was refunded as a precaution and asks them to contact the shop. It never says "card testing": the card's owner is usually the victim. A blocked shopper sees the shop's contact email (`SHOP_CONTACT_EMAIL`).
 - **Matching.** Matching is deterministic: we never take it from the AI.
   - A *strong* match (a strong device, or one already blocked as strong) can be refunded automatically.
   - A *weak* match waits for the owner's **Approve / Reject**. Weak means a flagged device, a single honest-looking decline, or only a suspect email domain.
@@ -141,7 +142,8 @@ Why not let the LLM decide: a Gemini call takes 3 to 25 seconds, free-tier quota
 - **In flight.** A refund still in flight after 5 minutes (a crash, or no answer from PayPal) is re-sent by the worker with the same `PayPal-Request-Id`, up to 6 times.
 
 **Before any incident:**
-- **Guard check.** On every checkout ([app/guard/check.py](backend/app/guard/check.py)) the guard checks the kill switch, then blocked devices, then device velocity (6+ attempts or 2+ declines in 10 minutes → challenge), then held items, then 3-D Secure mode.
+- **Guard check.** On every checkout ([app/guard/check.py](backend/app/guard/check.py)) the guard checks the kill switch, then blocked devices, then device velocity (6+ attempts or 2+ declines in 10 minutes → challenge), then network velocity (6+ devices with 3+ declines from one /24 in 10 minutes → challenge, so a bot that rotates its device id still meets the human check), then held items, then 3-D Secure mode.
+- **Device and network signals.** A browser's device id is pinned in a signed cookie on its first checkout, so a bot that keeps its cookies can't rotate ids. The client IP is read from `X-Forwarded-For` counted `TRUSTED_PROXY_HOPS` from the right (the left end is whatever the client typed) and stored only as a keyed hash, with its /24 network.
 - **Device blocks** expire after 24 hours. A device the owner unblocks is **trusted** for 30 days.
 - **Stand down.** After `deescalate_after_min` quiet minutes (10 by default) the incident closes and the checkout goes back to its state before the incident.
 
@@ -172,7 +174,7 @@ docker compose up --build
 cp .env.example .env                       # PayPal sandbox app credentials + GEMINI_API_KEY
 createdb checkout_guard && createdb checkout_guard_test
 cd backend && uv sync && uv run alembic upgrade head
-uv run uvicorn app.main:app --port 8000    # API (terminal 1)
+uv run uvicorn app.main:app --port 8000 --no-proxy-headers    # API (terminal 1)
 uv run python -m app.worker.main           # worker (terminal 2): without it nothing detects attacks
 cd ../frontend && pnpm install && pnpm dev # http://localhost:3000 (terminal 3)
 ```

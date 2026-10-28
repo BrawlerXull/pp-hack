@@ -155,6 +155,22 @@ async def summary(
     }
 
 
+@router.get("/network-check")
+def network_check(
+    request: Request, _shop: OwnerShop, settings: Annotated[Settings, Depends(get_settings)]
+) -> dict:
+    """How this deploy derives the client IP (TRUSTED_PROXY_HOPS): compare client_ip with your own address.
+    Owner-only: it echoes request headers."""
+    from app.api.shop import client_ip
+
+    return {
+        "x_forwarded_for": request.headers.get("x-forwarded-for"),
+        "peer": request.client.host if request.client else None,
+        "trusted_proxy_hops": settings.trusted_proxy_hops,
+        "client_ip": client_ip(request),
+    }
+
+
 DEMO_ACTIVITY_WINDOW = timedelta(minutes=30)
 
 

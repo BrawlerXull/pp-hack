@@ -152,6 +152,10 @@ class MerchantSettings(Base):
     kill_switch: Mapped[bool] = mapped_column(Boolean, default=False)
     max_auto_refund_per_txn: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("10.00"))
     max_auto_refund_per_incident: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=Decimal("100.00"))
+    # Rolling 24 h across incidents: several incidents in one day cannot add up to more than this.
+    max_auto_refund_per_day: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2), default=Decimal("250.00"), server_default="250.00"
+    )
     # [{"start": iso, "end": iso, "note": "..."}]: owner-announced sales
     sale_windows: Mapped[list[dict[str, Any]]] = mapped_column(JsonB, default=list)
     deescalate_after_min: Mapped[int] = mapped_column(Integer, default=10)
@@ -185,7 +189,9 @@ class CheckoutAttempt(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
     method: Mapped[str] = mapped_column(String(10))
     fingerprint_hash: Mapped[str] = mapped_column(String(64), index=True)
-    ip_hash: Mapped[str | None] = mapped_column(String(64))
+    ip_hash: Mapped[str | None] = mapped_column(String(64))  # keyed HMAC of the client IP (guard/signals.py)
+    # Keyed HMAC of the client's network (IPv4 /24, IPv6 /48): a bot rotating device ids stays on one network.
+    ip_net_hash: Mapped[str | None] = mapped_column(String(32))
     email_domain: Mapped[str | None] = mapped_column(String(255))
     payer_id_hash: Mapped[str | None] = mapped_column(String(64))
     card_bin6: Mapped[str | None] = mapped_column(String(6))
@@ -228,6 +234,8 @@ class CheckoutAttempt(Base):
         Index("ix_attempts_shop_ts", "shop_id", "ts"),
         # The guard's per-device velocity count (app/guard/check.py) on every checkout.
         Index("ix_attempts_shop_fp_ts", "shop_id", "fingerprint_hash", "ts"),
+        # The guard's per-network count (fresh devices with declines from one network).
+        Index("ix_attempts_shop_net_ts", "shop_id", "ip_net_hash", "ts"),
     )
 
 

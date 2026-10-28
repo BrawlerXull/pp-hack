@@ -34,6 +34,8 @@ class SettingsBody(BaseModel):
     kill_switch: bool
     max_auto_refund_per_txn: Decimal = Field(ge=0, le=1000)
     max_auto_refund_per_incident: Decimal = Field(ge=0, le=10000)
+    # Optional for older clients: across incidents, rolling 24 h.
+    max_auto_refund_per_day: Decimal = Field(default=Decimal("250.00"), ge=0, le=100000)
     deescalate_after_min: int = Field(ge=1, le=240)
     sale_windows: list[SaleWindow] = []
 
@@ -44,6 +46,7 @@ def _out(ms: MerchantSettings) -> SettingsBody:
         kill_switch=ms.kill_switch,
         max_auto_refund_per_txn=ms.max_auto_refund_per_txn,
         max_auto_refund_per_incident=ms.max_auto_refund_per_incident,
+        max_auto_refund_per_day=ms.max_auto_refund_per_day,
         deescalate_after_min=ms.deescalate_after_min,
         sale_windows=[SaleWindow.model_validate(w) for w in ms.sale_windows or []],
     )
@@ -68,6 +71,7 @@ async def put_settings(
     ms.kill_switch = body.kill_switch
     ms.max_auto_refund_per_txn = body.max_auto_refund_per_txn
     ms.max_auto_refund_per_incident = body.max_auto_refund_per_incident
+    ms.max_auto_refund_per_day = body.max_auto_refund_per_day
     ms.deescalate_after_min = body.deescalate_after_min
     ms.sale_windows = [w.model_dump(mode="json") for w in body.sale_windows]
     audit(session, "owner", "settings.updated", **body.model_dump(mode="json"))
