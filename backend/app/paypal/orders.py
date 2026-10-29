@@ -212,6 +212,12 @@ async def void_authorization(client: PayPalClient, authorization_id: str, reques
     )
 
 
+async def get_order_json(client: PayPalClient, order_id: str) -> tuple[int, Any]:
+    """The order as PayPal returns it (observer mode reads items, payer and card from it)."""
+    res = await client.request("GET", f"/v2/checkout/orders/{order_id}")
+    return res.status, res.json
+
+
 async def get_order(client: PayPalClient, order_id: str) -> OrderResult:
     result = parse_order(await client.request("GET", f"/v2/checkout/orders/{order_id}"))
     result.order_id = result.order_id or order_id

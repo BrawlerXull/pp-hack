@@ -3,6 +3,7 @@ through its PayPal webhooks, and an attack seen that way is detected, judged and
 
 import json
 from datetime import timedelta
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -159,3 +160,37 @@ async def test_a_demo_reset_drops_simulated_webhooks_still_queued(db):
     await reset(SHOP, db)
     left = (await db.execute(select(PayPalEvent).where(PayPalEvent.processed_at.is_(None)))).scalars().all()
     assert [e.transmission_id for e in left] == ["real-1"]  # a real PayPal event is never dropped
+
+
+async def test_a_capture_only_webhook_is_completed_by_reading_the_order_from_paypal(db, sandbox):
+    """Seen live (Oct 29): for a card captured in the same call that created the order, PayPal sent only
+    PAYMENT.CAPTURE.COMPLETED. The worker reads the merchant's own order for the item and the card."""
+    from app.incidents import observer
+    from app.paypal.orders import create_order, order_payload
+
+    payload = order_payload(sku="HOSTED-TEA", description="Tea", amount=Decimal("3.00"), custom_id="WC-1001")
+    payload["purchase_units"][0]["items"] = [{"name": "Tea", "sku": "HOSTED-TEA", "quantity": "1"}]
+    payload["payment_source"] = {
+        "card": {"number": "4012888888881881", "expiry": "2031-04", "name": "Hosted Buyer"}
+    }
+    order = await create_order(sandbox.client, payload, "ext-1")
+    sandbox.capture_out_of_band(order.order_id)
+    cap = sandbox.orders[order.order_id].capture
+    resource = {**cap, "supplementary_data": {"related_ids": {"order_id": order.order_id}}}
+    db.add(
+        PayPalEvent(
+            transmission_id="tx-real",
+            event_type="PAYMENT.CAPTURE.COMPLETED",
+            verified="SUCCESS",
+            payload={"resource": resource, "_cg": {}},
+        )
+    )
+    await db.commit()
+    await process_pending(db)
+    a = (await db.execute(select(CheckoutAttempt))).scalar_one()
+    assert (a.outcome, a.method, a.sku) == (Outcome.CAPTURED, "unknown", "price 3.00")  # no guess
+
+    assert await observer.enrich(db, sandbox.client, SHOP) == 1
+    a = (await db.execute(select(CheckoutAttempt).execution_options(populate_existing=True))).scalar_one()
+    assert (a.method, a.card_last4, a.sku) == ("card", "1881", "HOSTED-TEA")
+    assert await observer.enrich(db, sandbox.client, SHOP) == 0  # read once

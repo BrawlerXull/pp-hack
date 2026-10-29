@@ -95,6 +95,7 @@ function DeviceCell({ value }: ICellRendererParams<Attempt, string>) {
 function methodText(a: Attempt | undefined): string {
   if (!a) return "";
   if (a.method === "wallet") return "PayPal";
+  if (a.method === "unknown") return "Not known yet"; // observer mode: PayPal sent only the capture so far
   return [a.card_brand, a.card_last4].some(Boolean) ? `Card · ${[a.card_brand, a.card_last4].filter(Boolean).join(" ")}` : "Card";
 }
 

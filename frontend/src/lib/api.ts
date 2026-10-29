@@ -243,7 +243,8 @@ export type Attempt = {
   scenario: string | null;
   sku: string;
   amount: string;
-  method: "card" | "wallet";
+  // unknown: an observed payment whose order PayPal has not shown us yet (observer mode).
+  method: "card" | "wallet" | "unknown";
   fingerprint: string;
   email_domain: string | null;
   decision: Decision;

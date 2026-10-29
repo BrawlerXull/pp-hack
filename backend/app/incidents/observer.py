@@ -9,6 +9,11 @@ the reports then work exactly as for guarded checkouts:
   - order events (CHECKOUT.ORDER.APPROVED / COMPLETED) add the item, the email domain and the card's brand
     and last 4 (app/paypal/webhooks.safe_signals: kept before the buyer's data is redacted).
 
+PayPal does not always send the order event: for a card captured in the same call that created the order,
+the sandbox sends only PAYMENT.CAPTURE.COMPLETED (seen live, Oct 29). enrich() then reads the order itself
+(GET /v2/checkout/orders/{id}, the merchant's own order) for the item, the card and the buyer's domain.
+Until then the payment method is "unknown", never a guess.
+
 What observer mode cannot do is act before a payment: blocking a device, 3-D Secure, a held item and payment
 holds all need the checkout to ask the guard first (POST /v1/guard/check, or the demo shop). It also has no
 device fingerprint: each card (or PayPal payer) stands in for one, so refunds of observed payments match
@@ -85,6 +90,66 @@ def _device(signals: dict[str, Any], order_id: str | None) -> str:
     return hashlib.sha256(f"observed|{key}".encode()).hexdigest()[:32]
 
 
+def _apply_order(
+    a: CheckoutAttempt, r: dict[str, Any], signals: dict[str, Any], amount: Decimal | None
+) -> None:
+    """What the order knows: the item, the buyer's domain and the card (the capture event may come first).
+    Marks the attempt as read (order_status), so enrich() does not fetch it again."""
+    if a.sku.startswith("price ") or a.sku == "unknown":
+        a.sku = _item(r, amount or a.amount)
+    a.email_domain = a.email_domain or signals.get("email_domain")
+    a.payer_id_hash = a.payer_id_hash or signals.get("payer_id_hash")
+    if signals.get("card_last4"):
+        a.method = Method.CARD
+        a.card_brand, a.card_last4 = signals.get("card_brand"), signals.get("card_last4")
+        a.card_bin6 = a.card_bin6 or signals.get("card_bin6")
+        a.card_expiry = a.card_expiry or signals.get("card_expiry")
+    elif signals.get("payer_id_hash") and a.method == "unknown":
+        a.method = Method.WALLET
+    if a.fingerprint_hash == _device({}, a.paypal_order_id):
+        a.fingerprint_hash = _device(signals, a.paypal_order_id)  # the card or payer, now that it is known
+    a.order_status = r.get("status") or "READ"
+
+
+ENRICH_PER_PASS = 20
+
+
+async def enrich(session: AsyncSession, paypal: Any, shop_id: str) -> int:
+    """Read the order behind each live observed payment PayPal only sent a capture event for (the merchant's
+    own order, GET /v2/checkout/orders/{id}). Commits; returns how many were read."""
+    from app.paypal.orders import get_order_json
+    from app.paypal.webhooks import safe_signals
+
+    rows = (
+        (
+            await session.execute(
+                select(CheckoutAttempt)
+                .where(
+                    CheckoutAttempt.shop_id == shop_id,
+                    CheckoutAttempt.source == Source.OBSERVED,
+                    CheckoutAttempt.paypal_live.is_(True),
+                    CheckoutAttempt.order_status.is_(None),
+                    CheckoutAttempt.paypal_order_id.is_not(None),
+                )
+                .limit(ENRICH_PER_PASS)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    read = 0
+    for a in rows:
+        status, order = await get_order_json(paypal, a.paypal_order_id or "")
+        if status == 200 and isinstance(order, dict):
+            _apply_order(a, order, safe_signals({"resource": order}), a.amount)
+            read += 1
+        elif 400 <= status < 500 and status != 429:
+            a.order_status = f"UNREADABLE_{status}"  # not ours to read, or gone: do not ask again
+    if rows:
+        await session.commit()
+    return read
+
+
 async def observe(
     session: AsyncSession, ev: PayPalEvent, event_type: str, r: dict[str, Any]
 ) -> CheckoutAttempt:
@@ -110,7 +175,8 @@ async def observe(
             paypal_live=ev.verified == Verification.SUCCESS,
             sku=_item(r, amount),
             amount=amount or Decimal("0"),
-            method=Method.CARD if signals.get("card_last4") else Method.WALLET,
+            # Card or PayPal wallet: known from the order (event or enrich()), never guessed from a capture.
+            method=Method.CARD if signals.get("card_last4") else "unknown",
             fingerprint_hash=_device(signals, order_id),
             guard_decision=Decision.ALLOW,
             guard_reason="observed",  # no guard check ran: seen through PayPal's webhooks only
@@ -119,18 +185,7 @@ async def observe(
         )
         session.add(a)
     if event_type in ORDER_EVENTS:
-        # The order knows the item, the buyer's domain and the card; the capture event may have come first.
-        if a.sku.startswith("price ") or a.sku == "unknown":
-            a.sku = _item(r, amount or a.amount)
-        a.email_domain = a.email_domain or signals.get("email_domain")
-        a.payer_id_hash = a.payer_id_hash or signals.get("payer_id_hash")
-        if signals.get("card_last4"):
-            a.method = Method.CARD
-            a.card_brand, a.card_last4 = signals.get("card_brand"), signals.get("card_last4")
-            a.card_bin6 = a.card_bin6 or signals.get("card_bin6")
-            a.card_expiry = a.card_expiry or signals.get("card_expiry")
-        if a.outcome == Outcome.CREATED:
-            a.order_status = r.get("status")
+        _apply_order(a, r, signals, amount)
     elif event_type == "PAYMENT.CAPTURE.COMPLETED":
         if a.outcome != Outcome.REFUNDED:
             a.outcome, a.capture_id = Outcome.CAPTURED, r.get("id")
