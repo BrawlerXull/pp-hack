@@ -1,6 +1,6 @@
 "use client";
 
-import { Bug, CloudOff, Database, Droplets, EyeOff, Loader2, Moon, PartyPopper, Play, RotateCcw, ShieldAlert, ShoppingBag, Square, UserX, type LucideIcon } from "lucide-react";
+import { Bug, CloudOff, Database, Droplets, EyeOff, Gavel, Loader2, Moon, PartyPopper, Play, RotateCcw, ShieldAlert, ShoppingBag, Square, UserX, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
@@ -155,6 +155,15 @@ export default function LabPage() {
           </Button>
           <Button variant="secondary" size="sm" disabled={!!busy} onClick={reset}>
             <RotateCcw className="size-3.5" /> Reset demo
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!!busy}
+            title="A simulated chargeback on an attack payment: see the dispute assistant on the War Room"
+            onClick={() => act("dispute", () => api("/demo/dispute", { method: "POST" }), "Chargeback simulated: the dispute assistant opens a case in a few seconds.")}
+          >
+            <Gavel className="size-3.5" /> Simulate a chargeback
           </Button>
           {message && <span className="text-xs text-ink-3" aria-live="polite">{message}</span>}
         </div>

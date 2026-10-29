@@ -366,6 +366,33 @@ class Action(Base):
     )
 
 
+class DisputeCase(Base):
+    """A chargeback or PayPal dispute on one of our payments, and what to do about it (disputes/advisor.py):
+    fixed rules recommend accept or contest from our own records, the AI drafts the note, the owner
+    decides, and the answer goes to PayPal's Disputes API."""
+
+    __tablename__ = "dispute_cases"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # PayPal's dispute id
+    shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"), index=True)
+    attempt_id: Mapped[str] = mapped_column(String(16), index=True)
+    incident_id: Mapped[str | None] = mapped_column(String(16))  # the attack it belonged to, if any
+    reason: Mapped[str | None] = mapped_column(String(60))  # PayPal's reason, e.g. UNAUTHORISED
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    response_due: Mapped[str | None] = mapped_column(String(40))
+    # open (waiting for the owner) | accepted | contested | dismissed | failed
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    recommendation: Mapped[str] = mapped_column(String(10))  # accept | contest | review
+    rule: Mapped[str] = mapped_column(String(40))  # which fixed rule recommended it
+    evidence_type: Mapped[str | None] = mapped_column(String(40))
+    evidence: Mapped[dict[str, Any]] = mapped_column(JsonB, default=dict)  # e.g. {"refund_ids": [...]}
+    note: Mapped[str] = mapped_column(Text)
+    note_by: Mapped[str] = mapped_column(String(60))  # a Gemini model id, or "template"
+    paypal_live: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paypal_result: Mapped[str | None] = mapped_column(Text)
+
+
 class DeviceEntry(Base):
     """A blocked or owner-trusted device. Blocks expire (a reused or shared device id must not stay locked
     out for good); released_at is set when one expires, is unblocked or the guard is reset. Active means

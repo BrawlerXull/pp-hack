@@ -6,6 +6,7 @@ import Link from "next/link";
 import useSWR, { useSWRConfig } from "swr";
 import { DevicesList, useDeviceCounts } from "@/components/guard/DevicesCard";
 import { GuardSwitches } from "@/components/guard/GuardSwitches";
+import { DisputesCard } from "@/components/guard/Disputes";
 import { AlertPhone, DecisionTrace, VerdictCard } from "@/components/guard/incident";
 import { StatusHero } from "@/components/guard/StatusHero";
 import { Card, Empty, Skeleton, Stat } from "@/components/guard/ui";
@@ -136,6 +137,8 @@ export default function WarRoom() {
           <AlertPhone text={shown?.report?.alert_text} at={shown?.report?.generated_at} history={alerts} />
         </Card>
       </div>
+
+      <DisputesCard />
 
       <div className="grid gap-6 xl:grid-cols-3">
         <Card title="Guard switches" subtitle="The two an owner reaches for mid-incident" icon={ToggleRight}>

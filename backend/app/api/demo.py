@@ -4,6 +4,7 @@ Only mounted when SIMULATOR_ENABLED=true. Everything created here is tagged sour
 """
 
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
@@ -17,6 +18,8 @@ from app.api.deps import OwnerShop, get_paypal, require_simulator
 from app.db.audit import audit
 from app.db.models import (
     Action,
+    ActionStatus,
+    ActionType,
     AuditLog,
     CheckoutAttempt,
     DeviceEntry,
@@ -24,6 +27,8 @@ from app.db.models import (
     GuardState,
     Incident,
     MerchantSettings,
+    Outcome,
+    PayPalEvent,
     Report,
     Source,
 )
@@ -33,6 +38,7 @@ from app.guard import devices
 from app.guard.check import invalidate_cache
 from app.incidents.service import open_incident
 from app.paypal.client import PayPalClient
+from app.paypal.webhooks import Verification, redact, safe_signals
 from app.simulator.runner import RUNS, active_run, start_run
 from app.simulator.scenarios import OFFLINE_ONLY, SCENARIOS
 from app.simulator.seed import seed_history
@@ -165,6 +171,73 @@ def stop(run_id: str, _shop: OwnerShop) -> dict:
         raise HTTPException(404, "unknown run")
     RUNS[run_id].cancelled = True
     return {"ok": True}
+
+
+@router.post("/dispute")
+async def simulate_dispute(shop_id: OwnerShop, session: Session) -> dict:
+    """A labelled, simulated chargeback (CUSTOMER.DISPUTE.CREATED written straight into the webhook table,
+    never through the endpoint) on the most telling payment: one of an attack's captures still waiting for
+    a refund decision, else the latest capture, else the latest refund. The worker opens its case."""
+    pending_refund = (
+        select(Action.params["attempt_id"].as_string())
+        .where(Action.type == ActionType.REFUND, Action.status == ActionStatus.AWAITING_APPROVAL)
+        .scalar_subquery()
+    )
+    base = select(CheckoutAttempt).where(
+        CheckoutAttempt.shop_id == shop_id,
+        CheckoutAttempt.capture_id.is_not(None),
+        CheckoutAttempt.disputed.is_(False),
+    )
+    attempt = None
+    for q in (
+        base.where(CheckoutAttempt.id.in_(pending_refund)),
+        base.where(CheckoutAttempt.outcome == Outcome.CAPTURED),
+        base.where(CheckoutAttempt.outcome == Outcome.REFUNDED),
+    ):
+        attempt = (await session.execute(q.order_by(CheckoutAttempt.ts.desc()).limit(1))).scalar_one_or_none()
+        if attempt:
+            break
+    if attempt is None:
+        raise HTTPException(409, "no captured payment to dispute yet: run a scenario first")
+    dispute_id = f"PP-D-SIM-{uuid.uuid4().hex[:8].upper()}"
+    due = (datetime.now(UTC) + timedelta(days=10)).isoformat()
+    resource = {
+        "dispute_id": dispute_id,
+        "reason": "UNAUTHORISED",
+        "status": "WAITING_FOR_SELLER_RESPONSE",
+        "dispute_amount": {"currency_code": "USD", "value": f"{attempt.amount:.2f}"},
+        "seller_response_due_date": due,
+        "disputed_transactions": [{"seller_transaction_id": attempt.capture_id}],
+        "messages": [
+            {
+                "posted_by": "BUYER",
+                "content": "I don't recognise this charge. I have never shopped at this store.",
+            }
+        ],
+    }
+    event = {
+        "id": f"WH-SIM-{uuid.uuid4().hex[:16]}",
+        "event_type": "CUSTOMER.DISPUTE.CREATED",
+        "resource": resource,
+    }
+    session.add(
+        PayPalEvent(
+            transmission_id=f"sim-{uuid.uuid4().hex}",
+            event_id=event["id"],
+            event_type=event["event_type"],
+            resource_id=dispute_id,
+            verified=Verification.SIMULATED,
+            payload={**redact(event), "_cg": safe_signals(event)},
+        )
+    )
+    audit(session, "owner", "demo.dispute_simulated", dispute_id=dispute_id, attempt_id=attempt.id)
+    await session.commit()
+    return {
+        "dispute_id": dispute_id,
+        "attempt_id": attempt.id,
+        "capture_id": attempt.capture_id,
+        "simulated": True,
+    }
 
 
 @router.post("/seed")

@@ -91,6 +91,17 @@ Why not let the LLM decide: a Gemini call takes 3 to 25 seconds, free-tier quota
 - **Report checks.** An AI draft that writes its own digits, uses an unknown placeholder or leaves out a required one is replaced by the template.
 - **Privacy.** The AI sees aggregated features plus 20 masked rows: SKU, amount, outcome, decline code, an 8-character device prefix and the email domain (stripped to a safe character set). It never sees card numbers, names, emails or credentials.
 
+**Dispute assistant** ([app/disputes](backend/app/disputes)). When a chargeback or PayPal dispute lands on one of our payments, a case opens.
+- **Fixed rules recommend** from our own records:
+  - D1: already refunded → contest with proof of refund.
+  - D2: 3-D Secure authenticated an "unauthorised" claim → contest, since liability is the issuer's.
+  - D3: part of a confirmed attack → accept.
+  - D4: anything else → the owner reviews.
+- **Gemini reads the buyer's own messages.** It says what they claim, and flags it when that contradicts the reason they picked.
+- **Gemini drafts the note to PayPal.** Every amount, date and id comes from our records through placeholders; a draft with a number of its own falls back to the template.
+- **The owner decides** (or edits the note). Then PayPal's Disputes API is called: `accept-claim`, or `provide-evidence` with a multipart upload.
+- **Demo:** Demo lab → **Simulate a chargeback** (labelled simulated).
+
 **When Gemini is down, everything still works:**
 1. If a model fails (429 quota, 503 overload, timeout), the next one is tried. If every model fails on `GEMINI_API_KEY`, the same chain is tried on the optional `GEMINI_API_KEY_2`, which has its own breaker.
 2. A per-model **circuit breaker**, shared by the API and the worker through Postgres, pauses a failing model. It honours Gemini's `retryDelay`, pauses for an hour on a daily quota, and pauses every model until restart on a rejected key. Gemini is then retried on a 2/4/8-minute backoff; the scorecard never waits for it.

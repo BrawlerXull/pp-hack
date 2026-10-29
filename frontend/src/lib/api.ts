@@ -290,6 +290,28 @@ export type ActionRow = {
   created_at: string;
 };
 
+// A chargeback or dispute and what to do about it (app/disputes): rules recommend, the AI drafts, the owner decides.
+export type DisputeCase = {
+  id: string;
+  attempt_id: string;
+  incident_id: string | null;
+  reason: string | null;
+  amount: string;
+  response_due: string | null;
+  status: "open" | "accepted" | "contested" | "dismissed" | "failed";
+  recommendation: "accept" | "contest" | "review";
+  rule: string;
+  evidence_type: string | null;
+  buyer_says: string | null;
+  contradicts_reason: boolean;
+  note: string;
+  note_by: string;
+  paypal_live: boolean;
+  created_at: string;
+  decided_at: string | null;
+  paypal_result: string | null;
+};
+
 export type DeviceRow = { fingerprint: string; reason: string | null; incident_id: string | null; created_at: string; expires_at: string };
 export type Devices = { blocked: DeviceRow[]; trusted: DeviceRow[] };
 

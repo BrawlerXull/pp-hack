@@ -3,7 +3,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
@@ -25,6 +25,7 @@ from app.db.models import (
     AuditLog,
     CheckoutAttempt,
     DeviceListKind,
+    DisputeCase,
     GuardMode,
     GuardState,
     Incident,
@@ -38,6 +39,7 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.detection import normal
+from app.disputes.respond import case_event, respond
 from app.events import Broadcaster, publish
 from app.guard import devices
 from app.guard.check import invalidate_cache
@@ -153,6 +155,44 @@ async def summary(
         },
         "demo_activity": await demo_activity(session, now) if settings.simulator_enabled else None,
     }
+
+
+@router.get("/disputes")
+async def disputes(shop_id: OwnerShop, session: Session) -> list[dict[str, Any]]:
+    """Dispute cases (app/disputes/advisor.py): waiting for the owner first, then the latest answered."""
+    rows = (
+        await session.execute(
+            select(DisputeCase)
+            .where(DisputeCase.shop_id == shop_id)
+            .order_by((DisputeCase.status == "open").desc(), DisputeCase.created_at.desc())
+            .limit(50)
+        )
+    ).scalars()
+    return [case_event(c) for c in rows]
+
+
+class DisputeAnswerIn(BaseModel):
+    note: str | None = None  # the owner's edit of the drafted note
+
+
+@router.post("/disputes/{dispute_id}/{decision}")
+async def answer_dispute(
+    dispute_id: str,
+    decision: Literal["accept", "contest", "dismiss"],
+    shop_id: OwnerShop,
+    session: Session,
+    paypal: Annotated[PayPalClient, Depends(get_paypal)],
+    body: DisputeAnswerIn | None = None,
+) -> dict[str, Any]:
+    """The owner's answer, sent to PayPal's Disputes API (dismiss: answered in PayPal instead)."""
+    case = await session.get(DisputeCase, dispute_id, with_for_update=True, populate_existing=True)
+    if case is None or case.shop_id != shop_id:
+        raise HTTPException(404, "dispute not found")
+    if case.status != "open":
+        raise HTTPException(409, f"dispute is {case.status}")
+    await respond(session, paypal, case, decision, (body.note or "").strip() if body else None)
+    await session.commit()
+    return case_event(case)
 
 
 @router.get("/network-check")

@@ -100,6 +100,7 @@ class SandboxDouble:
     orders: dict[str, _Order] = field(default_factory=dict)
     refunds: dict[str, dict[str, Any]] = field(default_factory=dict)  # capture id → refund
     authorizations: dict[str, "_Order"] = field(default_factory=dict)  # authorization id → its order
+    dispute_answers: list[tuple[str, str, bytes]] = field(default_factory=list)  # (dispute id, verb, body)
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)  # (method, path, request id)
     bodies: list[bytes] = field(default_factory=list)  # every request body our server sent
     verify_bodies: list[dict[str, Any]] = field(default_factory=list)
@@ -346,6 +347,15 @@ class SandboxDouble:
         }
         return httpx.Response(201, json=cap)
 
+    def _dispute_answer(self, request: httpx.Request, did: str, verb: str) -> httpx.Response:
+        """accept-claim takes JSON; provide-evidence takes multipart/form-data with an `input` JSON part."""
+        if verb == "provide-evidence" and not request.headers.get("content-type", "").startswith(
+            "multipart/form-data"
+        ):
+            return self._err(415, "UNSUPPORTED_MEDIA_TYPE")
+        self.dispute_answers.append((did, verb, request.content))
+        return httpx.Response(200, json={"links": [{"rel": "self", "href": f"/v1/customer/disputes/{did}"}]})
+
     def _get_order(self, request: httpx.Request, oid: str) -> httpx.Response:
         self.calls.append((request.method, request.url.path, None))
         o = self.orders.get(oid)
@@ -406,6 +416,9 @@ class SandboxDouble:
         router.post(path__regex=r"^/v2/payments/authorizations/(?P<aid>[^/]+)/capture$").mock(
             side_effect=lambda r, aid: self._idempotent(r, self._capture_auth_route, aid=aid)
         )
+        router.post(
+            path__regex=r"^/v1/customer/disputes/(?P<did>[^/]+)/(?P<verb>accept-claim|provide-evidence)$"
+        ).mock(side_effect=lambda r, did, verb: self._idempotent(r, self._dispute_answer, did=did, verb=verb))
         router.get(path__regex=r"^/v2/checkout/orders/(?P<oid>[^/]+)$").mock(side_effect=self._get_order)
         router.post(path__regex=r"^/v2/payments/captures/(?P<cid>[^/]+)/refund$").mock(
             side_effect=lambda r, cid: self._refund_route(r, cid)

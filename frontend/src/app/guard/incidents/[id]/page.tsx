@@ -28,6 +28,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { DecisionStrip } from "@/components/guard/DecisionStrip";
+import { DisputesCard } from "@/components/guard/Disputes";
 import { AlertPhone, DecisionTrace, Markdown, VerdictCard } from "@/components/guard/incident";
 import { defencesSummary } from "@/components/guard/StatusHero";
 import { Badge, Button, Card, Empty, Skeleton } from "@/components/guard/ui";
@@ -161,6 +162,8 @@ export default function IncidentPage() {
           <AlertPhone text={inc.report?.alert_text} at={inc.report?.generated_at} history={alerts} />
         </Card>
       </div>
+
+      <DisputesCard incidentId={inc.id} />
 
       <div className="grid gap-6 xl:grid-cols-3">
         <Card title="From verdict to PayPal" subtitle="Each action and the fixed rule that allowed it" icon={ListChecks} className="xl:col-span-2">

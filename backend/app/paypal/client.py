@@ -102,8 +102,12 @@ class PayPalClient:
         headers: dict[str, str] | None = None,
         content: str | None = None,
         request_id: str | None = None,
+        files: dict[str, Any] | None = None,
     ) -> PayPalResponse:
+        """`files`: a multipart/form-data body (Disputes API provide-evidence); httpx sets its boundary."""
         req_headers = {"Content-Type": "application/json", **(headers or {})}
+        if files is not None:
+            req_headers.pop("Content-Type")
         if method.upper() == "POST":
             # Same id across retries, so PayPal treats a retried POST as the same request.
             req_headers["PayPal-Request-Id"] = (
@@ -124,6 +128,7 @@ class PayPalClient:
                     json=json,
                     params=params,
                     content=content,
+                    files=files,
                     headers={**req_headers, "Authorization": f"Bearer {token}"},
                 )
             except httpx.TransportError as exc:

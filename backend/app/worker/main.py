@@ -24,6 +24,7 @@ from app.ai import breaker
 from app.config import get_settings
 from app.db.bootstrap import ensure_shop
 from app.db.session import get_engine, get_sessionmaker
+from app.disputes import advisor
 from app.guard import devices
 from app.guard.check import invalidate_cache
 from app.incidents.service import IncidentService, release_assessment_claims
@@ -65,6 +66,8 @@ async def run() -> None:
             try:
                 async with sessions() as s:
                     await process_pending(s)
+                async with sessions() as s:
+                    await advisor.open_new_cases(s, settings.shop_id)
                 async with sessions() as s:
                     if await devices.prune_expired(s, settings.shop_id, datetime.now(UTC)):
                         invalidate_cache(settings.shop_id)  # this process only; the API filters by expiry
