@@ -23,6 +23,7 @@ from app.db.models import (
     AuditLog,
     CheckoutAttempt,
     DeviceEntry,
+    DisputeCase,
     GuardMode,
     GuardState,
     Incident,
@@ -271,10 +272,19 @@ async def reset(shop_id: OwnerShop, session: Session) -> dict:
         .values(mode=GuardMode.NORMAL, held_skus=[], set_by_incident=None)
     )
     await session.execute(delete(DeviceEntry).where(DeviceEntry.shop_id == shop_id))
+    # Dispute cases are demo data too: their payments are deleted above.
+    await session.execute(delete(DisputeCase).where(DisputeCase.shop_id == shop_id))
     await session.execute(
         update(MerchantSettings)
         .where(MerchantSettings.shop_id == shop_id)
         .values(sale_windows=[], kill_switch=False, autopilot=True)
+    )
+    # Simulated webhooks still queued (observer mode) would otherwise arrive after the reset and be
+    # counted in the next run. Real PayPal events are never touched.
+    await session.execute(
+        update(PayPalEvent)
+        .where(PayPalEvent.verified == Verification.SIMULATED, PayPalEvent.processed_at.is_(None))
+        .values(processed_at=datetime.now(UTC))
     )
     audit(session, "owner", "demo.reset")
     await publish(session, "demo.reset", {})

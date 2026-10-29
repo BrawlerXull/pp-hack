@@ -143,3 +143,19 @@ async def test_a_flash_sale_seen_through_webhooks_is_not_an_attack(db, mock_ai):
     await _observe_scenario(db, flash_sale, 60)
     incident = await IncidentService(db, None, timedelta(minutes=2)).tick(SHOP)
     assert incident is None or incident.classification != "card_testing"
+
+
+async def test_a_demo_reset_drops_simulated_webhooks_still_queued(db):
+    from app.api.demo import reset
+
+    for a in list(card_testing("offline", count=5, seed=2)):
+        await observer_feed.deliver(db, a)
+    db.add(
+        PayPalEvent(
+            transmission_id="real-1", event_type="PAYMENT.CAPTURE.COMPLETED", verified="SUCCESS", payload={}
+        )
+    )
+    await db.commit()
+    await reset(SHOP, db)
+    left = (await db.execute(select(PayPalEvent).where(PayPalEvent.processed_at.is_(None)))).scalars().all()
+    assert [e.transmission_id for e in left] == ["real-1"]  # a real PayPal event is never dropped

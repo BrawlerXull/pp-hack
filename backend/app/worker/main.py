@@ -36,6 +36,8 @@ from app.worker import heartbeat
 
 LOCK_KEY = 0x0C6E_A12D  # arbitrary, stable advisory-lock id
 JANITOR_INTERVAL_S = 60.0
+WEBHOOK_BATCH = 100  # process_pending's default batch
+WEBHOOK_BATCHES_PER_TICK = 20
 log = structlog.get_logger()
 
 
@@ -64,8 +66,11 @@ async def run() -> None:
 
         while not stop.is_set():
             try:
-                async with sessions() as s:
-                    await process_pending(s)
+                # Drain the webhook queue (bounded): an observer-mode burst can bring hundreds of events.
+                for _ in range(WEBHOOK_BATCHES_PER_TICK):
+                    async with sessions() as s:
+                        if await process_pending(s) < WEBHOOK_BATCH:
+                            break
                 async with sessions() as s:
                     await advisor.open_new_cases(s, settings.shop_id)
                 async with sessions() as s:
