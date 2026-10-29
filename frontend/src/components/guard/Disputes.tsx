@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ExternalLink, Gavel, Loader2, Scale, Sparkles, TriangleAlert } from "lucide-react";
+import { Check, ExternalLink, Loader2, Scale, Sparkles, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import { Badge, Button, Card } from "@/components/guard/ui";
@@ -39,8 +39,7 @@ export function DisputesCard({ incidentId }: { incidentId?: string }) {
   return (
     <Card
       title="Chargebacks & disputes"
-      subtitle="Fixed rules recommend from our records, the AI reads the buyer and drafts the note, you decide. PayPal's Disputes API gets the answer."
-      icon={Gavel}
+      subtitle="Rules recommend, the AI drafts, you decide"
     >
       <ul className="space-y-3">
         {open.map((c) => (
@@ -50,7 +49,7 @@ export function DisputesCard({ incidentId }: { incidentId?: string }) {
           .filter((c) => c.status !== "open" && c.status !== "failed")
           .slice(0, 5)
           .map((c) => (
-            <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-3 py-2 text-xs text-ink-2">
+            <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 text-xs text-ink-2">
               <span>
                 {money(c.amount)} · {(c.reason ?? "dispute").replace(/_/g, " ").toLowerCase()} · <code className="font-mono">{c.id}</code>
               </span>
@@ -84,12 +83,12 @@ function OpenCase({ c }: { c: DisputeCase }) {
     }
   }
   return (
-    <li className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
+    <li className="rounded-xl border border-line bg-gray-50 p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-sm font-medium text-ink-1">
             {money(c.amount)} · {(c.reason ?? "dispute").replace(/_/g, " ").toLowerCase()}
-            {!c.paypal_live && <span className="ml-2 rounded bg-violet-400/15 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200">SIM</span>}
+            {!c.paypal_live && <span className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">SIM</span>}
           </p>
           <p className="text-xs text-ink-3">
             <code className="font-mono">{c.id}</code> · opened {timeAgo(c.created_at)}
@@ -99,11 +98,11 @@ function OpenCase({ c }: { c: DisputeCase }) {
         <Badge tone={rec.tone}>{rec.label}</Badge>
       </div>
       <p className="mt-2 flex items-start gap-1.5 text-xs text-ink-2">
-        <Scale className="mt-0.5 size-3.5 shrink-0 text-sky-300" /> {RULE[c.rule] ?? c.rule}
+        <Scale className="mt-0.5 size-3.5 shrink-0 text-sky-700" /> {RULE[c.rule] ?? c.rule}
       </p>
       {c.buyer_says && (
-        <p className={`mt-1.5 flex items-start gap-1.5 text-xs ${c.contradicts_reason ? "text-amber-200" : "text-ink-2"}`}>
-          {c.contradicts_reason ? <TriangleAlert className="mt-0.5 size-3.5 shrink-0" /> : <Sparkles className="mt-0.5 size-3.5 shrink-0 text-violet-300" />}
+        <p className={`mt-1.5 flex items-start gap-1.5 text-xs ${c.contradicts_reason ? "text-amber-700" : "text-ink-2"}`}>
+          {c.contradicts_reason ? <TriangleAlert className="mt-0.5 size-3.5 shrink-0" /> : <Sparkles className="mt-0.5 size-3.5 shrink-0 text-violet-700" />}
           <span>
             <span className="text-ink-3">The buyer says (read by the AI):</span> {c.buyer_says}
           </span>
@@ -115,13 +114,13 @@ function OpenCase({ c }: { c: DisputeCase }) {
           value={note}
           onChange={(e) => setNote(e.target.value)}
           rows={3}
-          className="mt-1 w-full rounded-lg border border-white/10 bg-night-750 px-2.5 py-2 text-xs leading-relaxed text-ink-1 focus:border-guard focus:outline-none"
+          className="mt-1 w-full rounded-lg border border-line bg-white px-2.5 py-2 text-xs leading-relaxed text-ink-1 focus:border-guard focus:outline-none"
         />
       </label>
       {c.status === "failed" && (
-        <p className="mt-1 text-xs text-red-300">PayPal did not take the last answer: {c.paypal_result}. Edit and send again.</p>
+        <p className="mt-1 text-xs text-red-700">PayPal did not take the last answer: {c.paypal_result}. Edit and send again.</p>
       )}
-      {error && <p className="mt-1 text-xs text-red-300">{error}</p>}
+      {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {(["accept", "contest"] as const).map((d) => (
           <Button key={d} size="sm" variant={c.recommendation === d ? "primary" : "secondary"} disabled={!!busy} onClick={() => answer(d)}>

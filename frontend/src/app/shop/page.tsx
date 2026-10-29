@@ -56,7 +56,7 @@ export default function ShopPage() {
                   <h2 className="font-semibold">{p.name}</h2>
                   <p className="font-semibold">${p.price}</p>
                 </div>
-                <p className="mt-1 text-sm text-soot/60">{p.description}</p>
+                <p className="mt-1 text-sm text-soot/70">{p.description}</p>
                 <button
                   onClick={() => setSelected(p)}
                   className="mt-5 w-full rounded-lg bg-ember py-2.5 text-sm font-medium text-white transition hover:bg-ember-dark"

@@ -22,13 +22,13 @@ export default function IncidentsPage() {
         ) : data.length === 0 ? (
           <Empty icon={Siren}>No incidents yet. Run a simulated attack from the demo bar to see one.</Empty>
         ) : (
-          <ul className="divide-y divide-white/[0.05]">
+          <ul className="divide-y divide-line">
             {data.map((i) => {
               const tone = classificationTone(i.classification);
               const end = i.closed_at ? new Date(i.closed_at).getTime() : now;
               return (
                 <li key={i.id}>
-                  <Link href={`/guard/incidents/${i.id}`} className="group flex items-center gap-4 rounded-xl px-3 py-3.5 transition hover:bg-white/[0.03]">
+                  <Link href={`/guard/incidents/${i.id}`} className="group flex items-center gap-4 rounded-xl px-3 py-3.5 transition hover:bg-gray-50">
                     <span className={`h-10 w-1 shrink-0 rounded-full ${ACCENT[tone]} ${i.status === "open" ? "live-dot" : "opacity-60"}`} aria-hidden />
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
@@ -36,7 +36,7 @@ export default function IncidentsPage() {
                         {i.status === "open" ? <Badge tone={tone}>Active</Badge> : <Badge>Closed</Badge>}
                         {i.confidence !== null && i.ai_available && (
                           <span className="flex items-center gap-1 text-xs text-ink-3">
-                            <Sparkles className="size-3 text-violet-300" /> {Math.round(i.confidence * 100)}% sure
+                            <Sparkles className="size-3 text-violet-700" /> {Math.round(i.confidence * 100)}% sure
                           </span>
                         )}
                         {!i.ai_available && i.classification && (

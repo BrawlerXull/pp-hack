@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, ArrowRight, Ban, CircleDollarSign, ListChecks, Percent, ShieldCheck, Smartphone, Sparkles, Table2, ToggleRight, Waypoints } from "lucide-react";
+import { ArrowRight, ListChecks, Sparkles } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import useSWR, { useSWRConfig } from "swr";
@@ -38,7 +38,7 @@ export default function WarRoom() {
   if (!summary) {
     return (
       <>
-        <Skeleton className="h-[290px]" />
+        <Skeleton className="h-[240px]" />
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           {[0, 1, 2, 3].map((i) => (
             <Skeleton key={i} className="h-28" />
@@ -58,53 +58,36 @@ export default function WarRoom() {
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat
-          label="Attempts · last 5 min"
-          icon={Activity}
+          label="Attempts, last 5 min"
           value={live ? live["5m"].attempts : "–"}
           hint={live ? vsNormal(live["5m"].attempts_vs_normal, `${s.attempts} in 24 h`) : waiting}
           tone={live && (live["5m"].attempts_vs_normal ?? 0) >= 3 ? "bad" : undefined}
         />
         <Stat
-          label="Decline rate · last 15 min"
-          icon={Percent}
+          label="Decline rate, last 15 min"
           value={live ? `${Math.round(live["15m"].decline_rate * 100)}%` : "–"}
-          hint={live ? vsNormal(live["15m"].decline_rate_vs_normal, `${s.declined} declined by banks in 24 h`) : waiting}
+          hint={live ? vsNormal(live["15m"].decline_rate_vs_normal, `${s.declined} declined in 24 h`) : waiting}
           tone={live && (live["15m"].decline_rate_vs_normal ?? 0) >= 3 ? "bad" : undefined}
         />
+        <Stat label="Stopped by the guard, 15 min" value={live ? live["15m"].stopped : "–"} hint={`${s.stopped_by_guard} in 24 h`} />
         <Stat
-          label="Stopped by guard · 15 min"
-          icon={ShieldCheck}
-          value={live ? live["15m"].stopped : "–"}
-          hint={`${s.stopped_by_guard} in 24 h · blocked, human check or 3-D Secure`}
-          tone={live?.["15m"].stopped ? "good" : undefined}
-        />
-        <Stat
-          label="Refunded before dispute · 24 h"
-          icon={CircleDollarSign}
+          label="Refunded, 24 h"
           value={money(s.refunded_amount)}
-          hint={`${s.refunded} test payment${s.refunded === 1 ? "" : "s"} returned to the cardholder`}
-          tone={s.refunded ? "warn" : undefined}
+          hint={`${s.refunded} payment${s.refunded === 1 ? "" : "s"} returned before a dispute`}
         />
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-3">
-        <Card
-          title="Checkout traffic"
-          subtitle={`Last ${CHART_MINUTES} minutes in ${BUCKET_S}-second bars. Markers show when the attack was detected and when each defence fired.`}
-          icon={Waypoints}
-          className="xl:col-span-2"
-          bodyClassName="px-3 pb-3"
-        >
+      <div className="grid items-start gap-6 xl:grid-cols-3">
+        <Card title="Checkout traffic" subtitle={`Last ${CHART_MINUTES} minutes, ${BUCKET_S}-second bars`} className="xl:col-span-2" bodyClassName="px-3 pt-3 pb-2">
           <ActivityChart points={series ?? []} minutes={CHART_MINUTES} bucketS={BUCKET_S} incident={shown} />
         </Card>
         <Card
           title="Verdict"
-          subtitle="Attack, real rush or PayPal outage? The scorecard decides, the AI explains"
-          icon={Sparkles}
+          subtitle="The scorecard decides; the AI explains"
           action={
             shown && (
-              <Link href={`/guard/incidents/${shown.id}`} className="flex shrink-0 items-center gap-1 text-xs font-medium whitespace-nowrap text-guard hover:underline">
-                Full report <ArrowRight className="size-3.5" />
+              <Link href={`/guard/incidents/${shown.id}`} className="inline-flex items-center gap-1 text-[13px] font-medium whitespace-nowrap text-guard hover:underline">
+                Full report <ArrowRight className="size-3.5" aria-hidden />
               </Link>
             )
           }
@@ -113,55 +96,49 @@ export default function WarRoom() {
             <VerdictCard incident={shown} compact />
           ) : (
             <Empty icon={Sparkles}>
-              The analyst is only called when the detector sees something unusual.
-              <span className="text-xs">Start a simulation from the demo bar to watch it work.</span>
+              Nothing unusual yet.
+              <span className="text-[13px]">Run a card-testing attack from the sidebar to see a verdict.</span>
             </Empty>
           )}
         </Card>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-3">
-        <Card
-          title="From verdict to PayPal"
-          subtitle="Each action, the fixed rule that allowed it, and how PayPal carried it out"
-          icon={ListChecks}
-          className="xl:col-span-2"
-        >
+      <div className="grid items-start gap-6 xl:grid-cols-3">
+        <Card title="What Checkout Guard did" subtitle="Each action, the rule that allowed it, and the PayPal call" className="xl:col-span-2">
           {shown ? (
             <DecisionTrace incident={shown} onChange={() => mutate(`/dashboard/incidents/${shown.id}`)} />
           ) : (
             <Empty icon={ListChecks}>No incidents yet. Every defence will be listed here with its reason.</Empty>
           )}
         </Card>
-        <Card title="What the owner sees" subtitle="One calm message instead of a 3 a.m. scramble" icon={Smartphone}>
+        <Card title="Owner alert" subtitle="What the shop owner is sent">
           <AlertPhone text={shown?.report?.alert_text} at={shown?.report?.generated_at} history={alerts} />
         </Card>
       </div>
 
+      <Card title="Checkout attempts" subtitle="Every attempt the guard checked, newest first" bodyClassName="p-0">
+        <AttemptsGrid rows={attempts ?? []} />
+      </Card>
+
       <DisputesCard />
 
       <div className="grid gap-6 xl:grid-cols-3">
-        <Card title="Guard switches" subtitle="The two an owner reaches for mid-incident" icon={ToggleRight}>
+        <Card title="Guard switches">
           <GuardSwitches switches={summary.switches} />
         </Card>
         <Card
           title={`Blocked devices${devices ? ` (${devices.blocked})` : ""}`}
-          subtitle="Blocks expire after 24 h. Unblocking also trusts the device, so it isn't blocked or refunded again."
-          icon={Ban}
+          subtitle="Blocks expire after 24 h. Unblocking also trusts the device."
           className="xl:col-span-2"
-          action={devices && devices.trusted > 0 ? <span className="text-xs whitespace-nowrap text-ink-3">{devices.trusted} trusted by you</span> : undefined}
+          action={devices && devices.trusted > 0 ? <span className="text-[13px] whitespace-nowrap text-ink-3">{devices.trusted} trusted</span> : undefined}
         >
           <DevicesList />
         </Card>
       </div>
-
-      <Card title="Live checkout attempts" subtitle="Every attempt the guard checked, newest first" icon={Table2}>
-        <AttemptsGrid rows={attempts ?? []} />
-      </Card>
     </>
   );
 }
 
 function vsNormal(multiplier: number | null, fallback: string): string {
-  return multiplier !== null ? `${times(multiplier)} vs normal · ${fallback}` : fallback;
+  return multiplier ? `${times(multiplier)} normal · ${fallback}` : fallback;
 }

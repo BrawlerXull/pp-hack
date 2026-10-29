@@ -134,13 +134,13 @@ export default function InvestigatePage() {
                 <Sparkles className="size-3.5" /> Ask the Guard analyst
               </Button>
             )}
-            <div className="flex rounded-lg bg-white/[0.05] p-0.5 ring-1 ring-white/10" role="group" aria-label="Report mode">
+            <div className="flex rounded-lg bg-gray-100 p-0.5 ring-1 ring-line" role="group" aria-label="Report mode">
               {(["view", "edit"] as const).map((m) => (
                 <button
                   key={m}
                   onClick={() => setMode(m)}
                   aria-pressed={mode === m}
-                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${mode === m ? "bg-white/[0.12] text-ink-1" : "text-ink-2 hover:text-ink-1"}`}
+                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium ${mode === m ? "bg-gray-100 text-ink-1" : "text-ink-2 hover:text-ink-1"}`}
                 >
                   {m === "view" ? <Eye className="size-3.5" /> : <Pencil className="size-3.5" />} {m === "view" ? "View" : "Edit layout"}
                 </button>
@@ -161,7 +161,7 @@ export default function InvestigatePage() {
               onClick={() => selectPage(p.id)}
               aria-current={p.id === selected ? "page" : undefined}
               className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
-                p.id === selected ? "bg-guard/20 text-sky-100 ring-1 ring-guard/40" : "text-ink-2 hover:bg-white/[0.05] hover:text-ink-1"
+                p.id === selected ? "bg-guard/20 text-sky-900 ring-1 ring-guard/40" : "text-ink-2 hover:bg-gray-100 hover:text-ink-1"
               }`}
             >
               {pageTitle(p.id, i)}
@@ -190,10 +190,10 @@ export default function InvestigatePage() {
                 onClick={toggleAuto}
                 role="switch"
                 aria-checked={auto}
-                className="flex items-center gap-2 rounded-full px-2.5 py-1 text-ink-2 ring-1 ring-white/10 hover:bg-white/[0.05]"
+                className="flex items-center gap-2 rounded-full px-2.5 py-1 text-ink-2 ring-1 ring-line hover:bg-gray-100"
                 title="When an incident opens, the Guard analyst builds an investigation page for it"
               >
-                <span className={`relative h-3.5 w-6 rounded-full transition ${auto ? "bg-guard" : "bg-white/15"}`}>
+                <span className={`relative h-3.5 w-6 rounded-full transition ${auto ? "bg-guard" : "bg-gray-100"}`}>
                   <span className={`absolute top-0.5 size-2.5 rounded-full bg-white transition-all ${auto ? "left-3" : "left-0.5"}`} />
                 </span>
                 Auto-investigate new incidents
@@ -205,7 +205,7 @@ export default function InvestigatePage() {
 
       <div className="panel h-[calc(100vh-15rem)] min-h-[640px] overflow-hidden">
         {error ? (
-          <p className="p-6 text-sm text-red-300">Couldn&apos;t load the investigation data.</p>
+          <p className="p-6 text-sm text-red-700">Couldn&apos;t load the investigation data.</p>
         ) : !payload ? (
           <Skeleton className="h-full rounded-none" />
         ) : (

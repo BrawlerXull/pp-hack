@@ -14,6 +14,8 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${BACKEND_URL}/:path*` }];
   },
+  // The dev-only Next.js badge sits over the sidebar in demo recordings.
+  devIndicators: false,
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {

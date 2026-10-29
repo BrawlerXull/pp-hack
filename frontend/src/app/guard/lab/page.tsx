@@ -20,9 +20,9 @@ const ABOUT: Record<string, { title: string; text: string; icon: LucideIcon; kin
 };
 
 const KIND = {
-  attack: { badge: "bad", label: "Attack", tile: "bg-red-400/10 text-red-300" },
-  control: { badge: "info", label: "Should not trigger", tile: "bg-sky-400/10 text-sky-300" },
-  ops: { badge: "warn", label: "Not fraud", tile: "bg-amber-400/10 text-amber-300" },
+  attack: { badge: "bad", label: "Attack", tile: "bg-red-50 text-red-700" },
+  control: { badge: "info", label: "Should not trigger", tile: "bg-sky-50 text-sky-700" },
+  ops: { badge: "warn", label: "Not fraud", tile: "bg-amber-50 text-amber-700" },
 } as const;
 
 export default function LabPage() {
@@ -59,17 +59,16 @@ export default function LabPage() {
         title="Demo lab"
         subtitle={
           <>
-            Run labelled simulations against the real pipeline. <b className="text-ink-1">Offline</b> synthesises PayPal&apos;s answer (rows tagged SIM, no PayPal call).{" "}
-            <b className="text-ink-1">Live</b> sends real PayPal sandbox orders with sandbox test cards (needs card processing enabled on the sandbox app).{" "}
-            <b className="text-ink-1">Webhooks only</b> is observer mode: the attack arrives as the PayPal webhooks of a checkout that never calls the guard (a hosted
-            button or plugin), so you can see what a shop gets with no code change: detection, alerts and refunds for approval, but no blocking or 3-D Secure.
+            Run labelled simulations through the real pipeline. <b className="font-medium text-ink-1">Offline</b>: no PayPal call.{" "}
+            <b className="font-medium text-ink-1">Live sandbox</b>: real sandbox orders. <b className="font-medium text-ink-1">Webhooks only</b>: the attack arrives as PayPal
+            webhooks from a checkout that never calls the guard.
           </>
         }
       />
 
       {defencesOn && (
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.07] px-4 py-3 text-sm text-amber-100">
-          <ShieldAlert className="size-5 shrink-0 text-amber-300" />
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <ShieldAlert className="size-5 shrink-0 text-amber-700" />
           <p className="min-w-0 flex-1">
             <b>Defences from an earlier attack are still on</b>
             {summary?.open_incident && (
@@ -94,13 +93,13 @@ export default function LabPage() {
         title="Scenarios"
         action={
           <div className="flex flex-wrap items-center gap-3 text-sm">
-            <div className="flex rounded-lg bg-white/[0.05] p-0.5 ring-1 ring-white/10" role="group" aria-label="PayPal mode">
+            <div className="flex rounded-lg bg-gray-100 p-0.5 ring-1 ring-line" role="group" aria-label="PayPal mode">
               {(["offline", "live", "observer"] as const).map((m) => (
                 <button
                   key={m}
                   onClick={() => setMode(m)}
                   aria-pressed={mode === m}
-                  className={`rounded-md px-3 py-1 text-xs font-medium ${mode === m ? "bg-white/[0.12] text-ink-1" : "text-ink-2 hover:text-ink-1"}`}
+                  className={`rounded-md px-3 py-1 text-xs font-medium ${mode === m ? "bg-gray-100 text-ink-1" : "text-ink-2 hover:text-ink-1"}`}
                 >
                   {m === "offline" ? "Offline" : m === "live" ? "Live sandbox" : "Webhooks only"}
                 </button>
@@ -108,7 +107,7 @@ export default function LabPage() {
             </div>
             <label className="flex items-center gap-2 text-xs text-ink-2">
               Speed
-              <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="rounded-md border border-white/10 bg-night-750 px-2 py-1 text-ink-1">
+              <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="rounded-md border border-line bg-white px-2 py-1 text-ink-1">
                 {[1, 3, 5, 10].map((s) => (
                   <option key={s} value={s}>
                     {s}×
@@ -126,7 +125,7 @@ export default function LabPage() {
             const Icon = about.icon;
             const disabled = mode === "live" && !s.live_supported;
             return (
-              <div key={s.name} className="flex flex-col rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
+              <div key={s.name} className="flex flex-col rounded-xl border border-line bg-gray-50 p-4">
                 <div className="flex items-start justify-between gap-2">
                   <span className={`flex size-9 items-center justify-center rounded-lg ${kind.tile}`}>
                     <Icon className="size-4" />
@@ -149,7 +148,7 @@ export default function LabPage() {
             );
           })}
         </div>
-        <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-4">
+        <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-4">
           <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => act("seed", () => api("/demo/seed?days=28", { method: "POST" }), "Seeded 28 days of normal history.")}>
             <Database className="size-3.5" /> Seed 28 days of normal history
           </Button>
@@ -173,7 +172,7 @@ export default function LabPage() {
         {!runs?.length ? (
           <Empty>No runs yet.</Empty>
         ) : (
-          <ul className="-my-2 divide-y divide-white/[0.05]">
+          <ul className="-my-2 divide-y divide-line">
             {runs.map((r) => {
               const pct = r.total ? (r.done / r.total) * 100 : 0;
               return (
@@ -181,7 +180,7 @@ export default function LabPage() {
                   <div className="flex flex-wrap items-center gap-3">
                   <span className="w-40 font-medium text-ink-1">{ABOUT[r.scenario]?.title ?? r.scenario.replace(/_/g, " ")}</span>
                   <Badge tone={r.mode === "live" ? "info" : "neutral"}>{r.mode}</Badge>
-                  <div className="h-1.5 w-32 overflow-hidden rounded-full bg-white/[0.08]">
+                  <div className="h-1.5 w-32 overflow-hidden rounded-full bg-gray-100">
                     <div className="h-full rounded-full bg-violet-400" style={{ width: `${pct}%` }} />
                   </div>
                   <span className="text-ink-2 tabular-nums">
@@ -195,7 +194,7 @@ export default function LabPage() {
                       </span>
                     ))}
                   </span>
-                  <span className="ml-auto text-xs text-ink-3">{r.error ? <span className="text-red-300">{r.error}</span> : r.finished_at ? `done ${timeAgo(r.finished_at)}` : "running"}</span>
+                  <span className="ml-auto text-xs text-ink-3">{r.error ? <span className="text-red-700">{r.error}</span> : r.finished_at ? `done ${timeAgo(r.finished_at)}` : "running"}</span>
                   {!r.finished_at && (
                     <Button variant="ghost" size="sm" aria-label={`Stop ${r.scenario}`} onClick={() => act(`stop-${r.run_id}`, () => api(`/demo/runs/${r.run_id}/stop`, { method: "POST" }), "Stopped.")}>
                       <Square className="size-3.5" />
@@ -237,7 +236,7 @@ function RunNote({ run: r }: { run: SimRun }) {
         </>
       )}
       {ctx.defences_active && (
-        <span className="text-amber-300">
+        <span className="text-amber-700">
           {" · "}started with defences already on ({describeDefences(ctx)})
         </span>
       )}

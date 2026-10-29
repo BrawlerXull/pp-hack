@@ -18,14 +18,14 @@ export function useDeviceCounts() {
 export function DevicesList() {
   const { mutate } = useSWRConfig();
   const { data } = useSWR<Devices>("/dashboard/devices", { refreshInterval: 15_000 });
-  if (!data) return <div className="h-16 animate-pulse rounded-xl bg-white/[0.04]" />;
+  if (!data) return <div className="h-16 animate-pulse rounded-xl bg-gray-50" />;
   if (data.blocked.length === 0 && data.trusted.length === 0) return <Empty>No devices blocked.</Empty>;
   const refresh = () => {
     mutate("/dashboard/devices");
     mutate("/dashboard/summary");
   };
   return (
-    <ul className="divide-y divide-white/[0.05]">
+    <ul className="divide-y divide-line">
       {data.blocked.map((d) => (
         <DeviceItem key={`b-${d.fingerprint}`} device={d} blocked onChange={refresh} />
       ))}
@@ -64,13 +64,13 @@ function DeviceItem({ device, blocked = false, onChange }: { device: DeviceRow; 
           {device.incident_id && (
             <>
               {" · "}
-              <Link href={`/guard/incidents/${device.incident_id}`} className="text-guard hover:underline">
+              <Link href={`/guard/incidents/${device.incident_id}`} className="text-guard underline underline-offset-2">
                 incident
               </Link>
             </>
           )}
         </p>
-        {error && <p className="text-xs text-red-300">{error}</p>}
+        {error && <p className="text-xs text-red-700">{error}</p>}
       </div>
       {blocked && (
         <Button variant="secondary" size="sm" disabled={busy} onClick={unblock}>

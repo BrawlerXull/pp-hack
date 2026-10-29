@@ -116,7 +116,7 @@ export function CheckoutSheet({
       >
         <div className="flex items-center justify-between border-b border-wax px-6 py-4">
           <h2 className="text-lg font-semibold text-soot">Checkout</h2>
-          <button onClick={onClose} className="rounded-full p-1.5 text-soot/60 hover:bg-wax" aria-label="Close">
+          <button onClick={onClose} className="rounded-full p-1.5 text-soot/70 hover:bg-wax" aria-label="Close">
             <X className="size-5" />
           </button>
         </div>
@@ -125,12 +125,12 @@ export function CheckoutSheet({
             <ProductArt sku={product.sku} className="size-16 shrink-0 rounded-lg" />
             <div className="min-w-0 flex-1">
               <p className="font-medium text-soot">{product.name}</p>
-              <p className="text-sm text-soot/60">{product.description}</p>
+              <p className="text-sm text-soot/70">{product.description}</p>
             </div>
             <p className="text-lg font-semibold text-soot">${product.price}</p>
           </div>
           {clientId && clientToken === undefined ? (
-            <p className="flex items-center gap-2 text-sm text-soot/60">
+            <p className="flex items-center gap-2 text-sm text-soot/70">
               <Loader2 className="size-4 animate-spin" /> Loading payment options…
             </p>
           ) : clientId && clientToken ? (
@@ -155,7 +155,7 @@ export function CheckoutSheet({
               </Link>
             </div>
           ) : (
-            <p className="flex items-center gap-2 text-sm text-soot/60">
+            <p className="flex items-center gap-2 text-sm text-soot/70">
               <Loader2 className="size-4 animate-spin" /> Loading payment options…
             </p>
           )}
@@ -320,7 +320,7 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
       <div className="rounded-xl bg-white p-6 text-center ring-1 ring-wax">
         <CheckCircle2 className="mx-auto size-10 text-green-600" />
         <p className="mt-3 text-lg font-semibold text-soot">Thank you! Your order is confirmed.</p>
-        <p className="mt-1 text-sm text-soot/60">PayPal order {phase.orderId}</p>
+        <p className="mt-1 text-sm text-soot/70">PayPal order {phase.orderId}</p>
         {phase.captureId && <p className="text-xs text-soot/50">Capture {phase.captureId}</p>}
       </div>
     );
@@ -360,7 +360,7 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
               setPhase({ kind: "idle" }); // the precheck for the new method re-asks the guard
             }}
             className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition ${
-              method === value ? "bg-white text-soot shadow-sm" : "text-soot/60 hover:text-soot"
+              method === value ? "bg-white text-soot shadow-sm" : "text-soot/70 hover:text-soot"
             }`}
           >
             {value === "card" && <CreditCard className="size-4" />} {label}
@@ -427,7 +427,7 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
         </p>
       )}
       {sca && method === "card" && (
-        <p className="flex items-start gap-2 text-xs text-soot/60">
+        <p className="flex items-start gap-2 text-xs text-soot/70">
           <ShieldCheck className="mt-0.5 size-3.5 shrink-0" /> Extra protection is on: your bank will ask you to verify this
           card (3-D Secure).
         </p>
@@ -435,7 +435,7 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
 
       <div className="min-h-12">
         {loadingStatus === INSTANCE_LOADING_STATE.PENDING && (
-          <p className="flex items-center gap-2 text-sm text-soot/60">
+          <p className="flex items-center gap-2 text-sm text-soot/70">
             <Loader2 className="size-4 animate-spin" /> Loading PayPal…
           </p>
         )}
@@ -536,7 +536,7 @@ function CardForm({
         {paying && <Loader2 className="size-4 animate-spin" />} {paying ? "Processing…" : `Pay $${price}`}
       </button>
       {!valid && !paying && (
-        <p className="text-center text-xs text-soot/60">Enter the card number, expiry date and CVV to pay.</p>
+        <p className="text-center text-xs text-soot/70">Enter the card number, expiry date and CVV to pay.</p>
       )}
     </div>
   );
@@ -560,7 +560,7 @@ function SandboxCards() {
           </li>
         ))}
       </ul>
-      <p className="mt-2 text-soot/60">Any future expiry date and any 3-digit CVV. For the bank&apos;s test page, follow its on-screen instructions.</p>
+      <p className="mt-2 text-soot/70">Any future expiry date and any 3-digit CVV. For the bank&apos;s test page, follow its on-screen instructions.</p>
     </details>
   );
 }

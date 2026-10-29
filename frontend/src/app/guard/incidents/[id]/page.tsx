@@ -111,7 +111,7 @@ export default function IncidentPage() {
   return (
     <>
       <div className="flex flex-wrap items-start gap-4">
-        <Link href="/guard/incidents" className="mt-1 rounded-lg p-1.5 text-ink-3 hover:bg-white/[0.06] hover:text-ink-1" aria-label="Back to incidents">
+        <Link href="/guard/incidents" className="mt-1 rounded-lg p-1.5 text-ink-3 hover:bg-gray-100 hover:text-ink-1" aria-label="Back to incidents">
           <ArrowLeft className="size-5" />
         </Link>
         <div className="min-w-0 flex-1">
@@ -128,7 +128,7 @@ export default function IncidentPage() {
         <div className="flex flex-wrap gap-2">
           <Link
             href={`/guard/investigate?incident=${encodeURIComponent(inc.id)}`}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-guard px-3.5 py-2 text-sm font-medium text-white shadow-[0_8px_24px_-8px_rgb(76_141_255/0.6)] hover:bg-guard-dark"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-guard px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-guard-dark"
           >
             <Telescope className="size-4" /> Investigate in Studio
           </Link>
@@ -142,7 +142,7 @@ export default function IncidentPage() {
           )}
         </div>
       </div>
-      {error && <p className="rounded-lg bg-amber-400/10 px-3 py-2 text-sm text-amber-200">{error}</p>}
+      {error && <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">{error}</p>}
 
       <Card title="How Checkout Guard decided" subtitle="Detect, judge, decide: every step from our records, none of it the AI's own claim" icon={Scale}>
         <DecisionStrip incident={inc} />
@@ -179,7 +179,7 @@ export default function IncidentPage() {
               <dt className="text-xs text-ink-3">Suspicious devices ({sig.fingerprints?.length ?? 0})</dt>
               <dd className="mt-1.5 flex flex-wrap gap-1.5">
                 {(sig.fingerprints ?? []).slice(0, 12).map((f) => (
-                  <code key={f} className="rounded bg-white/[0.05] px-1.5 py-0.5 font-mono text-[11px] text-ink-2">
+                  <code key={f} className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-ink-2">
                     {f.slice(0, 8)}
                   </code>
                 ))}
@@ -191,7 +191,7 @@ export default function IncidentPage() {
               <dt className="text-xs text-ink-3">Never-seen email domains ({sig.new_email_domains?.length ?? 0})</dt>
               <dd className="mt-1.5 flex flex-wrap gap-1.5">
                 {(sig.new_email_domains ?? []).slice(0, 10).map((d) => (
-                  <span key={d} className="rounded-full bg-white/[0.05] px-2 py-0.5 text-xs text-ink-2">
+                  <span key={d} className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-ink-2">
                     {d}
                   </span>
                 ))}
@@ -203,7 +203,7 @@ export default function IncidentPage() {
       </div>
 
       <section className="panel">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-4 pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 pt-3">
           <div role="tablist" aria-label="Incident documents" className="flex gap-1">
             {TABS.map((t) => (
               <button
@@ -229,7 +229,7 @@ export default function IncidentPage() {
               <a
                 href={downloadUrl}
                 download={`checkout-guard-incident-${inc.id}.md`}
-                className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-2 hover:bg-white/[0.06] hover:text-ink-1"
+                className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-2 hover:bg-gray-100 hover:text-ink-1"
               >
                 <Download className="size-3.5" /> Download
               </a>
@@ -241,7 +241,7 @@ export default function IncidentPage() {
           {tab === "evidence" && (evidence ? <Markdown>{evidence}</Markdown> : <p className="text-sm text-ink-3">No evidence pack yet.</p>)}
           {tab === "timeline" && <Timeline items={inc.timeline} />}
           {inc.report?.model_id && tab !== "timeline" && (
-            <p className="mt-5 border-t border-white/[0.06] pt-3 text-xs text-ink-3">
+            <p className="mt-5 border-t border-line pt-3 text-xs text-ink-3">
               Worded by {inc.report.model_id === "template" ? "a fixed template (AI unavailable)" : inc.report.model_id}. Every number comes from Checkout Guard&apos;s
               records, not the AI.
             </p>
@@ -253,12 +253,12 @@ export default function IncidentPage() {
 }
 
 const ACTOR: Record<string, { icon: LucideIcon; color: string; label: string }> = {
-  detector: { icon: Eye, color: "text-sky-300 bg-sky-400/10", label: "Detector" },
-  ai: { icon: Sparkles, color: "text-violet-300 bg-violet-400/10", label: "AI" },
-  policy: { icon: Gavel, color: "text-amber-300 bg-amber-400/10", label: "Policy" },
-  executor: { icon: Zap, color: "text-emerald-300 bg-emerald-400/10", label: "Executor" },
-  owner: { icon: User, color: "text-pink-300 bg-pink-400/10", label: "Owner" },
-  system: { icon: Settings2, color: "text-ink-2 bg-white/[0.05]", label: "System" },
+  detector: { icon: Eye, color: "text-sky-700 bg-sky-50", label: "Detector" },
+  ai: { icon: Sparkles, color: "text-violet-700 bg-violet-50", label: "AI" },
+  policy: { icon: Gavel, color: "text-amber-700 bg-amber-50", label: "Policy" },
+  executor: { icon: Zap, color: "text-emerald-700 bg-emerald-50", label: "Executor" },
+  owner: { icon: User, color: "text-pink-700 bg-pink-50", label: "Owner" },
+  system: { icon: Settings2, color: "text-ink-2 bg-gray-100", label: "System" },
 };
 
 const EVENT_LABEL: Record<string, string> = {
@@ -291,7 +291,7 @@ function summarize(data: Record<string, unknown>): string {
 function Timeline({ items }: { items: IncidentDetail["timeline"] }) {
   if (!items.length) return <p className="text-sm text-ink-3">No events yet.</p>;
   return (
-    <ol className="relative space-y-3 before:absolute before:top-2 before:bottom-2 before:left-[0.95rem] before:w-px before:bg-white/[0.08]">
+    <ol className="relative space-y-3 before:absolute before:top-2 before:bottom-2 before:left-[0.95rem] before:w-px before:bg-gray-100">
       {items.map((t, i) => {
         const a = ACTOR[t.actor] ?? ACTOR.system;
         const Icon = a.icon;

@@ -68,17 +68,17 @@ export const OUTCOME_META: Record<Outcome, { label: string; tone: Tone; color: s
   sca_required: { label: "3-D Secure", tone: "info", color: "var(--color-series-stopped)" },
   refunded: { label: "Refunded", tone: "info", color: "var(--color-series-refunded)" },
   sca_failed: { label: "3-D Secure failed", tone: "bad", color: "var(--color-series-stopped)" },
-  authorized: { label: "Held: approved, not settled", tone: "info", color: "var(--color-series-paid)" },
-  voided: { label: "Voided: never charged", tone: "good", color: "var(--color-series-refunded)" },
+  authorized: { label: "Held", tone: "info", color: "var(--color-series-paid)" },
+  voided: { label: "Voided", tone: "good", color: "var(--color-series-refunded)" },
 };
 
-/** The activity chart folds the outcomes into five stories, in validated palette order. */
+/** The activity chart folds the outcomes into five stories, in validated palette order (light mode, globals.css). */
 export const SERIES = [
-  { key: "paid", label: "Paid", color: "#3987e5", outcomes: ["captured", "authorized"] },
-  { key: "declined", label: "Declined by bank", color: "#d95926", outcomes: ["declined"] },
-  { key: "stopped", label: "Stopped by Checkout Guard", color: "#199e70", outcomes: ["blocked", "challenged", "sca_required", "sca_failed"] },
-  { key: "refunded", label: "Refunded or voided before dispute", color: "#c98500", outcomes: ["refunded", "voided"] },
-  { key: "error", label: "PayPal error", color: "#9085e9", outcomes: ["error"] },
+  { key: "paid", label: "Paid", color: "#2a78d6", outcomes: ["captured", "authorized"] },
+  { key: "declined", label: "Declined", color: "#eb6834", outcomes: ["declined"] },
+  { key: "stopped", label: "Stopped by guard", color: "#1baf7a", outcomes: ["blocked", "challenged", "sca_required", "sca_failed"] },
+  { key: "refunded", label: "Refunded or voided", color: "#eda100", outcomes: ["refunded", "voided"] },
+  { key: "error", label: "PayPal error", color: "#6250d6", outcomes: ["error"] },
 ] as const satisfies readonly { key: string; label: string; color: string; outcomes: readonly Outcome[] }[];
 
 export const DECISION_META: Record<Decision, { label: string; tone: Tone }> = {

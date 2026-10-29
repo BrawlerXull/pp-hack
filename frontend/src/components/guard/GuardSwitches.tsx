@@ -51,7 +51,7 @@ export function GuardSwitches({ switches }: { switches: Summary["switches"] }) {
         return (
           <div key={key} className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <p className={`text-sm font-medium ${danger ? "text-red-300" : "text-ink-1"}`}>{COPY[key].label}</p>
+              <p className={`text-sm font-medium ${danger ? "text-red-700" : "text-ink-1"}`}>{COPY[key].label}</p>
               <p className="text-xs text-ink-3">{on ? COPY[key].on : COPY[key].off}</p>
             </div>
             <button
@@ -62,7 +62,7 @@ export function GuardSwitches({ switches }: { switches: Summary["switches"] }) {
               disabled={busy !== null}
               onClick={() => flip(key)}
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50 ${
-                on ? (key === "kill_switch" ? "bg-red-500" : "bg-guard") : "bg-white/15"
+                on ? (key === "kill_switch" ? "bg-red-500" : "bg-guard") : "bg-gray-100"
               }`}
             >
               <span className={`inline-block size-5 rounded-full bg-white shadow transition ${on ? "translate-x-5" : "translate-x-0.5"}`} />
@@ -70,7 +70,7 @@ export function GuardSwitches({ switches }: { switches: Summary["switches"] }) {
           </div>
         );
       })}
-      {error && <p className="text-xs text-red-300">{error}</p>}
+      {error && <p className="text-xs text-red-700">{error}</p>}
     </div>
   );
 }

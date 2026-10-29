@@ -1,27 +1,28 @@
-// AG Studio in the night console: the same surfaces, ink and validated chart palette as the War Room
+// AG Studio in the app's light theme: the same surfaces, ink and validated chart palette as the War Room
 // (src/app/globals.css), through Studio's own theming API, so its grids, charts and panels match the app.
+// (The constant keeps its old name, NIGHT, so the parameters below read the same.)
 
 import { studioTheme } from "ag-studio";
 
 const NIGHT = {
-  page: "#04070e",
-  canvas: "#070c18",
-  surface: "#0e1628",
-  raised: "#121c33",
-  border: "rgba(255,255,255,0.08)",
-  gridline: "rgba(255,255,255,0.06)",
-  ink: "#e7ecf6",
-  ink2: "#a9b3c7",
-  muted: "#7f8aa3",
-  accent: "#4c8dff",
-  highlight: "rgba(76,141,255,0.12)",
-  font: "var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif",
+  page: "#f5f6f8",
+  canvas: "#f5f6f8",
+  surface: "#ffffff",
+  raised: "#f9fafb",
+  border: "#e4e7ec",
+  gridline: "#eef0f3",
+  ink: "#101828",
+  ink2: "#344054",
+  muted: "#5d6b82",
+  accent: "#0070e0",
+  highlight: "#eaf2fe",
+  font: "Geist, 'Geist Fallback', ui-sans-serif, system-ui, sans-serif",
 };
 
 // Studio colours legend entries in alphabetical order of the values present. The first five follow the Result
 // groups alphabetically (Declined by bank, Paid, Refunded, Stopped by guard, Unavailable (PayPal error)) in their
-// War Room colours; this order is validated for colour-blind separation and contrast on the card surface.
-const PALETTE = ["#d95926", "#3987e5", "#c98500", "#199e70", "#9085e9", "#d55181", "#e66767", "#008300"];
+// War Room colours; this order is validated (dataviz validator, light, surface #ffffff) for colour-blind separation.
+const PALETTE = ["#eb6834", "#2a78d6", "#eda100", "#1baf7a", "#6250d6", "#e87ba4", "#e34948", "#008300"];
 
 const line = (color: string) => ({ width: 1, color });
 
@@ -91,8 +92,8 @@ export const nightStudioTheme = studioTheme.withParams({
   gridCellTextColor: NIGHT.ink,
   gridHeaderBackgroundColor: NIGHT.raised,
   gridHeaderTextColor: NIGHT.ink2,
-  gridHeaderFontWeight: 500,
-  gridHeaderFontSize: 12,
+  gridHeaderFontWeight: 600,
+  gridHeaderFontSize: 13,
   gridRowHeight: 36,
   gridRowBorder: line(NIGHT.gridline),
   gridHeaderRowBorder: line(NIGHT.border),

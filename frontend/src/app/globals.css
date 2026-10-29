@@ -19,27 +19,33 @@
   --color-ember-dark: #8a3f06;
   --color-soot: #2b2118;
 
-  /* Checkout Guard: the night console */
-  --color-guard: #4c8dff;
-  --color-guard-dark: #2f6fe8;
-  --color-night-950: #04070e;
-  --color-night-900: #070c18;
-  --color-night-850: #0a1120;
-  --color-night-800: #0e1628; /* card + chart surface (chart palette validated against it) */
-  --color-night-750: #121c33;
-  --color-night-700: #18243f;
-  --color-night-600: #233254;
-  --color-ink-1: #e7ecf6; /* primary text */
-  --color-ink-2: #a9b3c7; /* secondary text */
-  --color-ink-3: #7f8aa3; /* muted text, 4.5:1 on night-800 */
-  --color-ink: #0f172a;
+  /* Checkout Guard: light, PayPal-like. One accent (blue); colour otherwise only for status. */
+  --color-guard: #0070e0; /* PayPal blue: primary actions, links, focus (4.7:1 on white) */
+  --color-guard-dark: #005ab4;
+  --color-brand: #003087; /* PayPal navy: logo mark */
+  /* Legacy names kept so every page switches together: "night" surfaces are now the light ones. */
+  --color-night-950: #f5f6f8; /* page canvas */
+  --color-night-900: #ffffff; /* header / sidebar */
+  --color-night-850: #f9fafb;
+  --color-night-800: #ffffff; /* card + chart surface (chart palette validated against white) */
+  --color-night-750: #ffffff; /* inputs */
+  --color-night-700: #f2f4f7;
+  --color-night-600: #e4e7ec;
+  --color-line: #e4e7ec; /* borders, dividers */
+  --color-line-strong: #d0d5dd;
+  --color-ink-1: #101828; /* primary text, 18:1 */
+  --color-ink-2: #344054; /* secondary text, 10:1 */
+  --color-ink-3: #5d6b82; /* muted text, 5.4:1 on white: never below 12px */
+  --color-ink: #101828;
 
-  /* Chart series (dataviz validated: dark mode, surface #0e1628, adjacent pairs in this order) */
-  --color-series-paid: #3987e5;
-  --color-series-declined: #d95926;
-  --color-series-stopped: #199e70;
-  --color-series-refunded: #c98500;
-  --color-series-error: #9085e9;
+  /* Chart series (dataviz validator, light mode, surface #ffffff, stacking order paid → error):
+     worst adjacent CVD ΔE 9.1, normal-vision ΔE 22.9. Aqua and yellow are under 3:1 on white, so the
+     chart always has a visible legend and the attempts table is its table view. */
+  --color-series-paid: #2a78d6;
+  --color-series-declined: #eb6834;
+  --color-series-stopped: #1baf7a;
+  --color-series-refunded: #eda100;
+  --color-series-error: #6250d6;
 }
 
 body {
@@ -48,41 +54,45 @@ body {
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
-/* ---- Night console ------------------------------------------------------------------------- */
+/* ---- App surfaces ---------------------------------------------------------------------------- */
 
 .night {
-  color-scheme: dark;
+  color-scheme: light;
   background-color: var(--color-night-950);
-  background-image:
-    radial-gradient(1200px 600px at 12% -10%, rgb(76 141 255 / 0.10), transparent 60%),
-    radial-gradient(900px 500px at 100% 0%, rgb(25 158 112 / 0.06), transparent 60%);
-  background-attachment: fixed;
   color: var(--color-ink-1);
 }
 
-.night ::selection { background: rgb(76 141 255 / 0.35); }
+.night ::selection { background: rgb(0 112 224 / 0.18); }
 
 .panel {
-  border-radius: 1rem;
-  border: 1px solid rgb(255 255 255 / 0.07);
-  background: linear-gradient(180deg, rgb(255 255 255 / 0.025), transparent 40%), var(--color-night-800);
-  box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.04) inset, 0 20px 40px -24px rgb(0 0 0 / 0.6);
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-line);
+  background: #ffffff;
+  box-shadow: 0 1px 2px 0 rgb(16 24 40 / 0.04);
 }
 
-.hairline { border-color: rgb(255 255 255 / 0.07); }
+.hairline { border-color: var(--color-line); }
 
-/* Status hero glow per state */
-.hero-glow-critical { box-shadow: 0 0 0 1px rgb(248 113 113 / 0.35), 0 30px 80px -30px rgb(239 68 68 / 0.45); }
-.hero-glow-good { box-shadow: 0 0 0 1px rgb(52 211 153 / 0.18), 0 30px 80px -40px rgb(16 185 129 / 0.35); }
-.hero-glow-warn { box-shadow: 0 0 0 1px rgb(251 191 36 / 0.25), 0 30px 80px -40px rgb(245 158 11 / 0.35); }
-.hero-glow-info { box-shadow: 0 0 0 1px rgb(96 165 250 / 0.25), 0 30px 80px -40px rgb(59 130 246 / 0.4); }
-
-@keyframes pulse-ring {
-  0% { box-shadow: 0 0 0 0 rgb(239 68 68 / 0.55); }
-  70% { box-shadow: 0 0 0 14px rgb(239 68 68 / 0); }
-  100% { box-shadow: 0 0 0 0 rgb(239 68 68 / 0); }
+/* One visible focus style everywhere (keyboard users, and judges navigating with Tab). */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-guard);
+  outline-offset: 2px;
+  border-radius: 0.375rem;
 }
-.pulse-danger { animation: pulse-ring 1.6s ease-out infinite; }
+
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -3rem;
+  z-index: 100;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--color-guard);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.skip-link:focus { top: 0.75rem; }
 
 @keyframes live-dot {
   0%, 100% { opacity: 1; }
@@ -90,35 +100,23 @@ body {
 }
 .live-dot { animation: live-dot 1.6s ease-in-out infinite; }
 
-@keyframes sweep {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(100%); }
-}
-.scan::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent);
-  animation: sweep 2.4s linear infinite;
-}
-
 @keyframes rise {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
-.rise { animation: rise 0.45s ease-out both; }
+.rise { animation: rise 0.3s ease-out both; }
 
 /* AG Grid rows (classes set by rowClassRules in AttemptsGrid) */
 .cg-row-stopped { box-shadow: inset 3px 0 0 0 var(--color-series-stopped); }
 .cg-row-refunded { box-shadow: inset 3px 0 0 0 var(--color-series-refunded); }
 @keyframes row-arrive {
-  from { background-color: rgb(76 141 255 / 0.22); }
+  from { background-color: rgb(0 112 224 / 0.12); }
   to { background-color: transparent; }
 }
 .cg-row-new { animation: row-arrive 2.5s ease-out; }
 
 @media (prefers-reduced-motion: reduce) {
-  .pulse-danger, .live-dot, .scan::after, .rise, .cg-row-new { animation: none; }
+  .live-dot, .rise, .cg-row-new { animation: none; }
 }
 
 /* Markdown rendered from incident reports */
@@ -131,8 +129,8 @@ body {
 .prose-report li { margin: 0.25rem 0; line-height: 1.6; }
 .prose-report strong { font-weight: 650; color: var(--color-ink-1); }
 .prose-report table { width: 100%; border-collapse: collapse; margin: 0.9rem 0; font-size: 0.875rem; }
-.prose-report th, .prose-report td { border: 1px solid rgb(255 255 255 / 0.08); padding: 0.45rem 0.7rem; text-align: left; }
-.prose-report th { background: rgb(255 255 255 / 0.03); font-weight: 600; }
+.prose-report th, .prose-report td { border: 1px solid var(--color-line); padding: 0.45rem 0.7rem; text-align: left; }
+.prose-report th { background: #f9fafb; font-weight: 600; }
 /* Report tables use an empty Markdown header row as a label/value layout: don't draw it. */
 .prose-report thead:has(th:empty) { display: none; }
 .prose-report td:last-child { font-variant-numeric: tabular-nums; }

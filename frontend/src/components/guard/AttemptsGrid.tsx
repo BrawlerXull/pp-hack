@@ -1,92 +1,38 @@
 "use client";
 
-import {
-  AllCommunityModule,
-  ModuleRegistry,
-  colorSchemeDarkBlue,
-  themeQuartz,
-  type ColDef,
-  type GridApi,
-  type ICellRendererParams,
-  type IRowNode,
-  type RowClassRules,
-} from "ag-grid-community";
+import { AllCommunityModule, ModuleRegistry, type ColDef, type GridApi, type ICellRendererParams, type IRowNode } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import { CreditCard, Search, Wallet } from "lucide-react";
+import { Download, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Attempt, Outcome } from "@/lib/api";
 import { DECISION_META, GUARD_REASON_LABEL, OUTCOME_META, SKU_NAME, clock } from "@/lib/format";
+import { gridTheme } from "./gridTheme";
+import { Badge } from "./ui";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
-
-const theme = themeQuartz.withPart(colorSchemeDarkBlue).withParams({
-  backgroundColor: "#0e1628",
-  foregroundColor: "#e7ecf6",
-  chromeBackgroundColor: "#111a2f",
-  headerBackgroundColor: "#111a2f",
-  headerTextColor: "#a9b3c7",
-  headerFontSize: 12,
-  headerFontWeight: 500,
-  borderColor: "rgba(255,255,255,0.07)",
-  rowHoverColor: "rgba(76,141,255,0.08)",
-  oddRowBackgroundColor: "rgba(255,255,255,0.012)",
-  accentColor: "#4c8dff",
-  fontFamily: "var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif",
-  fontSize: 13,
-  rowHeight: 40,
-  headerHeight: 38,
-  spacing: 7,
-  wrapperBorderRadius: 12,
-  browserColorScheme: "dark",
-});
 
 const STOPPED: Outcome[] = ["blocked", "challenged", "sca_required", "sca_failed"];
 
 const FILTERS: { key: string; label: string; test: (a: Attempt) => boolean }[] = [
   { key: "all", label: "All", test: () => true },
-  { key: "stopped", label: "Stopped by guard", test: (a) => STOPPED.includes(a.outcome) },
+  { key: "stopped", label: "Stopped", test: (a) => STOPPED.includes(a.outcome) },
   { key: "paid", label: "Paid or held", test: (a) => a.outcome === "captured" || a.outcome === "authorized" },
-  { key: "declined", label: "Declined by bank", test: (a) => a.outcome === "declined" },
+  { key: "declined", label: "Declined", test: (a) => a.outcome === "declined" },
   { key: "refunded", label: "Refunded or voided", test: (a) => a.outcome === "refunded" || a.outcome === "voided" },
 ];
 
-function OutcomeCell({ value }: ICellRendererParams<Attempt, Attempt["outcome"]>) {
+const OUTCOME_HINT: Partial<Record<Outcome, string>> = {
+  authorized: "Approved by the bank and held: charged after the review window unless an attack matches it",
+  voided: "The hold was released: never charged, no fee, nothing to dispute",
+  sca_required: "Stopped at the bank's 3-D Secure check",
+};
+
+function OutcomeCell({ value }: ICellRendererParams<Attempt, Outcome>) {
   if (!value) return null;
   const meta = OUTCOME_META[value];
   return (
-    <span className="inline-flex items-center gap-2 text-ink-1">
-      <span className="size-2 rounded-full" style={{ background: meta.color }} aria-hidden />
-      {meta.label}
-    </span>
-  );
-}
-
-const DECISION_STYLE = {
-  neutral: "text-ink-3",
-  info: "bg-sky-400/10 text-sky-300 ring-1 ring-inset ring-sky-400/20",
-  warn: "bg-amber-400/10 text-amber-200 ring-1 ring-inset ring-amber-400/20",
-  bad: "bg-red-400/10 text-red-300 ring-1 ring-inset ring-red-400/20",
-  good: "",
-} as const;
-
-function DecisionCell({ value }: ICellRendererParams<Attempt, Attempt["decision"]>) {
-  if (!value) return null;
-  const meta = DECISION_META[value];
-  return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${DECISION_STYLE[meta.tone]}`}>{meta.label}</span>;
-}
-
-/** A tiny 2×2 identicon from the device hash, so repeat devices are recognisable at a glance. */
-function DeviceCell({ value }: ICellRendererParams<Attempt, string>) {
-  if (!value) return null;
-  const hues = [0, 2, 4, 6].map((i) => (parseInt(value.slice(i, i + 2), 16) || 0) * 1.41);
-  return (
-    <span className="inline-flex items-center gap-2">
-      <span className="grid size-4 grid-cols-2 gap-px overflow-hidden rounded-[3px]" aria-hidden>
-        {hues.map((h, i) => (
-          <span key={i} style={{ background: `oklch(0.68 0.13 ${h})` }} />
-        ))}
-      </span>
-      <span className="font-mono text-xs text-ink-2">{value}</span>
+    <span title={OUTCOME_HINT[value]}>
+      <Badge tone={meta.tone}>{meta.label}</Badge>
     </span>
   );
 }
@@ -99,41 +45,32 @@ function methodText(a: Attempt | undefined): string {
   return [a.card_brand, a.card_last4].some(Boolean) ? `Card · ${[a.card_brand, a.card_last4].filter(Boolean).join(" ")}` : "Card";
 }
 
-function MethodCell({ data }: ICellRendererParams<Attempt>) {
-  if (!data) return null;
-  const Icon = data.method === "wallet" ? Wallet : CreditCard;
-  return (
-    <span className="inline-flex items-center gap-1.5 text-ink-2">
-      <Icon className="size-3.5" aria-hidden /> {methodText(data)}
-    </span>
-  );
+function sourceText(a: Attempt | undefined): string {
+  if (!a) return "";
+  if (a.source === "web") return "Shopper";
+  if (a.source === "api") return "Guard API";
+  if (a.source === "observed") return a.paypal_live ? "Webhook" : "Webhook · SIM";
+  return a.paypal_live ? "SIM · live PayPal" : "SIM";
 }
 
 function SourceCell({ data }: ICellRendererParams<Attempt>) {
   if (!data) return null;
-  if (data.source === "web") return <span className="text-ink-1">Shopper</span>;
-  if (data.source === "api") return <span className="text-ink-1" title="Checked by another shop's checkout (POST /v1/guard/check)">API</span>;
-  if (data.source === "observed")
-    return (
-      <span
-        className="rounded bg-sky-400/15 px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-sky-200"
-        title={data.paypal_live ? "Seen through PayPal webhooks only: no guard check ran" : "Simulated PayPal webhooks (observer mode), no PayPal call"}
-      >
-        WEBHOOK{data.paypal_live ? "" : " · SIM"}
-      </span>
-    );
+  if (data.source === "web" || data.source === "api") return <span className="text-ink-2">{sourceText(data)}</span>;
+  const title =
+    data.source === "observed"
+      ? "Seen through PayPal webhooks only: no guard check ran"
+      : data.paypal_live
+        ? "Simulated attacker, real PayPal sandbox call"
+        : "Simulated, no PayPal call";
   return (
-    <span
-      className="rounded bg-violet-400/15 px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-violet-200"
-      title={data.paypal_live ? "Simulated attacker, real PayPal sandbox call" : "Simulated, no PayPal call"}
-    >
-      SIM{data.paypal_live ? " · live PayPal" : ""}
+    <span title={title}>
+      <Badge>{sourceText(data)}</Badge>
     </span>
   );
 }
 
 /** The guard's reason for its decision, and PayPal's decline code when it got that far. */
-function whyText(a: Attempt): string {
+function reasonText(a: Attempt): string {
   const guard = a.guard_reason ? (GUARD_REASON_LABEL[a.guard_reason] ?? a.guard_reason) : "";
   if (a.outcome === "sca_failed") {
     const bank = `Bank check failed${a.sca_liability_shift ? ` (liability shift ${a.sca_liability_shift})` : ""}`;
@@ -143,13 +80,7 @@ function whyText(a: Attempt): string {
   return guard;
 }
 
-const rowClassRules: RowClassRules<Attempt> = {
-  "cg-row-stopped": (p) => !!p.data && STOPPED.includes(p.data.outcome),
-  "cg-row-refunded": (p) => p.data?.outcome === "refunded",
-  "cg-row-new": (p) => !!p.data && Date.now() - new Date(p.data.ts).getTime() < 5000,
-};
-
-export default function AttemptsGrid({ rows, height = 460 }: { rows: Attempt[]; height?: number }) {
+export default function AttemptsGrid({ rows, pageSize = 25 }: { rows: Attempt[]; pageSize?: number }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [shown, setShown] = useState<number | null>(null);
@@ -165,26 +96,33 @@ export default function AttemptsGrid({ rows, height = 460 }: { rows: Attempt[]; 
 
   const columns = useMemo<ColDef<Attempt>[]>(
     () => [
-      { field: "ts", headerName: "Time", flex: 0.8, minWidth: 86, valueFormatter: (p) => (p.value ? clock(p.value) : ""), sort: "desc", cellClass: "tabular-nums text-ink-2" },
-      { field: "outcome", headerName: "Outcome", flex: 1.2, minWidth: 128, cellRenderer: OutcomeCell, filter: true },
-      { field: "decision", headerName: "Guard", flex: 0.9, minWidth: 98, cellRenderer: DecisionCell },
-      { field: "sku", headerName: "Item", flex: 1, minWidth: 108, valueFormatter: (p) => SKU_NAME[p.value] ?? p.value, filter: true },
-      { field: "amount", headerName: "Amount", flex: 0.7, minWidth: 74, valueFormatter: (p) => `$${p.value}`, type: "rightAligned", cellClass: "tabular-nums" },
-      { field: "method", headerName: "Paid with", flex: 0.8, minWidth: 88, cellRenderer: MethodCell },
-      { field: "email_domain", headerName: "Email domain", flex: 1.3, minWidth: 118, filter: true },
-      { field: "fingerprint", headerName: "Device", flex: 1, minWidth: 108, cellRenderer: DeviceCell },
+      { field: "ts", headerName: "Time", pinned: "left", width: 96, sort: "desc", valueFormatter: (p) => (p.value ? clock(p.value) : ""), cellClass: "tabular-nums" },
       {
-        colId: "why",
-        headerName: "Why",
-        flex: 1.4,
-        minWidth: 128,
-        valueGetter: (p) => (p.data ? whyText(p.data) : ""),
-        tooltipValueGetter: (p) =>
-          p.data ? [whyText(p.data), p.data.decline_category && `PayPal decline category: ${p.data.decline_category}`].filter(Boolean).join(" · ") : undefined,
-        filter: true,
-        cellClass: "text-xs text-ink-2",
+        field: "outcome",
+        headerName: "Outcome",
+        width: 150,
+        cellRenderer: OutcomeCell,
+        filter: "agTextColumnFilter",
+        filterValueGetter: (p) => (p.data ? OUTCOME_META[p.data.outcome].label : ""),
       },
-      { field: "source", headerName: "Source", flex: 0.7, minWidth: 76, cellRenderer: SourceCell },
+      { field: "amount", headerName: "Amount", width: 96, type: "rightAligned", valueFormatter: (p) => `$${Number(p.value).toFixed(2)}`, cellClass: "tabular-nums" },
+      { field: "sku", headerName: "Item", minWidth: 140, flex: 1, valueFormatter: (p) => SKU_NAME[p.value] ?? p.value, filter: "agTextColumnFilter" },
+      { colId: "method", headerName: "Payment", width: 136, valueGetter: (p) => methodText(p.data) },
+      { field: "email_domain", headerName: "Email domain", minWidth: 136, flex: 1, filter: "agTextColumnFilter", valueFormatter: (p) => p.value ?? "–" },
+      { field: "fingerprint", headerName: "Device", width: 104, cellClass: "font-mono text-[12px] text-ink-2" },
+      { field: "decision", headerName: "Guard decision", width: 140, hide: true, valueFormatter: (p) => (p.value ? DECISION_META[p.value as Attempt["decision"]].label : "") },
+      {
+        colId: "reason",
+        headerName: "Reason",
+        minWidth: 200,
+        flex: 2,
+        valueGetter: (p) => (p.data ? reasonText(p.data) : ""),
+        tooltipValueGetter: (p) =>
+          p.data ? [reasonText(p.data), p.data.decline_category && `PayPal decline category: ${p.data.decline_category}`].filter(Boolean).join(" · ") : undefined,
+        filter: "agTextColumnFilter",
+        cellClass: "text-ink-2",
+      },
+      { colId: "source", headerName: "Source", width: 116, valueGetter: (p) => sourceText(p.data), cellRenderer: SourceCell },
     ],
     [],
   );
@@ -193,51 +131,64 @@ export default function AttemptsGrid({ rows, height = 460 }: { rows: Attempt[]; 
   const doesExternalFilterPass = useCallback((node: IRowNode<Attempt>) => !!node.data && filterRef.current.test(node.data), []);
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
+    <div>
+      <div className="flex flex-wrap items-center gap-3 border-b border-line px-5 py-3">
         <label className="relative">
           <span className="sr-only">Search attempts</span>
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-ink-3" aria-hidden />
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-ink-3" aria-hidden />
           <input
+            type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search domain, device, code…"
-            className="w-60 rounded-lg border border-white/10 bg-white/[0.04] py-1.5 pr-3 pl-8 text-sm text-ink-1 placeholder:text-ink-3 focus:border-guard/60 focus:ring-2 focus:ring-guard/20 focus:outline-none"
+            placeholder="Search domain, device, code"
+            className="h-9 w-64 rounded-lg border border-line-strong bg-white pr-3 pl-8 text-sm text-ink-1 placeholder:text-ink-3 focus:border-guard focus:outline-none"
           />
         </label>
-        <div className="flex flex-wrap gap-1" role="group" aria-label="Filter by outcome">
+        <div className="flex flex-wrap rounded-lg border border-line-strong bg-white p-0.5" role="group" aria-label="Filter by outcome">
           {FILTERS.map((f) => (
             <button
               key={f.key}
+              type="button"
               onClick={() => setFilter(f.key)}
               aria-pressed={filter === f.key}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition ${
-                filter === f.key ? "bg-white/[0.12] text-ink-1 ring-1 ring-white/15" : "text-ink-2 hover:bg-white/[0.05]"
-              }`}
+              className={`rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors ${filter === f.key ? "bg-gray-100 text-ink-1" : "text-ink-2 hover:text-ink-1"}`}
             >
               {f.label}
               <span className="ml-1.5 tabular-nums text-ink-3">{counts[f.key]}</span>
             </button>
           ))}
         </div>
-        <span className="ml-auto text-xs text-ink-3 tabular-nums">{shown ?? rows.length} shown</span>
+        <span className="ml-auto text-[13px] text-ink-3 tabular-nums" aria-live="polite">
+          {shown ?? rows.length} attempts
+        </span>
+        <button
+          type="button"
+          onClick={() => apiRef.current?.exportDataAsCsv({ fileName: "checkout-attempts.csv" })}
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line-strong bg-white px-3 text-[13px] font-medium text-ink-1 hover:bg-gray-50"
+        >
+          <Download className="size-4" aria-hidden /> Export CSV
+        </button>
       </div>
-      <div style={{ height }}>
+      <div className="h-[530px]">
         <AgGridReact<Attempt>
-          theme={theme}
+          theme={gridTheme}
           rowData={rows}
           columnDefs={columns}
           getRowId={(p) => p.data.id}
-          defaultColDef={{ sortable: true, resizable: true }}
-          rowClassRules={rowClassRules}
+          defaultColDef={{ sortable: true, resizable: true, suppressHeaderFilterButton: true }}
           quickFilterText={query}
           isExternalFilterPresent={isExternalFilterPresent}
           doesExternalFilterPass={doesExternalFilterPass}
           onGridReady={(e) => (apiRef.current = e.api)}
           onModelUpdated={(e) => setShown(e.api.getDisplayedRowCount())}
+          pagination
+          paginationPageSize={pageSize}
+          paginationPageSizeSelector={[10, 25, 50, 100]}
           tooltipShowDelay={300}
+          ensureDomOrder
+          enableCellTextSelection
           animateRows
-          overlayNoRowsTemplate="No checkout attempts yet. Start a simulation from the demo bar below."
+          overlayNoRowsTemplate="No checkout attempts yet. Run a simulation from the sidebar."
         />
       </div>
     </div>

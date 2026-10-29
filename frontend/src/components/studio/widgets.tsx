@@ -101,10 +101,10 @@ function VerdictWidget(params: AgWidgetParams<VerdictData>) {
 }
 
 function StatusIcon({ status }: { status: string }) {
-  if (status === "Done") return <CircleCheck className="size-4 text-emerald-300" />;
-  if (status === "Failed") return <CircleX className="size-4 text-red-300" />;
-  if (status === "Sent to PayPal") return <Clock className="size-4 text-sky-300" />;
-  return <CircleDashed className="size-4 text-amber-300" />;
+  if (status === "Done") return <CircleCheck className="size-4 text-emerald-700" />;
+  if (status === "Failed") return <CircleX className="size-4 text-red-700" />;
+  if (status === "Sent to PayPal") return <Clock className="size-4 text-sky-700" />;
+  return <CircleDashed className="size-4 text-amber-700" />;
 }
 
 function TimelineWidget(params: AgWidgetParams<TimelineData>) {
@@ -126,7 +126,7 @@ function TimelineWidget(params: AgWidgetParams<TimelineData>) {
                   {Number.isNaN(t) ? "" : new Date(t).toLocaleTimeString([], { hourCycle: "h23" })}
                 </span>
                 {asText(r[1])}
-                {s && s !== "Done" && <span className="ml-2 text-xs text-amber-200">{s}</span>}
+                {s && s !== "Done" && <span className="ml-2 text-xs text-amber-700">{s}</span>}
               </span>
               {asText(r[3]) && <span className="block truncate text-xs text-ink-3">{asText(r[3])}</span>}
             </span>
@@ -139,10 +139,10 @@ function TimelineWidget(params: AgWidgetParams<TimelineData>) {
 
 // Palette icons, drawn in the console's accent so they read as ours next to Studio's built-in widgets.
 const svg = (body: string) => ({
-  url: `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#4c8dff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`)}`,
+  url: `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#0070e0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`)}`,
 });
-const VERDICT_ICON = svg('<circle cx="12" cy="12" r="9" stroke="#33415c"/><path d="M12 3a9 9 0 0 1 8.5 12"/><path d="m9 12 2 2 4-4"/>');
-const TIMELINE_ICON = svg('<path d="M6 4v16"/><circle cx="6" cy="7" r="2" fill="#4c8dff"/><circle cx="6" cy="17" r="2" fill="#4c8dff"/><path d="M11 7h8M11 12h6M11 17h8"/>');
+const VERDICT_ICON = svg('<circle cx="12" cy="12" r="9" stroke="#d0d5dd"/><path d="M12 3a9 9 0 0 1 8.5 12"/><path d="m9 12 2 2 4-4"/>');
+const TIMELINE_ICON = svg('<path d="M6 4v16"/><circle cx="6" cy="7" r="2" fill="#0070e0"/><circle cx="6" cy="17" r="2" fill="#0070e0"/><path d="M11 7h8M11 12h6M11 17h8"/>');
 
 /** Studio's built-in widgets plus ours, in their own "Checkout Guard" menu group. */
 export const guardWidgets = (defaults: AgWidgetsConfig<AgDefaultRegistry>): AgWidgetsConfig<GuardRegistry> =>

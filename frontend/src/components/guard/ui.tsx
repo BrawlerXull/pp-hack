@@ -2,6 +2,9 @@ import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Tone } from "@/lib/format";
 
+// Shared building blocks for the owner dashboard: white cards on a light grey canvas, one blue accent,
+// status colour only where it means something. Text never goes below 12px (muted) or 14px (body).
+
 export function Card({
   title,
   subtitle,
@@ -10,6 +13,7 @@ export function Card({
   children,
   className = "",
   bodyClassName = "p-5",
+  id,
 }: {
   title?: ReactNode;
   subtitle?: ReactNode;
@@ -18,19 +22,23 @@ export function Card({
   children: ReactNode;
   className?: string;
   bodyClassName?: string;
+  id?: string;
 }) {
+  const headingId = id ? `${id}-title` : undefined;
   return (
-    <section className={`panel min-w-0 ${className}`}>
+    <section className={`panel min-w-0 ${className}`} aria-labelledby={headingId} id={id}>
       {(title || action) && (
-        <header className="flex items-start justify-between gap-3 px-5 pt-4 pb-3">
-          <div className="flex min-w-0 items-start gap-2.5">
-            {Icon && <Icon className="mt-0.5 size-4 shrink-0 text-ink-3" aria-hidden />}
+        <header className="flex items-start justify-between gap-3 border-b border-line px-5 py-3.5">
+          <div className="flex min-w-0 items-center gap-2">
+            {Icon && <Icon className="size-4 shrink-0 text-ink-3" aria-hidden />}
             <div className="min-w-0">
-              <h2 className="text-sm font-semibold text-ink-1">{title}</h2>
-              {subtitle && <p className="mt-0.5 text-xs text-ink-3">{subtitle}</p>}
+              <h2 id={headingId} className="text-[15px] font-semibold text-ink-1">
+                {title}
+              </h2>
+              {subtitle && <p className="mt-0.5 text-[13px] text-ink-3">{subtitle}</p>}
             </div>
           </div>
-          {action}
+          {action && <div className="shrink-0">{action}</div>}
         </header>
       )}
       <div className={bodyClassName}>{children}</div>
@@ -39,19 +47,19 @@ export function Card({
 }
 
 export const TONE_TEXT: Record<Tone, string> = {
-  good: "text-emerald-300",
-  bad: "text-red-300",
-  warn: "text-amber-300",
-  info: "text-sky-300",
+  good: "text-emerald-700",
+  bad: "text-red-700",
+  warn: "text-amber-700",
+  info: "text-blue-700",
   neutral: "text-ink-2",
 };
 
 const TONE: Record<Tone, string> = {
-  good: "bg-emerald-400/10 text-emerald-300 ring-emerald-400/25",
-  bad: "bg-red-400/10 text-red-300 ring-red-400/25",
-  warn: "bg-amber-400/10 text-amber-200 ring-amber-400/25",
-  info: "bg-sky-400/10 text-sky-300 ring-sky-400/25",
-  neutral: "bg-white/[0.05] text-ink-2 ring-white/10",
+  good: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+  bad: "bg-red-50 text-red-800 ring-red-200",
+  warn: "bg-amber-50 text-amber-900 ring-amber-200",
+  info: "bg-blue-50 text-blue-800 ring-blue-200",
+  neutral: "bg-gray-100 text-ink-2 ring-line",
 };
 
 export function Badge({ tone = "neutral", children, className = "" }: { tone?: Tone; children: ReactNode; className?: string }) {
@@ -70,16 +78,17 @@ export function Button({
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "danger" | "ghost"; size?: "sm" | "md" }) {
   const styles = {
-    primary: "bg-guard text-white shadow-[0_8px_24px_-8px_rgb(76_141_255/0.6)] hover:bg-guard-dark",
-    secondary: "bg-white/[0.06] text-ink-1 ring-1 ring-inset ring-white/10 hover:bg-white/[0.1]",
-    danger: "bg-red-500 text-white shadow-[0_8px_24px_-8px_rgb(239_68_68/0.6)] hover:bg-red-600",
-    ghost: "text-ink-2 hover:bg-white/[0.06] hover:text-ink-1",
+    primary: "bg-guard text-white hover:bg-guard-dark",
+    secondary: "bg-white text-ink-1 ring-1 ring-inset ring-line-strong hover:bg-gray-50",
+    danger: "bg-red-600 text-white hover:bg-red-700",
+    ghost: "text-ink-2 hover:bg-gray-100 hover:text-ink-1",
   }[variant];
-  const sizing = size === "sm" ? "px-2.5 py-1.5 text-xs" : "px-3.5 py-2 text-sm";
+  const sizing = size === "sm" ? "h-8 px-3 text-[13px]" : "h-9 px-3.5 text-sm";
   return (
     <button
+      type="button"
       {...props}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-guard disabled:cursor-not-allowed disabled:opacity-50 ${sizing} ${styles} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${sizing} ${styles} ${className}`}
     >
       {children}
     </button>
@@ -100,13 +109,13 @@ export function Stat({
   icon?: LucideIcon;
 }) {
   return (
-    <div className="panel relative overflow-hidden px-5 py-4">
+    <div className="panel px-5 py-4">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs font-medium text-ink-3">{label}</p>
-        {Icon && <Icon className={`size-4 ${tone ? TONE_TEXT[tone] : "text-ink-3"}`} aria-hidden />}
+        <p className="text-[13px] font-medium text-ink-2">{label}</p>
+        {Icon && <Icon className="size-4 text-ink-3" aria-hidden />}
       </div>
-      <p className={`mt-2 text-3xl font-semibold tracking-tight ${tone && tone !== "neutral" ? TONE_TEXT[tone] : "text-ink-1"}`}>{value}</p>
-      {hint && <p className="mt-1 text-xs text-ink-3">{hint}</p>}
+      <p className={`mt-1.5 text-[28px] leading-9 font-semibold tracking-tight tabular-nums ${tone === "bad" || tone === "warn" ? TONE_TEXT[tone] : "text-ink-1"}`}>{value}</p>
+      {hint && <p className="mt-0.5 text-[13px] text-ink-3">{hint}</p>}
     </div>
   );
 }
@@ -114,27 +123,27 @@ export function Stat({
 export function Empty({ children, icon: Icon }: { children: ReactNode; icon?: LucideIcon }) {
   return (
     <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-ink-3">
-      {Icon && <Icon className="size-6 text-ink-3/70" aria-hidden />}
+      {Icon && <Icon className="size-6 text-ink-3" aria-hidden />}
       {children}
     </div>
   );
 }
 
 export function Skeleton({ className = "" }: { className?: string }) {
-  return <div className={`animate-pulse rounded-2xl bg-white/[0.04] ${className}`} />;
+  return <div className={`animate-pulse rounded-xl bg-gray-100 ${className}`} aria-hidden />;
 }
 
 export function LiveDot({ tone = "good" }: { tone?: "good" | "bad" | "warn" | "neutral" }) {
-  const color = { good: "bg-emerald-400", bad: "bg-red-400", warn: "bg-amber-400", neutral: "bg-ink-3" }[tone];
-  return <span className={`inline-block size-2 rounded-full ${color} ${tone === "neutral" ? "" : "live-dot"}`} aria-hidden />;
+  const color = { good: "bg-emerald-500", bad: "bg-red-500", warn: "bg-amber-500", neutral: "bg-gray-400" }[tone];
+  return <span className={`inline-block size-2 shrink-0 rounded-full ${color} ${tone === "good" ? "live-dot" : ""}`} aria-hidden />;
 }
 
 export function PageHeader({ title, subtitle, action }: { title: ReactNode; subtitle?: ReactNode; action?: ReactNode }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-4">
-      <div>
+      <div className="min-w-0">
         <h1 className="text-2xl font-semibold tracking-tight text-ink-1">{title}</h1>
-        {subtitle && <p className="mt-1 max-w-2xl text-sm text-ink-2">{subtitle}</p>}
+        {subtitle && <p className="mt-1 max-w-3xl text-sm text-ink-2">{subtitle}</p>}
       </div>
       {action}
     </div>

@@ -23,7 +23,7 @@ import {
 } from "@/lib/format";
 import { Badge, Button } from "./ui";
 
-const RING_COLOR = { bad: "#f87171", info: "#60a5fa", warn: "#fbbf24", good: "#34d399", neutral: "#7f8aa3" };
+const RING_COLOR = { bad: "#d92d20", info: "#1570ef", warn: "#dc6803", good: "#079455", neutral: "#98a2b3" };
 
 export function ConfidenceRing({ value, tone, size = 72 }: { value: number; tone: keyof typeof RING_COLOR; size?: number }) {
   const r = size / 2 - 5;
@@ -32,7 +32,7 @@ export function ConfidenceRing({ value, tone, size = 72 }: { value: number; tone
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }} role="img" aria-label={`${pct}% confident`}>
       <svg width={size} height={size} className="-rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth={5} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#eef0f3" strokeWidth={5} />
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -45,20 +45,17 @@ export function ConfidenceRing({ value, tone, size = 72 }: { value: number; tone
           style={{ transition: "stroke-dasharray 0.8s ease" }}
         />
       </svg>
-      <span className="absolute inset-0 flex flex-col items-center justify-center leading-none">
-        <span className="text-lg font-semibold text-ink-1">{pct}%</span>
-        <span className="mt-0.5 text-[9px] font-medium tracking-wider text-ink-3 uppercase">sure</span>
-      </span>
+      <span className="absolute inset-0 flex items-center justify-center text-lg leading-none font-semibold text-ink-1 tabular-nums">{pct}%</span>
     </div>
   );
 }
 
 const CLASS_ORDER: Classification[] = ["card_testing", "account_testing", "genuine_rush", "paypal_outage"];
 const BAR_COLOR: Record<string, string> = {
-  card_testing: "bg-red-400",
-  account_testing: "bg-red-300",
-  genuine_rush: "bg-sky-400",
-  paypal_outage: "bg-amber-400",
+  card_testing: "bg-red-600",
+  account_testing: "bg-orange-500",
+  genuine_rush: "bg-blue-600",
+  paypal_outage: "bg-amber-500",
 };
 
 /** The scorecard's per-class probabilities: what decided the classification (not the AI). */
@@ -68,9 +65,9 @@ export function ClassBars({ probs }: { probs: Record<string, number> }) {
       {CLASS_ORDER.filter((c) => c in probs).map((c) => {
         const pct = Math.round((probs[c] ?? 0) * 100);
         return (
-          <li key={c} className="flex items-center gap-2 text-xs text-ink-2">
+          <li key={c} className="flex items-center gap-2 text-[13px] text-ink-2">
             <span className="w-32 shrink-0 truncate">{CLASSIFICATION_LABEL[c]}</span>
-            <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+            <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-gray-100">
               <div className={`h-full ${BAR_COLOR[c]}`} style={{ width: `${pct}%` }} />
             </div>
             <span className="w-9 shrink-0 text-right tabular-nums">{pct}%</span>
@@ -105,9 +102,9 @@ export function DecisionSource({ incident }: { incident: IncidentSummary }) {
         </p>
       )}
       <p className="flex items-center gap-1">
-        {explainer ? <Sparkles className="size-3 text-violet-300" /> : <Bot className="size-3" />}
+        {explainer ? <Sparkles className="size-3 text-violet-700" /> : <Bot className="size-3" />}
         <span className="text-ink-3">Explained by:</span> {explainer ?? "Checkout Guard's own template"}
-        {incident.ai_fallback_reason && !tb && <span className="text-amber-300"> (AI: {incident.ai_fallback_reason})</span>}
+        {incident.ai_fallback_reason && !tb && <span className="text-amber-700"> (AI: {incident.ai_fallback_reason})</span>}
       </p>
     </div>
   );
@@ -129,11 +126,11 @@ export function VerdictCard({ incident, compact = false }: { incident: IncidentD
   const v = incident.verdict;
   if (!v) {
     return (
-      <div className="scan relative flex items-center gap-4 overflow-hidden rounded-xl border border-violet-400/20 bg-violet-500/[0.06] p-4">
-        <Loader2 className="size-5 animate-spin text-violet-300" />
+      <div className="flex items-center gap-3 rounded-lg border border-line bg-gray-50 p-4" role="status">
+        <Loader2 className="size-5 animate-spin text-guard" aria-hidden />
         <div>
           <p className="text-sm font-medium text-ink-1">Scoring the traffic…</p>
-          <p className="text-xs text-ink-3">Fixed rules already switched on 3-D Secure if fraud declines were seen.</p>
+          <p className="text-[13px] text-ink-3">Fixed rules already switched on 3-D Secure if fraud declines were seen.</p>
         </div>
       </div>
     );
@@ -147,23 +144,22 @@ export function VerdictCard({ incident, compact = false }: { incident: IncidentD
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-4">
-        <ConfidenceRing value={v.confidence} tone={tone} />
+        <div className="flex shrink-0 flex-col items-center gap-1">
+          <ConfidenceRing value={v.confidence} tone={tone} />
+          <span className="text-xs text-ink-3">confidence</span>
+        </div>
         <div className="min-w-0">
           <p className="text-xl font-semibold tracking-tight text-ink-1">{CLASSIFICATION_LABEL[v.classification]}</p>
           {leaning && <p className="text-xs text-ink-3">leaning {leaning.toLowerCase()}</p>}
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
-            <Badge tone="neutral">
-              <ShieldCheck className="size-3 text-sky-300" /> {incident.classifier_version ?? "scorecard"}
-            </Badge>
+            <Badge tone="neutral">Decided by {incident.classifier_version ?? "scorecard"}</Badge>
             {incident.ai_available ? (
-              <Badge tone="neutral">
-                <Sparkles className="size-3 text-violet-300" /> explained by {incident.model_id}
-              </Badge>
+              <Badge tone="neutral">Explained by {incident.model_id}</Badge>
             ) : (
-              <Badge tone="warn">AI unavailable{incident.ai_fallback_reason ? `: ${incident.ai_fallback_reason}` : ""}: template text</Badge>
+              <Badge tone="warn">AI unavailable: template text</Badge>
             )}
             {v.trend !== "stable" && <Badge tone={v.trend === "escalating" ? "bad" : "good"}>{v.trend}</Badge>}
-            {incident.verdict_at && <span className="text-xs text-ink-3">updated {timeAgo(incident.verdict_at)}</span>}
+            {incident.verdict_at && <span className="text-[13px] text-ink-3">Updated {timeAgo(incident.verdict_at)}</span>}
           </div>
         </div>
       </div>
@@ -176,7 +172,7 @@ export function VerdictCard({ incident, compact = false }: { incident: IncidentD
       )}
 
       {incident.ai_refresh_failed_at && (
-        <p className="rounded-lg bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
           AI re-check failed {timeAgo(incident.ai_refresh_failed_at)} ({incident.ai_refresh_failures}×)
           {incident.ai_fallback_reason ? `: ${incident.ai_fallback_reason}` : ""}. Keeping the earlier verdict; new refunds wait for your approval if this persists.
         </p>
@@ -185,22 +181,22 @@ export function VerdictCard({ incident, compact = false }: { incident: IncidentD
         <p className="text-xs text-ink-2">Fixed rules saw {RULES_HINT_LABEL[incident.rules_hint]}. This is a hint, not a classification.</p>
       )}
 
-      <p className="text-[15px] leading-relaxed text-ink-1/90">{v.summary}</p>
+      <p className="text-[15px] leading-relaxed text-ink-1">{v.summary}</p>
 
       {dropped > 0 && <DroppedBadge count={dropped} />}
       {shown.length > 0 && (
-        <ul className="space-y-1.5">
+        <ul className="divide-y divide-line rounded-lg border border-line">
           {shown.map((e, i) => {
             // Our own number and the ×N from our stored baseline; the text is only the "why".
             const ours = incident.evidence_vs_normal?.[i];
             const observed = ours?.feature === e.feature && ours.observed !== null ? ours.observed : e.observed;
             const vsNormal = ours?.feature === e.feature && ours.multiplier != null && ours.normal != null ? ours : null;
             return (
-              <li key={i} className="rise flex items-start gap-3 rounded-lg bg-white/[0.03] px-3 py-2.5" style={{ animationDelay: `${i * 80}ms` }}>
+              <li key={i} className="flex items-start gap-3 px-3 py-2.5">
                 <span className="w-16 shrink-0 text-right">
                   <span className="block text-base font-semibold text-ink-1 tabular-nums">{featureValue(e.feature, observed)}</span>
                   {vsNormal && (
-                    <span className="block text-[11px] text-amber-300 tabular-nums" title={`Normal for this shop: ${featureValue(e.feature, vsNormal.normal)}`}>
+                    <span className="block text-xs text-amber-700 tabular-nums" title={`Normal for this shop: ${featureValue(e.feature, vsNormal.normal)}`}>
                       {times(vsNormal.multiplier!)} normal
                     </span>
                   )}
@@ -208,20 +204,20 @@ export function VerdictCard({ incident, compact = false }: { incident: IncidentD
                 <span className="min-w-0">
                   <span className="block text-sm font-medium text-ink-1">
                     {FEATURE_LABEL[e.feature] ?? e.feature}
-                    <span className="ml-1.5 text-xs font-normal text-ink-3">last {e.window_min} min</span>
+                    <span className="ml-1.5 text-xs font-normal text-ink-3">Last {e.window_min} min</span>
                   </span>
-                  <span className="block text-xs leading-relaxed text-ink-2">{e.why}</span>
+                  <span className="block text-[13px] leading-relaxed text-ink-2">{e.why}</span>
                 </span>
               </li>
             );
           })}
         </ul>
       )}
-      {compact && v.evidence.length > shown.length && <p className="text-xs text-ink-3">+{v.evidence.length - shown.length} more signals in the full report</p>}
+      {compact && v.evidence.length > shown.length && <p className="text-[13px] text-ink-3">{v.evidence.length - shown.length} more signals in the full report</p>}
 
       {v.uncertainty_notes && !/^\s*(none|n\/a)?\.?\s*$/i.test(v.uncertainty_notes) && <p className="text-xs text-ink-3">Note: {v.uncertainty_notes}</p>}
-      <p className="flex items-center gap-1.5 border-t border-white/[0.06] pt-3 text-[11px] text-ink-3">
-        <ShieldCheck className="size-3.5" /> Numbers checked against Checkout Guard&apos;s own records. The scorecard decides, fixed rules act, the AI only explains.
+      <p className="flex items-center gap-1.5 border-t border-line pt-3 text-xs text-ink-3">
+        <ShieldCheck className="size-3.5 shrink-0" aria-hidden /> Every number is checked against our own records. The AI only explains.
       </p>
     </div>
   );
@@ -320,8 +316,8 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
   return (
     <div className="space-y-4">
       {seen && seen.observed > 0 && (
-        <p className="flex items-start gap-2 rounded-lg bg-sky-400/[0.08] px-3 py-2 text-xs text-sky-100 ring-1 ring-sky-400/20">
-          <Info className="mt-0.5 size-3.5 shrink-0 text-sky-300" />
+        <p className="flex items-start gap-2 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-900 ring-1 ring-sky-200">
+          <Info className="mt-0.5 size-3.5 shrink-0 text-sky-700" />
           <span>
             {webhooksOnly ? "Seen through PayPal webhooks only (observer mode): " : `${seen.observed} of these payments were seen through PayPal webhooks only: `}
             detection, the verdict, alerts and refunds work, but blocking devices, 3-D Secure, the item hold and payment holds act only on checkouts that
@@ -337,15 +333,15 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
             const Icon = r.status === "in_flight" ? Clock : ACTION_ICON[r.type];
             const badge = STATUS_BADGE[r.status];
             return (
-              <li key={r.key} className="rise relative flex gap-3 rounded-lg px-2 py-2.5 hover:bg-white/[0.02]" style={{ animationDelay: `${i * 60}ms` }}>
-                {i < rows.length - 1 && <span className="absolute top-11 bottom-0 left-[1.45rem] w-px bg-white/[0.08]" aria-hidden />}
+              <li key={r.key} className="rise relative flex gap-3 rounded-lg px-2 py-2.5 hover:bg-gray-50" style={{ animationDelay: `${i * 60}ms` }}>
+                {i < rows.length - 1 && <span className="absolute top-11 bottom-0 left-[1.45rem] w-px bg-gray-100" aria-hidden />}
                 <span
                   className={`relative flex size-8 shrink-0 items-center justify-center rounded-full ring-1 ${
                     r.type === "REFUND" || r.type === "VOID"
-                      ? "bg-amber-400/10 text-amber-300 ring-amber-400/25"
+                      ? "bg-amber-50 text-amber-700 ring-amber-200"
                       : r.type === "NOTIFY"
-                        ? "bg-violet-400/10 text-violet-300 ring-violet-400/25"
-                        : "bg-emerald-400/10 text-emerald-300 ring-emerald-400/25"
+                        ? "bg-violet-50 text-violet-700 ring-violet-200"
+                        : "bg-emerald-50 text-emerald-700 ring-emerald-200"
                   }`}
                 >
                   <Icon className="size-4" />
@@ -358,7 +354,7 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
                   <p className="mt-0.5 text-xs text-ink-2">{r.why}</p>
                   <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-3">
                     <span className="tabular-nums">{clock(r.at)}</span>
-                    <span className="rounded bg-[#0070e0]/15 px-1.5 py-px font-medium text-[#7fb6ff]">PayPal</span>
+                    <span className="rounded bg-blue-50 px-1.5 py-px font-medium text-blue-800 ring-1 ring-inset ring-blue-200">PayPal</span>
                     {ACTION_MECHANISM[r.type]}
                   </p>
                   {r.extra}
@@ -372,13 +368,13 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
       {failed.length > 0 && (
         <ul className="space-y-1.5">
           {failed.map((a) => (
-            <li key={a.id} className="flex items-start gap-2.5 rounded-lg bg-red-500/10 px-3 py-2 text-xs ring-1 ring-red-400/20">
-              <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-red-300" />
+            <li key={a.id} className="flex items-start gap-2.5 rounded-lg bg-red-50 px-3 py-2 text-xs ring-1 ring-red-200">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-red-700" />
               <span className="min-w-0">
-                <span className="block text-red-100">
+                <span className="block text-red-900">
                   Refund of {money(String(a.params.amount ?? 0))} not confirmed · capture <code className="font-mono">{String(a.params.capture_id)}</code>
                 </span>
-                <span className="block text-red-200/80">{a.error ?? "PayPal did not confirm it"}. Check this capture in PayPal.</span>
+                <span className="block text-red-700">{a.error ?? "PayPal did not confirm it"}. Check this capture in PayPal.</span>
               </span>
             </li>
           ))}
@@ -387,9 +383,9 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
       {kept.length > 0 && <p className="px-1 text-xs text-ink-3">{kept.length} payment{kept.length === 1 ? "" : "s"} kept at your request (charged as usual).</p>}
 
       {pending.length > 0 && (
-        <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-3">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium text-amber-100">
+            <p className="text-sm font-medium text-amber-900">
               {pending.length} payment{pending.length === 1 ? "" : "s"} need your decision
             </p>
             {pending.length > 1 && <DecideAll actions={pending} onChange={onChange} />}
@@ -486,12 +482,12 @@ function PendingRefund({ action, onChange }: { action: ActionRow; onChange: () =
   }
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 text-sm">
-      <span className="min-w-0 text-amber-50">
+      <span className="min-w-0 text-amber-900">
         {action.type === "VOID" ? "Held " : ""}
         {money(String(action.params.amount ?? 0))} ·{" "}
-        <code className="font-mono text-xs text-amber-200/80">{String(action.type === "VOID" ? action.params.authorization_id : action.params.capture_id)}</code>
-        <span className="block text-xs text-amber-200/70">{refundReason(action)}</span>
-        {error && <span className="block text-xs text-red-300">{error}</span>}
+        <code className="font-mono text-xs text-amber-700">{String(action.type === "VOID" ? action.params.authorization_id : action.params.capture_id)}</code>
+        <span className="block text-xs text-amber-700">{refundReason(action)}</span>
+        {error && <span className="block text-xs text-red-700">{error}</span>}
       </span>
       <span className="flex gap-1.5">
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => act("reject")}>
@@ -506,57 +502,51 @@ function PendingRefund({ action, onChange }: { action: ActionRow; onChange: () =
 }
 
 /**
- * The owner's phone: the alert history as a notification stack, newest on top (GET /dashboard/alerts).
- * Falls back to the report's current alert text when nothing was sent yet (e.g. only regenerated).
+ * What the shop owner is sent: the latest alert as a message, earlier ones underneath, newest first
+ * (GET /dashboard/alerts). Falls back to the report's current alert text when nothing was sent yet.
  */
 export function AlertPhone({
   text,
   at,
   history,
-  caption = "Meera's phone",
 }: {
   text: string | null | undefined;
   at?: string;
   history?: AlertRow[];
-  caption?: string;
 }) {
   const alerts = history?.length ? history.map((a) => ({ key: String(a.id), text: a.text, ts: a.ts })) : text ? [{ key: "current", text, ts: at }] : [];
   const [latest, ...older] = alerts;
-  const time = latest?.ts ? new Date(latest.ts) : null;
+  if (!latest) return <p className="py-6 text-center text-sm text-ink-3">No alerts sent. Nothing needed the owner.</p>;
   return (
-    <figure className="flex flex-col items-center">
-      <div className="relative w-full max-w-[250px] rounded-[2.4rem] bg-gradient-to-b from-slate-600 to-slate-800 p-[3px] shadow-[0_30px_60px_-20px_rgb(0_0_0/0.9)]">
-        <div className="relative overflow-hidden rounded-[2.25rem] bg-[radial-gradient(120%_80%_at_50%_0%,#2a3f7a_0%,#121a38_45%,#070b18_100%)] px-3.5 pt-3 pb-5">
-          <div className="mx-auto h-5 w-20 rounded-full bg-black" aria-hidden />
-          <p className="mt-4 text-center text-xs font-medium text-white/60">
-            {time ? time.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" }) : "Tonight"}
-          </p>
-          <p className="text-center text-5xl font-extralight tracking-tight text-white/95 tabular-nums">{time ? hhmm(time) : "--:--"}</p>
-          <div className={`mt-6 rounded-2xl bg-white/[0.14] p-3 backdrop-blur-md ${latest ? "rise" : ""}`}>
-            <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wide text-white/70 uppercase">
-              <span className="flex size-4 items-center justify-center rounded-[5px] bg-guard">
-                <ShieldCheck className="size-2.5 text-white" />
-              </span>
-              Checkout Guard
-              <span className="ml-auto font-normal normal-case">{latest?.ts ? timeAgo(latest.ts) : ""}</span>
-            </p>
-            <p className="mt-1.5 text-[13px] leading-snug text-white">{latest?.text ?? "No alerts. Sleep well."}</p>
-          </div>
-          {older.length > 0 && (
-            <ul className="mt-2 max-h-40 space-y-1.5 overflow-y-auto">
-              {older.map((a) => (
-                <li key={a.key} className="rounded-xl bg-white/[0.07] px-3 py-2">
-                  <p className="text-[10px] font-semibold tracking-wide text-white/50 uppercase">{a.ts ? `${hhmm(a.ts)} · ${timeAgo(a.ts)}` : "earlier"}</p>
-                  <p className="line-clamp-2 text-[12px] leading-snug text-white/80">{a.text}</p>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="mx-auto mt-8 h-1 w-24 rounded-full bg-white/50" aria-hidden />
-        </div>
-      </div>
-      <figcaption className="mt-3 text-xs text-ink-3">{caption}</figcaption>
-    </figure>
+    <div className="space-y-3">
+      <article className="rounded-lg border border-line bg-gray-50 p-3.5">
+        <header className="flex items-center gap-2 text-[13px]">
+          <span className="flex size-6 items-center justify-center rounded-md bg-brand" aria-hidden>
+            <ShieldCheck className="size-3.5 text-white" />
+          </span>
+          <span className="font-semibold text-ink-1">Checkout Guard</span>
+          <time className="ml-auto text-ink-3" dateTime={latest.ts}>
+            {latest.ts ? `${hhmm(latest.ts)} · ${timeAgo(latest.ts)}` : ""}
+          </time>
+        </header>
+        <p className="mt-2 text-sm leading-relaxed text-ink-1">{latest.text}</p>
+      </article>
+      {older.length > 0 && (
+        <details className="text-[13px]">
+          <summary className="cursor-pointer text-ink-2 hover:text-ink-1">
+            {older.length} earlier alert{older.length === 1 ? "" : "s"}
+          </summary>
+          <ul className="mt-2 space-y-2">
+            {older.map((a) => (
+              <li key={a.key} className="border-l-2 border-line pl-3">
+                <p className="text-xs text-ink-3">{a.ts ? hhmm(a.ts) : "Earlier"}</p>
+                <p className="text-ink-2">{a.text}</p>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }
 

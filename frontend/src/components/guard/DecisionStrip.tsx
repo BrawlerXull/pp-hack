@@ -28,7 +28,7 @@ export function policyRules(incident: IncidentDetail): [string, string[]][] {
 
 function Step({ icon: Icon, title, children }: { icon: typeof Radar; title: string; children: React.ReactNode }) {
   return (
-    <div className="min-w-0 flex-1 rounded-xl border border-white/[0.07] bg-white/[0.02] p-4">
+    <div className="min-w-0 flex-1 rounded-xl border border-line bg-gray-50 p-4">
       <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-ink-3">
         <Icon className="size-3.5" /> {title}
       </p>
@@ -102,7 +102,7 @@ export function DecisionStrip({ incident }: { incident: IncidentDetail }) {
             )}
             <DecisionSource incident={incident} />
             {incident.ai_refresh_failed_at && (
-              <p className="text-xs text-amber-300">
+              <p className="text-xs text-amber-700">
                 Kept the AI-confirmed verdict (re-check failed {timeAgo(incident.ai_refresh_failed_at)})
               </p>
             )}
@@ -118,7 +118,7 @@ export function DecisionStrip({ incident }: { incident: IncidentDetail }) {
           <ul className="space-y-1">
             {rules.map(([rule, actions]) => (
               <li key={rule} className="flex flex-wrap items-center gap-1.5">
-                <code className="rounded bg-white/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-ink-2">{rule}</code>
+                <code className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-ink-2">{rule}</code>
                 <span className="text-xs text-ink-2">{actions.join(" · ")}</span>
               </li>
             ))}

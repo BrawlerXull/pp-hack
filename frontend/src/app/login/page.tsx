@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Loader2, Lock, Moon, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Loader2, Lock, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -33,9 +33,8 @@ export default function LoginPage() {
       </Link>
       <form onSubmit={submit} className="panel w-full max-w-sm p-8">
         <div className="flex items-center gap-3">
-          <span className="relative flex size-11 items-center justify-center rounded-xl bg-gradient-to-br from-guard to-indigo-600 shadow-[0_10px_30px_-10px_rgb(76_141_255/0.8)]">
+          <span className="relative flex size-11 items-center justify-center rounded-xl bg-brand shadow-sm">
             <ShieldCheck className="size-5 text-white" />
-            <Moon className="absolute -top-1 -right-1 size-3.5 fill-amber-200 text-amber-200" />
           </span>
           <div>
             <p className="font-semibold text-ink-1">Checkout Guard</p>
@@ -51,14 +50,14 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoFocus
-              className="w-full rounded-lg border border-white/10 bg-white/[0.04] py-2.5 pr-3 pl-9 text-ink-1 outline-none focus:border-guard/60 focus:ring-2 focus:ring-guard/20"
+              className="w-full rounded-lg border border-line bg-gray-50 py-2.5 pr-3 pl-9 text-ink-1 outline-none focus:border-guard/60 focus:ring-2 focus:ring-guard/20"
             />
           </span>
         </label>
-        {error && <p className="mt-3 text-sm text-red-300">{error}</p>}
+        {error && <p className="mt-3 text-sm text-red-700">{error}</p>}
         <button
           disabled={busy || !password}
-          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-guard py-2.5 text-sm font-medium text-white shadow-[0_8px_24px_-8px_rgb(76_141_255/0.7)] hover:bg-guard-dark disabled:opacity-50"
+          className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-guard py-2.5 text-sm font-medium text-white shadow-sm hover:bg-guard-dark disabled:opacity-50"
         >
           {busy && <Loader2 className="size-4 animate-spin" />} Sign in
         </button>

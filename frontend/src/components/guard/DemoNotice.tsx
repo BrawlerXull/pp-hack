@@ -44,14 +44,14 @@ export function DemoNotice() {
       : `Another visitor ${(DID[a.event] ?? (() => "changed the demo"))(a.data)} ${timeAgo(a.at)}. This demo is shared, so what you see may include their changes.`;
 
   return (
-    <div className="flex flex-wrap items-center gap-3 border-b border-amber-400/15 bg-amber-400/[0.06] px-4 py-2 text-xs text-amber-100 sm:px-6 lg:px-8" role="status">
-      <Users className="size-4 shrink-0 text-amber-300" />
+    <div className="flex flex-wrap items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 sm:px-6 lg:px-8" role="status">
+      <Users className="size-4 shrink-0 text-amber-700" />
       <p className="min-w-0 flex-1">{text}</p>
       {a.kind === "other_visitor" && (
         <button
           onClick={reset}
           disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium text-amber-200 ring-1 ring-amber-300/30 hover:bg-amber-300/10 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-medium text-amber-700 ring-1 ring-amber-200 hover:bg-amber-50 disabled:opacity-50"
         >
           <RotateCcw className="size-3.5" /> Reset demo
         </button>

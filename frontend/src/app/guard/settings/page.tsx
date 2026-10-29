@@ -58,7 +58,7 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
           </Button>
         }
       />
-      {error && <p className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-200">{error}</p>}
+      {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Autopilot" icon={ShieldCheck}>
@@ -68,7 +68,7 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
             checked={form.autopilot}
             onChange={(v) => set("autopilot", v)}
           />
-          <div className="my-5 border-t border-white/[0.06]" />
+          <div className="my-5 border-t border-line" />
           <Toggle
             label="Kill switch"
             hint="Turn Checkout Guard's defences off completely. It keeps watching and alerting, but takes no action."
@@ -88,7 +88,7 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
           </div>
           <p className="mt-4 text-xs text-ink-3">
             Anything above these limits is queued for your approval. A first-time shopper&apos;s payment is approved at checkout and charged after the hold, so payments
-            from an attack can be voided (never charged, no PayPal fee) instead of refunded. 0 charges at once.
+            from an attack can be voided (never charged, no PayPal fee) instead of refunded. Set the hold to 0 to charge at once.
           </p>
         </Card>
 
@@ -100,9 +100,9 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
           <div className="mt-4 flex flex-wrap items-center gap-2">
             {activeSale ? (
               <>
-                <span className="rounded-lg bg-sky-400/10 px-3 py-1.5 text-sm text-sky-200 ring-1 ring-sky-400/20">
+                <span className="rounded-lg bg-sky-50 px-3 py-1.5 text-sm text-sky-700 ring-1 ring-sky-200">
                   Sale running until {new Date(activeSale.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  {activeSale.note && <span className="text-sky-200/70"> · {activeSale.note}</span>}
+                  {activeSale.note && <span className="text-sky-700"> · {activeSale.note}</span>}
                 </span>
                 <Button variant="secondary" onClick={() => save({ ...form, sale_windows: [] })}>
                   End sale now
@@ -134,7 +134,7 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
               [false, "Cannot block anyone during a sale you've announced"],
             ].map(([can, text]) => (
               <li key={text as string} className="flex items-start gap-2.5">
-                <span className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full ${can ? "bg-emerald-400/10 text-emerald-300" : "bg-red-400/10 text-red-300"}`}>
+                <span className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full ${can ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
                   {can ? <Check className="size-3" /> : <X className="size-3" />}
                 </span>
                 <span className="text-ink-2">{text}</span>
@@ -161,7 +161,7 @@ function Toggle({ label, hint, checked, onChange, danger }: { label: string; hin
         aria-label={label}
         onClick={() => onChange(!checked)}
         className={`relative h-6 w-11 shrink-0 rounded-full transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-guard ${
-          checked ? (danger ? "bg-red-500" : "bg-guard") : "bg-white/15"
+          checked ? (danger ? "bg-red-500" : "bg-guard") : "bg-gray-100"
         }`}
       >
         <span className={`absolute top-0.5 size-5 rounded-full bg-white shadow transition-all ${checked ? "left-5.5" : "left-0.5"}`} />
@@ -174,7 +174,7 @@ function NumberField({ label, value, onChange, prefix, suffix }: { label: string
   return (
     <label className="block">
       <span className="text-sm font-medium text-ink-2">{label}</span>
-      <div className="mt-1.5 flex items-center rounded-lg border border-white/10 bg-white/[0.03] focus-within:border-guard/60 focus-within:ring-2 focus-within:ring-guard/20">
+      <div className="mt-1.5 flex items-center rounded-lg border border-line bg-gray-50 focus-within:border-guard/60 focus-within:ring-2 focus-within:ring-guard/20">
         {prefix && <span className="pl-3 text-sm text-ink-3">{prefix}</span>}
         <input type="number" min={0} value={value} onChange={(e) => onChange(e.target.value)} className="w-full rounded-lg bg-transparent px-3 py-2 text-sm text-ink-1 outline-none" />
         {suffix && <span className="pr-3 text-sm text-ink-3">{suffix}</span>}
