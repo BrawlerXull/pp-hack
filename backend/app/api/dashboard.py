@@ -188,7 +188,7 @@ async def answer_dispute(
     case = await session.get(DisputeCase, dispute_id, with_for_update=True, populate_existing=True)
     if case is None or case.shop_id != shop_id:
         raise HTTPException(404, "dispute not found")
-    if case.status != "open":
+    if case.status not in {"open", "failed"}:  # a failed answer (PayPal refused it) can be sent again
         raise HTTPException(409, f"dispute is {case.status}")
     await respond(session, paypal, case, decision, (body.note or "").strip() if body else None)
     await session.commit()

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.audit import audit
 from app.db.models import DisputeCase
-from app.disputes.advisor import now
+from app.disputes.advisor import CONTEST_EVIDENCE, now
 from app.events import publish
 from app.paypal.client import PayPalClient
 
@@ -72,7 +72,8 @@ async def respond(
                 request_id=request_id,
             )
         else:
-            evidence = {"evidence_type": case.evidence_type or "OTHER", "notes": case.note}
+            evidence_type = case.evidence_type or CONTEST_EVIDENCE.get((case.reason or "").upper(), "OTHER")
+            evidence = {"evidence_type": evidence_type, "notes": case.note}
             info = {k: v for k, v in (case.evidence or {}).items() if k == "refund_ids" and v}
             if info:
                 evidence["evidence_info"] = info

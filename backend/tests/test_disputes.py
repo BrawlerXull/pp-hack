@@ -52,6 +52,8 @@ def test_the_rules_decide_from_our_records_in_order():
         "D3_attack_payment",
     )
     assert recommend("UNAUTHORISED", FACTS)[:2] == ("review", "D4_review")
+    # Seen live: PayPal refuses OTHER for "item not received" and accepts PROOF_OF_FULFILLMENT.
+    assert recommend("MERCHANDISE_OR_SERVICE_NOT_RECEIVED", FACTS)[2] == "PROOF_OF_FULFILLMENT"
 
 
 @pytest.fixture
@@ -216,3 +218,45 @@ async def test_the_owner_can_edit_the_note_or_answer_in_paypal_instead(client, d
     assert (res["status"], res["note"], res["note_by"]) == ("contested", "Tracking number attached.", "owner")
     stored = (await db.execute(select(DisputeCase).where(DisputeCase.id == "PP-D-3"))).scalar_one()
     assert stored.decided_at is not None
+
+
+async def test_disputes_are_synced_from_paypal_and_cases_follow_paypals_status(db):
+    """Webhooks can be late (seen live: about three minutes): the worker also reads the Disputes API."""
+    import respx
+
+    from app.config import SANDBOX_API_BASE, Settings
+    from app.disputes import sync
+    from app.paypal.client import PayPalClient
+
+    _, a = await attack_capture(db, live=True)
+    dispute = {
+        "dispute_id": "PP-R-SYNC-1",
+        "reason": "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+        "status": "WAITING_FOR_SELLER_RESPONSE",
+        "update_time": "2026-10-29T17:38:13Z",
+        "dispute_amount": {"currency_code": "USD", "value": "3.00"},
+        "disputed_transactions": [{"seller_transaction_id": a.capture_id}],
+        "messages": [{"posted_by": "BUYER", "content": "item not received"}],
+    }
+    settings = Settings(_env_file=None, paypal_client_id="id", paypal_client_secret="s")
+    with respx.mock(base_url=SANDBOX_API_BASE) as pp:
+        pp.post("/v1/oauth2/token").respond(json={"access_token": "t", "expires_in": 3600})
+        pp.get("/v1/customer/disputes").respond(json={"items": [{"dispute_id": "PP-R-SYNC-1"}]})
+        detail = pp.get("/v1/customer/disputes/PP-R-SYNC-1").respond(json=dispute)
+        client = PayPalClient(settings, http=httpx.AsyncClient(base_url=SANDBOX_API_BASE), max_retries=0)
+        assert await sync.sync(db, client, SHOP, force=True) == 1
+        assert await sync.sync(db, client, SHOP, force=True) == 0  # unchanged: nothing new stored
+        await process_pending(db)
+        assert await advisor.open_new_cases(db, SHOP) == 1
+        case = await db.get(DisputeCase, "PP-R-SYNC-1")
+        # A confirmed attack's payment: accept, whatever the buyer's reason.
+        assert (case.status, case.rule) == ("open", "D3_attack_payment")
+
+        # The owner answered in PayPal itself: the case follows PayPal's status.
+        detail.respond(
+            json={**dispute, "status": "WAITING_FOR_BUYER_RESPONSE", "update_time": "2026-10-29T18:00:00Z"}
+        )
+        await sync.sync(db, client, SHOP, force=True)
+        await db.refresh(case)
+        assert case.status == "contested"
+        await client.aclose()

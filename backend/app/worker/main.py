@@ -25,6 +25,7 @@ from app.config import get_settings
 from app.db.bootstrap import ensure_shop
 from app.db.session import get_engine, get_sessionmaker
 from app.disputes import advisor
+from app.disputes import sync as dispute_sync
 from app.guard import devices
 from app.guard.check import invalidate_cache
 from app.incidents import observer
@@ -74,6 +75,9 @@ async def run() -> None:
                             break
                 async with sessions() as s:
                     await observer.enrich(s, paypal, settings.shop_id)  # orders PayPal sent no event for
+                async with sessions() as s:
+                    await dispute_sync.sync(s, paypal, settings.shop_id)  # webhooks can miss a dispute
+                    await process_pending(s)
                 async with sessions() as s:
                     await advisor.open_new_cases(s, settings.shop_id)
                 async with sessions() as s:

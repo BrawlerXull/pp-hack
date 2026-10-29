@@ -301,7 +301,7 @@ export type DisputeCase = {
   reason: string | null;
   amount: string;
   response_due: string | null;
-  status: "open" | "accepted" | "contested" | "dismissed" | "failed";
+  status: "open" | "accepted" | "contested" | "dismissed" | "failed" | "resolved";
   recommendation: "accept" | "contest" | "review";
   rule: string;
   evidence_type: string | null;

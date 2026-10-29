@@ -31,10 +31,12 @@ class Verification(StrEnum):
     # Not from PayPal: an event the simulator's observer mode wrote straight into the table (never through
     # the HTTP endpoint, which always verifies). Processed like a verified one, labelled simulated.
     SIMULATED = "SIMULATED"
+    # Read by our own authenticated call to PayPal's Disputes API (app/disputes/sync.py), not pushed to us.
+    API_SYNC = "API_SYNC"
 
 
 # Verifications whose events may change state (webhook_processor.py).
-TRUSTED = frozenset({Verification.SUCCESS, Verification.SIMULATED})
+TRUSTED = frozenset({Verification.SUCCESS, Verification.SIMULATED, Verification.API_SYNC})
 
 
 def cert_url_ok(url: str | None) -> bool:

@@ -25,6 +25,7 @@ const STATUS: Record<string, string> = {
   accepted: "Accepted at PayPal",
   contested: "Evidence sent to PayPal",
   dismissed: "Answered in PayPal",
+  resolved: "Resolved by PayPal",
   failed: "PayPal did not take the answer",
 };
 
@@ -33,7 +34,8 @@ export function DisputesCard({ incidentId }: { incidentId?: string }) {
   const { data } = useSWR<DisputeCase[]>("/dashboard/disputes", { refreshInterval: 15_000 });
   const cases = (data ?? []).filter((c) => !incidentId || c.incident_id === incidentId);
   if (!cases.length) return null;
-  const open = cases.filter((c) => c.status === "open");
+  // A failed answer (PayPal refused it) stays open for another try.
+  const open = cases.filter((c) => c.status === "open" || c.status === "failed");
   return (
     <Card
       title="Chargebacks & disputes"
@@ -45,7 +47,7 @@ export function DisputesCard({ incidentId }: { incidentId?: string }) {
           <OpenCase key={c.id} c={c} />
         ))}
         {cases
-          .filter((c) => c.status !== "open")
+          .filter((c) => c.status !== "open" && c.status !== "failed")
           .slice(0, 5)
           .map((c) => (
             <li key={c.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-3 py-2 text-xs text-ink-2">
@@ -116,6 +118,9 @@ function OpenCase({ c }: { c: DisputeCase }) {
           className="mt-1 w-full rounded-lg border border-white/10 bg-night-750 px-2.5 py-2 text-xs leading-relaxed text-ink-1 focus:border-guard focus:outline-none"
         />
       </label>
+      {c.status === "failed" && (
+        <p className="mt-1 text-xs text-red-300">PayPal did not take the last answer: {c.paypal_result}. Edit and send again.</p>
+      )}
       {error && <p className="mt-1 text-xs text-red-300">{error}</p>}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {(["accept", "contest"] as const).map((d) => (

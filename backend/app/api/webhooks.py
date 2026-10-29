@@ -65,7 +65,9 @@ async def paypal_webhook(
             transmission_id=transmission_id,
             event_id=event.get("id"),
             event_type=event.get("event_type"),
-            resource_id=(event.get("resource") or {}).get("id"),
+            # A dispute's resource has dispute_id, not id.
+            resource_id=(event.get("resource") or {}).get("id")
+            or (event.get("resource") or {}).get("dispute_id"),
             verified=verification.value,
             # Buyer data redacted; the few signals detection needs kept under "_cg" (safe_signals).
             payload={**redact(event), "_cg": safe_signals(event)},

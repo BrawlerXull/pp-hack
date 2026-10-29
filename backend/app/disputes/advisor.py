@@ -49,6 +49,14 @@ UNAUTHORISED = {
     "UNAUTHORIZED_TRANSACTION",
     "CREDIT_NOT_PROCESSED_UNAUTHORISED",
 }
+# The evidence PayPal accepts when the shop contests, by the buyer's reason. Seen live (Oct 29): for
+# MERCHANDISE_OR_SERVICE_NOT_RECEIVED, OTHER is refused (EVIDENCE_TYPE_IS_NOT_ALLOWED) and
+# PROOF_OF_FULFILLMENT is accepted. Reasons not listed here keep OTHER (not yet tried live).
+CONTEST_EVIDENCE = {
+    "MERCHANDISE_OR_SERVICE_NOT_RECEIVED": "PROOF_OF_FULFILLMENT",
+    "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED": "PROOF_OF_FULFILLMENT",
+}
+
 PLACEHOLDERS = ("capture_id", "amount", "payment_date", "refund_id", "refund_date", "dispute_reason")
 
 RULE_TEXT = {
@@ -184,7 +192,8 @@ def recommend(reason: str | None, facts: dict[str, Any]) -> tuple[str, str, str 
         return "contest", "D2_3ds_authenticated", "OTHER", {}
     if facts["attack_incident"]:
         return "accept", "D3_attack_payment", None, {}
-    return "review", "D4_review", None, {}
+    # Your call; if the owner contests, the evidence PayPal accepts for this reason.
+    return "review", "D4_review", CONTEST_EVIDENCE.get((reason or "").upper()), {}
 
 
 async def draft(
