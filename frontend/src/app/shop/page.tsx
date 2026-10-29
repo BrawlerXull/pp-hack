@@ -69,7 +69,7 @@ export default function ShopPage() {
         </section>
       </main>
 
-      <footer className="border-t border-wax py-6 text-center text-xs text-soot/50">
+      <footer className="border-t border-wax py-6 text-center text-xs text-soot/70">
         Demo store for the PayPal AI Hackathon. Runs on the PayPal sandbox; no real payments. Protected by Checkout Guard.
       </footer>
 
