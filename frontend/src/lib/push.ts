@@ -71,6 +71,9 @@ export async function enablePush(cfg: PushConfig): Promise<void> {
   }
   if (!token) throw new Error("Couldn't get a push token from Firebase.");
   await api("/push/devices", { method: "POST", json: { token, label: deviceLabel() } });
+  // A new token for this browser replaces its old one: otherwise every alert would arrive twice.
+  const previous = storedToken();
+  if (previous && previous !== token) await api("/push/devices/remove", { method: "POST", json: { token: previous, label: "" } }).catch(() => undefined);
   try {
     localStorage.setItem(TOKEN_KEY, token);
   } catch {
