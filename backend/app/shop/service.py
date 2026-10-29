@@ -57,6 +57,8 @@ class CheckoutRequest:
     ip: str | None
     email: str | None
     challenge_token: str | None = None
+    # The checkout page's FraudNet id: sent to PayPal as PayPal-Client-Metadata-Id with the order.
+    client_metadata_id: str | None = None
     # simulator-only fields
     source: str = Source.WEB
     scenario: str | None = None
@@ -260,7 +262,9 @@ async def place_order(
                 cancel_url=f"{app_url}/shop?3ds=cancel",
                 hold=verdict.hold,
             )
-            result = await create_order(paypal, payload, order_request_id(attempt.id))
+            result = await create_order(
+                paypal, payload, order_request_id(attempt.id), client_metadata_id=req.client_metadata_id
+            )
             # Server-side card orders (simulator) come back APPROVED and are captured (or held) immediately.
             if req.card and result.order_id and result.status == "APPROVED":
                 settle = authorize_order if verdict.hold else capture_order

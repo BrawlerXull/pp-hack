@@ -172,6 +172,10 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
   const [verifying, setVerifying] = useState(false);
   const [sca, setSca] = useState(false);
   const { data: shopConfig } = useSWR<ShopConfig>("/shop/config", fetcher);
+  // One FraudNet correlation id per checkout: sent with the order (PayPal-Client-Metadata-Id), so PayPal's own
+  // risk engine scores it with the device data its script collected on this page.
+  const [clientMetadataId] = useState(() => crypto.randomUUID().replace(/-/g, ""));
+  useFraudNet(clientMetadataId, shopConfig?.fraudnet_source_id);
   const [paying, setPaying] = useState(false);
   const [cardValid, setCardValid] = useState(false);
   const onValidity = useCallback((e: CardFieldsEventPayload) => setCardValid(cardFieldsValid(e)), []);
@@ -202,7 +206,14 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
       // A card order carries no card data: PayPal's hosted fields send the card straight to PayPal.
       const res = await api<CheckoutResult>("/shop/orders", {
         method: "POST",
-        json: { sku: product.sku, method: payWith, device_id: getDeviceId(), email: email || null, challenge_token: challengeToken },
+        json: {
+          sku: product.sku,
+          method: payWith,
+          device_id: getDeviceId(),
+          email: email || null,
+          challenge_token: challengeToken,
+          client_metadata_id: clientMetadataId,
+        },
       });
       if (!res.order_id) throw new Error(paymentProblem(res));
       setSca(res.decision === "allow_with_sca");
@@ -570,4 +581,24 @@ export function ProductArt({ sku, className = "" }: { sku: string; className?: s
       ))}
     </div>
   );
+}
+
+/** PayPal FraudNet (device data for PayPal's risk engine), loaded only when the shop has a source id from
+ * PayPal. Its config tag carries this checkout's correlation id; the same id goes to PayPal with the order. */
+function useFraudNet(clientMetadataId: string, sourceId: string | undefined) {
+  useEffect(() => {
+    if (!sourceId) return;
+    const config = document.createElement("script");
+    config.type = "application/json";
+    config.setAttribute("fncls", "fnparams-dede7cc5-15fd-4c75-a9f4-36c430ee3a99");
+    config.text = JSON.stringify({ f: clientMetadataId, s: sourceId, sandbox: true });
+    const loader = document.createElement("script");
+    loader.src = "https://c.paypal.com/da/r/fb.js";
+    loader.async = true;
+    document.body.append(config, loader);
+    return () => {
+      config.remove();
+      loader.remove();
+    };
+  }, [clientMetadataId, sourceId]);
 }

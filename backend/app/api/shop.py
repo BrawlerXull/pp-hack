@@ -56,6 +56,8 @@ class OrderIn(BaseModel):
     )
     email: str | None = Field(default=None, max_length=254)
     challenge_token: str | None = None
+    # FraudNet correlation id from the checkout page (32 hex characters).
+    client_metadata_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9]{8,36}$")
 
 
 class PrecheckIn(BaseModel):
@@ -117,6 +119,7 @@ def config(settings: Annotated[Settings, Depends(get_settings)]) -> dict:
         "turnstile_site_key": settings.turnstile_site_key if settings.turnstile_secret_key else "",
         "turnstile_test_keys": settings.turnstile_site_key in TURNSTILE_TEST_SITE_KEYS,
         "contact_email": settings.shop_contact_email,
+        "fraudnet_source_id": settings.paypal_fraudnet_source_id,
     }
 
 
@@ -151,6 +154,7 @@ async def create(
             ip=client_ip(request),
             email=body.email,
             challenge_token=body.challenge_token,
+            client_metadata_id=body.client_metadata_id,
         ),
     )
     if result.decision == Decision.BLOCK:

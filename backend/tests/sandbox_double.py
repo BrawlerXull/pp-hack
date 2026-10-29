@@ -103,6 +103,7 @@ class SandboxDouble:
     dispute_answers: list[tuple[str, str, bytes]] = field(default_factory=list)  # (dispute id, verb, body)
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)  # (method, path, request id)
     bodies: list[bytes] = field(default_factory=list)  # every request body our server sent
+    headers: list[dict[str, str]] = field(default_factory=list)  # and its headers
     verify_bodies: list[dict[str, Any]] = field(default_factory=list)
     _replay: dict[str, tuple[int, bytes, dict[str, str]]] = field(default_factory=dict)
     client: Any = None  # PayPalClient wired to this double by the `sandbox` fixture
@@ -243,6 +244,7 @@ class SandboxDouble:
         rid = request.headers.get("PayPal-Request-Id")
         self.calls.append((request.method, request.url.path, rid))
         self.bodies.append(request.content)
+        self.headers.append(dict(request.headers))
         if rid and rid in self._replay:
             status, content, headers = self._replay[rid]
             return httpx.Response(status, content=content, headers=headers)

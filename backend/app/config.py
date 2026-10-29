@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # test keys: the widget always passes and says "for testing only". Empty secret: a plain click-through.
     turnstile_site_key: str = "1x00000000000000000000AA"
     turnstile_secret_key: str = "1x0000000000000000000000000000000AA"
+    # PayPal FraudNet: the "source website identifier" PayPal gives the merchant for its device-data script.
+    # Set: the shop page loads FraudNet and sends its id with each order (PayPal-Client-Metadata-Id).
+    # Empty (default): only the id is generated; no device data reaches PayPal from the page.
+    paypal_fraudnet_source_id: str = ""
     # Shown to a shopper the guard blocked, so a false positive has somewhere to go.
     shop_contact_email: str = "help@wickandwax.example"
 

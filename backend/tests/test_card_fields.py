@@ -565,3 +565,11 @@ async def test_a_created_order_with_a_passing_3ds_result_is_captured(db, sandbox
 
     assert a is not None and a.outcome == Outcome.CAPTURED and a.capture_id
     assert a.sca_liability_shift == "POSSIBLE"
+
+
+async def test_the_checkout_pages_fraudnet_id_reaches_paypal_with_the_order(db, sandbox):
+    req = web_card("browser-fraudnet")
+    req.client_metadata_id = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+    await place_order(db, sandbox.client, req)
+    sent = [h["paypal-client-metadata-id"] for h in sandbox.headers if "paypal-client-metadata-id" in h]
+    assert sent == ["a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"]  # on the create-order call only

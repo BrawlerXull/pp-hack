@@ -58,6 +58,8 @@ export type ShopConfig = {
   turnstile_site_key: string;
   turnstile_test_keys: boolean;
   contact_email: string;
+  // PayPal FraudNet source id; "" when not configured (then no device-data script is loaded).
+  fraudnet_source_id: string;
 };
 
 export type Decision = "allow" | "allow_with_sca" | "challenge" | "block";

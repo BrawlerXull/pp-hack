@@ -153,13 +153,16 @@ def refund_request_id(attempt_id: str) -> str:
     return f"cg-refund-{attempt_id}"
 
 
-async def create_order(client: PayPalClient, payload: dict[str, Any], request_id: str) -> OrderResult:
+async def create_order(
+    client: PayPalClient, payload: dict[str, Any], request_id: str, client_metadata_id: str | None = None
+) -> OrderResult:
+    """`client_metadata_id`: the checkout page's FraudNet correlation id (PayPal-Client-Metadata-Id), so
+    PayPal's own risk engine scores the order with the device data its script collected on that page."""
+    headers = {"Prefer": "return=representation"}
+    if client_metadata_id:
+        headers["PayPal-Client-Metadata-Id"] = client_metadata_id
     res = await client.request(
-        "POST",
-        "/v2/checkout/orders",
-        json=payload,
-        headers={"Prefer": "return=representation"},
-        request_id=request_id,
+        "POST", "/v2/checkout/orders", json=payload, headers=headers, request_id=request_id
     )
     return parse_order(res)
 

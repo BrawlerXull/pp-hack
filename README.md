@@ -65,11 +65,27 @@ All calls go to `https://api-m.sandbox.paypal.com`. The backend refuses to start
 | Client token (JS SDK v6) | `POST /v1/oauth2/token` with `response_type=client_token` | Browser-safe token that loads the shop's PayPal button and Card Fields (`/shop/client-token`). Without it the PayPal button still loads with the public client id and card payments are switched off |
 | JS SDK v6 Card Fields | `components: ["paypal-payments", "card-fields"]`, `usePayPalCardFieldsOneTimePaymentSession().submit(orderId)` | **Pay by card** in the shop. PayPal hosts the number, expiry and CVV inputs (iframes) and runs the bank's 3-D Secure window; the card number goes from the browser to PayPal and never reaches our server |
 | Orders v2 | `POST /v2/checkout/orders`, `POST /v2/checkout/orders/{id}/capture`, `GET /v2/checkout/orders/{id}` | Every checkout. We send `PayPal-Request-Id` for idempotency, a `custom_id` that links webhooks to attempts, and on card orders `payment_source.card.attributes.verification.method`: `SCA_ALWAYS` while the guard is in 3-D Secure mode (and for the simulator's cards then), else `SCA_WHEN_REQUIRED` for browser cards. A browser card order carries no card data. Before capturing it we `GET` the order and read `payment_source.card.authentication_result` (liability shift, 3-D Secure enrollment and authentication status) plus the brand, last 4 and BIN |
-| Payments v2 refunds | `POST /v2/payments/captures/{id}/refund` | Capped refunds of matched attack captures. Each refund has a stable `PayPal-Request-Id`, so a re-send after a crash is made exactly once |
+| Orders v2: authorise (payment holds) | `intent: AUTHORIZE`, `POST /v2/checkout/orders/{id}/authorize` | A first-time shopper's payment is authorised, not captured, for the review window (and during an incident). See [payment holds](#safety-rules-policy-engine) |
+| Payments v2 authorizations | `POST /v2/payments/authorizations/{id}/void`, `POST /v2/payments/authorizations/{id}/capture` | **Void** the attack's held payments (nothing settles, no fee, nothing to dispute); **capture** every other hold. Both with a stable `PayPal-Request-Id` per hold |
+| Payments v2 refunds | `POST /v2/payments/captures/{id}/refund` | Capped refunds of matched attack captures that settled before they could be held. Each refund has a stable `PayPal-Request-Id`, so a re-send after a crash is made exactly once |
+| Disputes | `POST /v1/customer/disputes/{id}/accept-claim`, `POST /v1/customer/disputes/{id}/provide-evidence` (multipart) | The dispute assistant's answer, only after the owner decides |
+| FraudNet correlation | `PayPal-Client-Metadata-Id` header on order creation; FraudNet's `fb.js` on the checkout page when `PAYPAL_FRAUDNET_SOURCE_ID` is set | Lets PayPal's own risk engine score the order with the page's device data. We feed PayPal's tools rather than replace them |
 | Webhooks | `POST /v1/notifications/verify-webhook-signature` | Every incoming event is verified against the raw request body. Unverified events are stored but never acted on |
 | Webhook management | `GET/POST/PATCH /v1/notifications/webhooks` | `scripts/register_webhook.py` only, at setup time |
 
-We do **not** call the webhook simulator (`/v1/notifications/simulate-event`), Transaction Search or the Disputes API. See [Built vs planned](#built-vs-planned).
+We do **not** call the webhook simulator (`/v1/notifications/simulate-event`) or Transaction Search. See [Built vs planned](#built-vs-planned).
+
+## Why not just use…?
+
+| Alternative | What it does | Why a small PayPal shop still needs Checkout Guard |
+|---|---|---|
+| **PayPal Fraud Protection / Fraud Protection Advanced** | Scores each card payment; the merchant writes rules (including velocity rules) | It decides one payment at a time and the owner has to configure it, which most small shops never do. It does not see an *incident*, void or refund the attack's payments, answer the chargebacks, or explain what happened. Checkout Guard runs on top of it: it sends PayPal its FraudNet id with every order, and PayPal's declines are its strongest signal. *PayPal scores payments; Checkout Guard runs the response.* |
+| **Stripe Radar** | Blocks card testing automatically | For Stripe payments only. These merchants are on PayPal. |
+| **Captchas, Cloudflare, WooCommerce's card-testing protection** | Slow bots down on the checkout page | Captcha farms solve them, and they do nothing after a payment: no void, no refund, no dispute answer, no report. Checkout Guard uses Cloudflare Turnstile too, as one layer. |
+| **Signifyd, Riskified, Sift, Forter** | Enterprise fraud platforms | Priced and integrated for large merchants: a shop selling three-dollar candles cannot buy them. |
+| **"Isn't this just rules with an LLM writing text?"** | | The decisions that move money are deliberately not the AI's: a scorecard decides and fixed rules act, so a wrong answer from a model can never refund or block anyone. The AI does what rules cannot: it breaks ties the scorecard is unsure of, explains incidents in plain language, reads a disputing buyer's own words against our records, and runs the investigation agent. |
+| **"Merchants can't change their checkout."** | | They don't have to: [observer mode](#three-ways-to-connect-a-shop) works from PayPal webhooks alone. The guard check is the upgrade. |
+| **"Why capture and refund? You lose the fee."** | | We don't, for the payments we can hold: a first-time shopper's payment is authorised and the attack's are voided (see payment holds). Refunds remain only for payments that settled before anything looked wrong. |
 
 ## AI: who decides, who explains
 
@@ -248,7 +264,10 @@ uv run python scripts/attack.py flash_sale --url https://<frontend-host>/api --p
 |---|---|
 | Guard check, detection (tiered statistical triggers: Poisson, binomial, CUSUM), scorecard classifier with Gemini explanations and tie-breaks (evidence check, number guard), offline detection eval, policy R0–R5 + RELAX, executor with capped refunds, owner approvals, device block and trust lists, sale windows, reports and evidence pack, alert history + webhook push, system pills and heartbeat | **Built** |
 | PayPal button checkout (JS SDK v6), Orders v2, Refunds, webhook verification, labelled simulator (offline + live sandbox) | **Built** |
-| Disputes | **Built:** `CUSTOMER.DISPUTE.*` webhooks mark captures as disputed, which blocks automatic refunds and shows in the evidence pack. **Planned:** the Disputes API (we do not read or answer disputes through it) |
+| Disputes | **Built:** `CUSTOMER.DISPUTE.*` webhooks mark captures as disputed (no automatic refund on top), and the dispute assistant recommends, drafts and answers through the Disputes API after the owner decides. Tested against the sandbox double and with a simulated dispute; a live sandbox dispute (opened from a buyer account) is still to do |
+| Payment holds (authorise, then void or capture) | **Built**, verified on the live sandbox: a 3-D Secure card payment authorised then captured when its incident closed, and an authorization voided |
+| Observer mode (webhooks only) and the recording guard API (`/v1/guard/check` + `/v1/guard/outcome`) | **Built**; observer mode demonstrated with simulated webhooks (live webhooks need a public URL, i.e. the deployed app) |
+| Targeted 3-D Secure, FraudNet correlation id | **Built**; FraudNet's device-data script loads only with a PayPal-issued `PAYPAL_FRAUDNET_SOURCE_ID` (not set in the demo) |
 | Dashboard on AG Grid + AG Charts (Community) | **Built** |
 | AG Studio Investigate page: custom widgets, night theme, Guard analyst agent on Gemini with Studio's built-in agents, auto-investigation of new incidents | **Built** (needs `NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY` to drop the trial watermark) |
 | Docker compose, Render Blueprint, CI, daily health check, attacker terminal | **Built** |
