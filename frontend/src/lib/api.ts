@@ -234,7 +234,9 @@ export type Summary = {
 export type Attempt = {
   id: string;
   ts: string;
-  source: "web" | "simulator" | "seed";
+  // observed: seen only through PayPal webhooks (a checkout that does not call the guard); api: another
+  // shop's checkout calling POST /v1/guard/check.
+  source: "web" | "simulator" | "seed" | "observed" | "api";
   paypal_live: boolean;
   scenario: string | null;
   sku: string;
@@ -301,6 +303,8 @@ export type IncidentDetail = IncidentSummary & {
   evidence_vs_normal: EvidenceVsNormal[];
   // Seconds from the burst's first attempt to the incident opening.
   detected_in_s: number | null;
+  // Payments in the incident's window seen through a guard check vs. only through PayPal webhooks (observer mode).
+  seen_via?: { guarded: number; observed: number };
   actions: ActionRow[];
   report: { alert_text: string | null; report_md: string | null; evidence_md: string | null; model_id: string | null; generated_at: string } | null;
   timeline: { ts: string; actor: string; event: string; data: Record<string, unknown> }[];
@@ -324,7 +328,7 @@ export type Scenario = { name: string; live_supported: boolean };
 export type SimRun = {
   run_id: string;
   scenario: string;
-  mode: "live" | "offline";
+  mode: "live" | "offline" | "observer";
   total: number;
   done: number;
   outcomes: Partial<Record<Outcome, number>>;

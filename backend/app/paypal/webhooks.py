@@ -28,6 +28,13 @@ class Verification(StrEnum):
     NO_WEBHOOK_ID = "NO_WEBHOOK_ID"
     BAD_CERT_URL = "BAD_CERT_URL"
     ERROR = "ERROR"
+    # Not from PayPal: an event the simulator's observer mode wrote straight into the table (never through
+    # the HTTP endpoint, which always verifies). Processed like a verified one, labelled simulated.
+    SIMULATED = "SIMULATED"
+
+
+# Verifications whose events may change state (webhook_processor.py).
+TRUSTED = frozenset({Verification.SUCCESS, Verification.SIMULATED})
 
 
 def cert_url_ok(url: str | None) -> bool:
@@ -60,6 +67,32 @@ PII_KEYS = frozenset(
     }
 )
 REDACTED = "[redacted]"
+
+
+def safe_signals(event: dict[str, Any]) -> dict[str, Any]:
+    """What detection needs from the buyer data, taken before redaction: the email's domain (never the
+    address), the card's brand, BIN and last 4 (never the number), and a hash of the payer id."""
+    import hashlib
+
+    r = event.get("resource") or {}
+    payer = r.get("payer") or {}
+    email = payer.get("email_address")
+    card = (r.get("payment_source") or {}).get("card") or {}
+    payer_id = payer.get("payer_id")
+    domain = (
+        email.rsplit("@", 1)[1].strip().lower()[:255] if isinstance(email, str) and "@" in email else None
+    )
+    out = {
+        "email_domain": domain,
+        "payer_id_hash": hashlib.sha256(payer_id.encode()).hexdigest()[:32]
+        if isinstance(payer_id, str)
+        else None,
+        "card_brand": card.get("brand"),
+        "card_last4": card.get("last_digits"),
+        "card_bin6": (card.get("bin_details") or {}).get("bin"),
+        "card_expiry": card.get("expiry"),
+    }
+    return {k: v for k, v in out.items() if v}
 
 
 def redact(value: Any) -> Any:

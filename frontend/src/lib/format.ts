@@ -259,6 +259,7 @@ export const GUARD_REASON_LABEL: Record<string, string> = {
   returning_customer: "Returning customer: no extra checks",
   payment_hold: "First-time shopper during an attack: payment held",
   guard_unavailable: "Guard too slow: let through (fail-open)",
+  observed: "Seen through PayPal webhooks: no guard check ran",
 };
 
 export const ACTION_SHORT: Record<string, string> = {

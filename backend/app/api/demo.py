@@ -42,7 +42,8 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 
 
 class RunIn(BaseModel):
-    mode: Literal["live", "offline"] = "offline"
+    # observer: the scenario arrives as PayPal webhooks from a checkout that does not call the guard.
+    mode: Literal["live", "offline", "observer"] = "offline"
     count: int | None = Field(default=None, ge=1, le=500)
     speed: float = Field(default=1.0, gt=0, le=20)
     seed: int | None = None

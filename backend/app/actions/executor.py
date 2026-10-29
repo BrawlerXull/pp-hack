@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 import structlog
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,7 @@ from app.db.models import (
     IncidentStatus,
     MerchantSettings,
     Outcome,
+    Source,
 )
 from app.events import publish
 from app.guard import devices
@@ -231,6 +232,7 @@ class Executor:
                 CheckoutAttempt.fingerprint_hash,
                 CheckoutAttempt.email_domain,
                 CheckoutAttempt.sku,
+                CheckoutAttempt.source,
             )
             .where(
                 CheckoutAttempt.shop_id == incident.shop_id,
@@ -246,8 +248,14 @@ class Executor:
             q = q.where(CheckoutAttempt.fingerprint_hash.not_in(trusted))
         blocked = await devices.blocked_as_strong(self.s, incident.shop_id, now, incident.id)
         out = []
-        for attempt_id, fp, domain, sku in (await self.s.execute(q)).all():
+        for attempt_id, fp, domain, sku, source in (await self.s.execute(q)).all():
             m = classify_match(fp, domain, sig, blocked)
+            if m is None and source == Source.OBSERVED and top_sku is not None and sku == top_sku:
+                # Observer mode has no device to tie a capture to the attack (each card stands in for one),
+                # so the attack's pattern is the evidence: a capture on the attacked item, in the attack's
+                # window, from a payer never paid by this shop before. Always weak: the owner decides.
+                if not await self._paid_before(incident, fp):
+                    m = (False, ["attack_pattern"])
             if m is None:
                 continue
             strong, matched_on = m
@@ -257,6 +265,18 @@ class Executor:
                 matched_on = [*matched_on, "other_item"]
             out.append(Match(attempt_id, strong, matched_on))
         return out
+
+    async def _paid_before(self, incident: Incident, fp: str) -> bool:
+        """This payer (card, PayPal account or device) was captured before the attack window began."""
+        q = select(
+            exists().where(
+                CheckoutAttempt.shop_id == incident.shop_id,
+                CheckoutAttempt.fingerprint_hash == fp,
+                CheckoutAttempt.outcome == Outcome.CAPTURED,
+                CheckoutAttempt.ts < incident.opened_at - REFUND_LOOKBACK,
+            )
+        )
+        return bool((await self.s.execute(q)).scalar())
 
     async def _refunded_total(self, incident: Incident) -> Decimal:
         """Executed and in-flight: a refund PayPal has not answered yet still counts against the cap."""

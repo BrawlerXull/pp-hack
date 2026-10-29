@@ -7,7 +7,7 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
@@ -16,7 +16,12 @@ from app.db.session import get_sessionmaker
 from app.paypal.client import PayPalClient
 from app.paypal.orders import CardDetails
 from app.shop.service import CheckoutRequest, OfflinePlan, place_order
+from app.simulator import observer_feed
 from app.simulator.scenarios import OFFLINE_ONLY, SCENARIOS, Mode, SimAttempt
+
+# "observer": the scenario arrives as PayPal webhooks from a checkout that does not call the guard
+# (app/simulator/observer_feed.py), offline and labelled simulated.
+RunMode = Mode | Literal["observer"]
 
 log = structlog.get_logger()
 
@@ -25,7 +30,7 @@ log = structlog.get_logger()
 class SimRun:
     id: str
     scenario: str
-    mode: Mode
+    mode: RunMode
     total: int
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
@@ -82,7 +87,7 @@ def to_request(shop_id: str, scenario: str, a: SimAttempt, mode: Mode) -> Checko
 def start_run(
     shop_id: str,
     scenario: str,
-    mode: Mode,
+    mode: RunMode,
     paypal: PayPalClient | None,
     count: int | None = None,
     speed: float = 1.0,
@@ -100,7 +105,9 @@ def start_run(
     if not count:
         default = inspect.signature(fn).parameters["count"].default
         count = max(1, round(default * random.Random(seed ^ 0x5EED).uniform(0.7, 1.3)))
-    attempts = list(fn(mode, count=count, seed=seed, speed=speed, vary=True))
+    attempts = list(
+        fn("offline" if mode == "observer" else mode, count=count, seed=seed, speed=speed, vary=True)
+    )
     run = SimRun(
         id=uuid.uuid4().hex[:10],
         scenario=scenario,
@@ -126,9 +133,15 @@ async def _execute(
                 break
             await asyncio.sleep(a.delay_s)
             async with sessions() as s:
-                res = await place_order(s, paypal, to_request(shop_id, run.scenario, a, run.mode))
+                if run.mode == "observer":
+                    outcome = await observer_feed.deliver(s, a)
+                    await s.commit()
+                else:
+                    outcome = (
+                        await place_order(s, paypal, to_request(shop_id, run.scenario, a, run.mode))
+                    ).outcome
             run.done += 1
-            run.outcomes[res.outcome] += 1
+            run.outcomes[outcome] += 1
     except Exception as exc:
         run.error = f"{type(exc).__name__}: {exc}"
         log.exception("sim_run_failed", run=run.id)

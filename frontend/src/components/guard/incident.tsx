@@ -1,6 +1,6 @@
 "use client";
 
-import { Ban, BellRing, Bot, Check, CircleDollarSign, Clock, Loader2, PauseCircle, RotateCcw, ShieldCheck, Sparkles, TriangleAlert, Undo2, X, type LucideIcon } from "lucide-react";
+import { Ban, BellRing, Bot, Check, CircleDollarSign, Clock, Info, Loader2, PauseCircle, RotateCcw, ShieldCheck, Sparkles, TriangleAlert, Undo2, X, type LucideIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useState } from "react";
@@ -315,8 +315,20 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
   }
   rows.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 
+  const seen = incident.seen_via;
+  const webhooksOnly = !!seen && seen.observed > 0 && seen.guarded === 0;
   return (
     <div className="space-y-4">
+      {seen && seen.observed > 0 && (
+        <p className="flex items-start gap-2 rounded-lg bg-sky-400/[0.08] px-3 py-2 text-xs text-sky-100 ring-1 ring-sky-400/20">
+          <Info className="mt-0.5 size-3.5 shrink-0 text-sky-300" />
+          <span>
+            {webhooksOnly ? "Seen through PayPal webhooks only (observer mode): " : `${seen.observed} of these payments were seen through PayPal webhooks only: `}
+            detection, the verdict, alerts and refunds work, but blocking devices, 3-D Secure, the item hold and payment holds act only on checkouts that
+            call the guard (the shop, or <code className="font-mono">POST /v1/guard/check</code>).
+          </span>
+        </p>
+      )}
       {rows.length === 0 && pending.length === 0 && failed.length === 0 ? (
         <p className="py-6 text-center text-sm text-ink-3">No defences needed.</p>
       ) : (
@@ -376,9 +388,12 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
 
       {pending.length > 0 && (
         <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-3">
-          <p className="text-sm font-medium text-amber-100">
-            {pending.length} payment{pending.length === 1 ? "" : "s"} need your decision
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium text-amber-100">
+              {pending.length} payment{pending.length === 1 ? "" : "s"} need your decision
+            </p>
+            {pending.length > 1 && <DecideAll actions={pending} onChange={onChange} />}
+          </div>
           <ul className="mt-2 space-y-2">
             {pending.map((a) => (
               <PendingRefund key={a.id} action={a} onChange={onChange} />
@@ -403,11 +418,47 @@ const MATCH_REASON: Record<string, string> = {
   flagged_device: "device flagged in this attack",
   single_decline_device: "device had one declined payment",
   suspect_domain: "email domain with many declines",
+  attack_pattern: "seen through PayPal webhooks only: first-time payer on the attacked item, during the attack",
 };
 
 function refundReason(action: ActionRow): string {
   const on = ((action.params.matched_on as string[] | undefined) ?? []).map((m) => MATCH_REASON[m] ?? m);
   return [WAIT_REASON[action.rule] ?? "needs your approval", ...on].join(" · ");
+}
+
+/** One tap for the whole list: each payment still goes through its own approve/keep (same checks, same
+ * refund keys), one after another. A disputed payment is skipped, never refunded in bulk. */
+function DecideAll({ actions, onChange }: { actions: ActionRow[]; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const total = actions.reduce((s, a) => s + Number(a.params.amount ?? 0), 0);
+  async function decide(kind: "approve" | "reject") {
+    if (kind === "approve" && !window.confirm(`Refund or void all ${actions.length} payments (${money(total)})?`)) return;
+    setBusy(kind);
+    let skipped = 0;
+    try {
+      for (const a of actions) {
+        try {
+          await api(`/dashboard/incidents/${a.incident_id}/actions/${a.id}/${kind}`, { method: "POST" });
+        } catch {
+          skipped += 1; // disputed, or decided meanwhile: left for a one-by-one look
+        }
+      }
+    } finally {
+      setBusy(null);
+      onChange();
+      if (skipped) window.alert(`${skipped} payment${skipped === 1 ? " was" : "s were"} skipped (disputed or already decided): check them one by one.`);
+    }
+  }
+  return (
+    <span className="flex gap-1.5">
+      <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => decide("reject")}>
+        {busy === "reject" ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />} Keep all
+      </Button>
+      <Button size="sm" disabled={!!busy} onClick={() => decide("approve")}>
+        {busy === "approve" ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />} Approve all ({money(total)})
+      </Button>
+    </span>
+  );
 }
 
 function PendingRefund({ action, onChange }: { action: ActionRow; onChange: () => void }) {

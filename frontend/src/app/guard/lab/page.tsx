@@ -32,7 +32,7 @@ export default function LabPage() {
   const { data: summary } = useSWR<Summary>("/dashboard/summary", { refreshInterval: 5000 });
   const gs = summary?.guard_state;
   const defencesOn = Boolean(summary?.open_incident || gs?.mode === "sca_all" || gs?.held_skus.length || gs?.blocked_devices);
-  const [mode, setMode] = useState<"offline" | "live">("offline");
+  const [mode, setMode] = useState<"offline" | "live" | "observer">("offline");
   const [speed, setSpeed] = useState(3);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -60,7 +60,9 @@ export default function LabPage() {
         subtitle={
           <>
             Run labelled simulations against the real pipeline. <b className="text-ink-1">Offline</b> synthesises PayPal&apos;s answer (rows tagged SIM, no PayPal call).{" "}
-            <b className="text-ink-1">Live</b> sends real PayPal sandbox orders with sandbox test cards (needs card processing enabled on the sandbox app).
+            <b className="text-ink-1">Live</b> sends real PayPal sandbox orders with sandbox test cards (needs card processing enabled on the sandbox app).{" "}
+            <b className="text-ink-1">Webhooks only</b> is observer mode: the attack arrives as the PayPal webhooks of a checkout that never calls the guard (a hosted
+            button or plugin), so you can see what a shop gets with no code change: detection, alerts and refunds for approval, but no blocking or 3-D Secure.
           </>
         }
       />
@@ -93,14 +95,14 @@ export default function LabPage() {
         action={
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <div className="flex rounded-lg bg-white/[0.05] p-0.5 ring-1 ring-white/10" role="group" aria-label="PayPal mode">
-              {(["offline", "live"] as const).map((m) => (
+              {(["offline", "live", "observer"] as const).map((m) => (
                 <button
                   key={m}
                   onClick={() => setMode(m)}
                   aria-pressed={mode === m}
                   className={`rounded-md px-3 py-1 text-xs font-medium ${mode === m ? "bg-white/[0.12] text-ink-1" : "text-ink-2 hover:text-ink-1"}`}
                 >
-                  {m === "offline" ? "Offline" : "Live sandbox"}
+                  {m === "offline" ? "Offline" : m === "live" ? "Live sandbox" : "Webhooks only"}
                 </button>
               ))}
             </div>

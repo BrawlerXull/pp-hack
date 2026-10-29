@@ -111,6 +111,16 @@ function MethodCell({ data }: ICellRendererParams<Attempt>) {
 function SourceCell({ data }: ICellRendererParams<Attempt>) {
   if (!data) return null;
   if (data.source === "web") return <span className="text-ink-1">Shopper</span>;
+  if (data.source === "api") return <span className="text-ink-1" title="Checked by another shop's checkout (POST /v1/guard/check)">API</span>;
+  if (data.source === "observed")
+    return (
+      <span
+        className="rounded bg-sky-400/15 px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-sky-200"
+        title={data.paypal_live ? "Seen through PayPal webhooks only: no guard check ran" : "Simulated PayPal webhooks (observer mode), no PayPal call"}
+      >
+        WEBHOOK{data.paypal_live ? "" : " · SIM"}
+      </span>
+    );
   return (
     <span
       className="rounded bg-violet-400/15 px-1.5 py-0.5 text-[11px] font-semibold tracking-wide text-violet-200"

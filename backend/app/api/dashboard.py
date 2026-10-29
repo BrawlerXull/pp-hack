@@ -171,6 +171,25 @@ def network_check(
     }
 
 
+async def seen_via(session: AsyncSession, inc: Incident) -> dict[str, int]:
+    """Attempts in the incident's window that went through a guard check vs. ones only PayPal's webhooks
+    showed (observer mode): blocking, 3-D Secure and holds act only on the first kind."""
+    rows = (
+        await session.execute(
+            select(CheckoutAttempt.source, func.count())
+            .where(
+                CheckoutAttempt.shop_id == inc.shop_id,
+                CheckoutAttempt.ts >= inc.opened_at - timedelta(minutes=15),
+                CheckoutAttempt.ts <= (inc.closed_at or datetime.now(UTC)),
+                CheckoutAttempt.source != Source.SEED,
+            )
+            .group_by(CheckoutAttempt.source)
+        )
+    ).all()
+    observed = sum(n for source, n in rows if source == Source.OBSERVED)
+    return {"guarded": sum(n for _, n in rows) - observed, "observed": observed}
+
+
 DEMO_ACTIVITY_WINDOW = timedelta(minutes=30)
 
 
@@ -348,6 +367,8 @@ async def incident_detail(incident_id: str, shop_id: OwnerShop, session: Session
         # Uses the features the verdict was checked against: `features` moves on with every re-check.
         "evidence_vs_normal": normal.evidence_vs_normal(inc.verdict, inc.verdict_features or {}),
         "detected_in_s": await detection_delay_s(session, inc),
+        # How the incident's payments were seen: through a guard check (shop, API) or only PayPal's webhooks.
+        "seen_via": await seen_via(session, inc),
         "actions": [action_event(a) for a in actions],
         "report": {
             "alert_text": report.alert_text,

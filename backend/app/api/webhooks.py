@@ -12,7 +12,7 @@ from app.config import Settings, get_settings
 from app.db.models import PayPalEvent
 from app.db.session import get_session
 from app.paypal.client import PayPalClient
-from app.paypal.webhooks import redact, verify_webhook
+from app.paypal.webhooks import redact, safe_signals, verify_webhook
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 log = structlog.get_logger()
@@ -67,7 +67,8 @@ async def paypal_webhook(
             event_type=event.get("event_type"),
             resource_id=(event.get("resource") or {}).get("id"),
             verified=verification.value,
-            payload=redact(event),
+            # Buyer data redacted; the few signals detection needs kept under "_cg" (safe_signals).
+            payload={**redact(event), "_cg": safe_signals(event)},
         )
         .on_conflict_do_nothing(index_elements=["transmission_id"])  # PayPal retries are deduplicated
     )

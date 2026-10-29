@@ -1,5 +1,8 @@
 """Applies stored PayPal webhook events to checkout attempts. Only verified events change state.
 
+An order no checkout of ours created (no custom_id of this shop) is observed instead: it becomes an
+OBSERVED attempt (app/incidents/observer.py), so a shop that cannot change its checkout is still watched.
+
 Events are linked to attempts by capture id, order id, or the custom_id we send on every order
 ("{shop_id}:{attempt_id}"). An event that matches nothing yet stays pending for UNMATCHED_RETRY:
 the attempt row is committed only after PayPal's response returns, so a fast webhook can arrive first.
@@ -15,10 +18,12 @@ import structlog
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db.models import CheckoutAttempt, Outcome, PayPalEvent
 from app.events import publish
+from app.incidents import observer
 from app.paypal import codes
-from app.paypal.webhooks import Verification
+from app.paypal.webhooks import TRUSTED
 from app.shop.service import attempt_event, short_hash
 
 log = structlog.get_logger()
@@ -96,6 +101,13 @@ async def apply_event(session: AsyncSession, ev: PayPalEvent) -> str:
     et = ev.event_type or ""
     related_order = ((r.get("supplementary_data") or {}).get("related_ids") or {}).get("order_id")
     ref = _custom_id(r)
+    if et in observer.OBSERVABLE and observer.is_foreign(ref, get_settings().shop_id):
+        order_id = r.get("id") if et in observer.ORDER_EVENTS else related_order
+        ours = await _attempt(session, r.get("id") if et in observer.CAPTURE_EVENTS else None, order_id)
+        if ours is None or ours.source == "observed":
+            a = await observer.observe(session, ev, et, r)
+            await publish(session, "attempt", attempt_event(a))
+            return "observed"
 
     if et == "PAYMENT.CAPTURE.COMPLETED":
         a = await _attempt(session, r.get("id"), related_order, ref)
@@ -134,6 +146,8 @@ async def apply_event(session: AsyncSession, ev: PayPalEvent) -> str:
     else:
         return "ignored"
     if a:
+        if a.source == "api" and ev.verified == "SUCCESS":
+            a.paypal_live = True  # another shop's checked order: PayPal itself now vouches for it
         await publish(session, "attempt", attempt_event(a))
         return "applied"
     return "no_matching_attempt"
@@ -152,7 +166,7 @@ async def process_pending(session: AsyncSession, limit: int = 100) -> int:
     )
     events = list((await session.execute(q)).scalars())
     for ev in events:
-        if ev.verified == Verification.SUCCESS:
+        if ev.verified in TRUSTED:
             result = await apply_event(session, ev)
         else:
             result = "skipped_unverified"

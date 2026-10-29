@@ -114,6 +114,16 @@ Why not let the LLM decide: a Gemini call takes 3 to 25 seconds, free-tier quota
 
 [scripts/eval_ai.py](backend/scripts/eval_ai.py) (needs a Gemini key and spends quota) compares three columns on the same traffic: scorecard alone, Gemini alone, and both (Gemini only breaking ties).
 
+## Three ways to connect a shop
+
+| | What the shop changes | What Checkout Guard can do |
+|---|---|---|
+| **Observer mode** (no code) | Nothing in its checkout: it points its PayPal webhooks at Checkout Guard | Watches every order and capture PayPal reports (hosted buttons, plugins), detects and judges attacks, alerts the owner, writes the reports, and queues the attack's test payments for refund with **Approve all**. It cannot act *before* a payment: no blocking, no 3-D Secure, no holds. No device signal either, so its refunds always wait for the owner (matched on the attack's pattern: a first-time payer on the attacked item, during the attack). |
+| **Guard API** (a plugin) | Calls `POST /v1/guard/check` before creating each PayPal order and puts the returned `custom_id` on it | Everything: block, human check, 3-D Secure, holds. The order's PayPal webhooks reach the same attempt through the `custom_id`; `POST /v1/guard/outcome` reports what PayPal sends no webhook for (a card refused at order creation). |
+| **Demo shop** | Built in | Everything, in-process. |
+
+The Demo lab's **Webhooks only** mode runs any scenario as observer mode: the attack arrives as the PayPal webhooks of a checkout that never calls the guard (simulated events, labelled). In the War Room these rows carry a **WEBHOOK** badge.
+
 ## Safety rules (policy engine)
 
 [app/policy/engine.py](backend/app/policy/engine.py) is pure and unit-tested. It acts on the scorecard's classification. First match wins, except R0, which runs before any verdict.

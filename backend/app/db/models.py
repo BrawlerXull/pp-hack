@@ -41,6 +41,10 @@ class Source(StrEnum):
     WEB = "web"
     SIMULATOR = "simulator"
     SEED = "seed"  # synthetic baseline history
+    # Seen only through PayPal webhooks: an order from a checkout that does not call the guard (a hosted
+    # button, a plugin). No device signal; detection, refunds and alerts still work (incidents/observer.py).
+    OBSERVED = "observed"
+    API = "api"  # another shop's checkout calling POST /v1/guard/check
 
 
 class Method(StrEnum):
