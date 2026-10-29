@@ -1,14 +1,15 @@
 "use client";
 
-import { FlaskConical, Home, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck, Siren, Store, Telescope } from "lucide-react";
+import { FlaskConical, Home, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck, Siren, Store, Telescope, UserRound } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect } from "react";
 import useSWR, { SWRConfig } from "swr";
 import { DemoDock } from "@/components/guard/DemoDock";
-import { api, ApiError, fetcher } from "@/lib/api";
+import { api, ApiError, fetcher, type Me } from "@/lib/api";
 import { useLiveUpdates } from "@/lib/live";
 import { DemoNotice } from "./DemoNotice";
+import { InstallButton } from "@/components/pwa/InstallButton";
 import { SystemPills } from "./SystemPills";
 
 const NAV = [
@@ -33,12 +34,12 @@ export function GuardShell({ children }: { children: React.ReactNode }) {
 function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { data: me, error } = useSWR<{ shop_id: string }>("/auth/me", fetcher, { shouldRetryOnError: false });
+  const { data: me, error } = useSWR<Me>("/auth/me", fetcher, { shouldRetryOnError: false });
   const live = useLiveUpdates();
 
   useEffect(() => {
-    if (error instanceof ApiError && error.status === 401) router.replace("/login");
-  }, [error, router]);
+    if (error instanceof ApiError && error.status === 401) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+  }, [error, router, pathname]);
 
   // Always render the page (it shows skeletons until data arrives); unauthenticated visitors are
   // redirected to /login as soon as /auth/me answers 401.
@@ -47,7 +48,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     try {
       await api("/auth/logout", { method: "POST" });
     } finally {
-      router.replace("/login");
+      window.location.replace("/login"); // a full load drops this account's cached data
     }
   };
 
@@ -91,6 +92,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             <Link href="/" className={navLink("/", false)}>
               <Home className="size-4 shrink-0" aria-hidden /> About Checkout Guard
             </Link>
+            <InstallButton className={`${navLink("", false)} w-full`} />
           </div>
         </div>
       </aside>
@@ -109,6 +111,7 @@ function Shell({ children }: { children: React.ReactNode }) {
                   </Link>
                 ))}
                 <div className="border-t border-line pt-2">{me && <DemoDock />}</div>
+                <InstallButton className={`${navLink("", false)} w-full`} />
               </nav>
             </details>
             <p className="hidden truncate text-sm text-ink-3 md:block">
@@ -117,9 +120,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="flex items-center gap-2">
             <SystemPills live={live} />
-            <button onClick={signOut} className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium text-ink-2 hover:bg-gray-100 hover:text-ink-1">
-              <LogOut className="size-4" aria-hidden /> <span className="hidden sm:inline">Sign out</span>
-            </button>
+<AccountMenu me={me} onSignOut={signOut} />
           </div>
         </header>
         <DemoNotice />
@@ -133,5 +134,46 @@ function Shell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
     </div>
+  );
+}
+
+/** Who is signed in, their role, and the way out. A native <details> menu: keyboard and screen readers work. */
+function AccountMenu({ me, onSignOut }: { me: Me | undefined; onSignOut: () => void }) {
+  if (!me) return <span className="size-8 animate-pulse rounded-full bg-gray-100" aria-hidden />;
+  const initials = me.name
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  return (
+    <details className="group relative">
+      <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg px-1.5 hover:bg-gray-100 [&::-webkit-details-marker]:hidden">
+        <span className="flex size-7 items-center justify-center rounded-full bg-blue-100 text-xs font-semibold text-blue-800" aria-hidden>
+          {initials || "?"}
+        </span>
+        <span className="hidden text-left leading-tight lg:block">
+          <span className="block max-w-36 truncate text-[13px] font-medium text-ink-1">{me.name}</span>
+          <span className="block text-[11px] text-ink-3 capitalize">{me.role}</span>
+        </span>
+        <span className="sr-only">Account menu for {me.name}</span>
+      </summary>
+      <div className="absolute right-0 z-40 mt-2 w-64 rounded-xl border border-line bg-white p-1.5 shadow-lg">
+        <div className="border-b border-line px-3 py-2.5">
+          <p className="truncate text-sm font-medium text-ink-1">{me.name}</p>
+          <p className="truncate text-xs text-ink-3">{me.email}</p>
+          <p className="mt-1.5 inline-flex rounded-md bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-ink-2 capitalize">
+            {me.role}
+            {me.is_demo && " · shared demo"}
+          </p>
+        </div>
+        <Link href="/guard/settings#account" className="mt-1 flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-ink-1 hover:bg-gray-100">
+          <UserRound className="size-4 text-ink-3" aria-hidden /> Account &amp; notifications
+        </Link>
+        <button type="button" onClick={onSignOut} className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-ink-1 hover:bg-gray-100">
+          <LogOut className="size-4 text-ink-3" aria-hidden /> Sign out
+        </button>
+      </div>
+    </details>
   );
 }

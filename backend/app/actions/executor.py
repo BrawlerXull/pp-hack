@@ -12,6 +12,7 @@ from sqlalchemy import Select, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import push
 from app.db.audit import audit
 from app.db.models import (
     Action,
@@ -384,6 +385,14 @@ class Executor:
                 rule = None
             if rule is not None:
                 action = await self._record_refund(incident, rule, ActionStatus.AWAITING_APPROVAL, params)
+                push.queue(
+                    self.s,
+                    "approval",
+                    "Approval needed: {n} payment{s}",
+                    "Above your limits, so Checkout Guard waits for you. Open it to approve or reject.",
+                    f"/guard/incidents/{incident.id}",
+                    f"approval-{incident.id}",
+                )
             else:
                 action = await self.execute_refund(incident, attempt, params, p.rule, approved_by="auto")
             if action is not None:

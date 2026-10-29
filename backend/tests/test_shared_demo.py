@@ -25,6 +25,7 @@ from app.db.models import (
     MerchantSettings,
     Outcome,
     Source,
+    User,
 )
 from app.db.session import get_session
 from app.guard import check as guard
@@ -196,15 +197,21 @@ async def client(db):
 
 async def test_each_login_is_its_own_visitor_and_their_actions_are_tagged(db):
     settings = get_settings()
-    a, b = issue_session(settings), issue_session(settings)
+    one, two = (
+        User(shop_id=SHOP, email="one@x.co", name="One"),
+        User(shop_id=SHOP, email="two@x.co", name="Two"),
+    )
+    db.add_all([one, two])
+    await db.commit()
+    a, b = issue_session(settings, one), issue_session(settings, two)
 
     class Req:
         def __init__(self, token):
             self.cookies = {"cg_session": token}
 
-    await require_owner(Req(a), settings)  # type: ignore[arg-type]
+    await require_owner(Req(a), settings, db)  # type: ignore[arg-type]
     first = visitor.current()
-    await require_owner(Req(b), settings)  # type: ignore[arg-type]
+    await require_owner(Req(b), settings, db)  # type: ignore[arg-type]
     assert first and visitor.current() and first != visitor.current()
     audit(db, "owner", "demo.reset")
     audit(db, "system", "incident.closed")

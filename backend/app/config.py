@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     shop_api_key: str = "dev-shop-key"  # header X-Guard-Key for the external /v1/guard/check API
     admin_password: str = "guard-demo"  # dashboard login (judge credentials go in README)
     session_secret: str = "dev-session-secret-change-me"
+    # Team accounts (app/api/auth.py). The demo account signs in with ADMIN_PASSWORD and is an owner; new
+    # signups get this role: "viewer" (look around, run simulations) or "owner" (also settings and money).
+    demo_email: str = "demo@wickandwax.example"
+    signup_role: str = "viewer"
+    signup_enabled: bool = True
 
     # Public URL of the shop frontend: 3-D Secure return/cancel pages for SCA_ALWAYS card orders.
     public_app_url: str = "http://localhost:3000"
@@ -96,6 +101,13 @@ class Settings(BaseSettings):
     # Optional: also push each owner alert to a Slack incoming webhook or an ntfy topic URL (app/notify.py).
     notify_webhook_url: str = ""
     notify_timeout_s: float = 3.0
+
+    # Push notifications through Firebase Cloud Messaging (app/push.py). All optional: without the service
+    # account nothing is sent, and without the web config the dashboard hides the "Enable" button.
+    # FIREBASE_SERVICE_ACCOUNT: the service-account JSON itself (Render) or a path to the file (local).
+    firebase_service_account: str = ""
+    firebase_web_config: str = ""  # the console's firebaseConfig object, as JSON (public by design)
+    firebase_vapid_key: str = ""  # Cloud Messaging > Web Push certificates (public key)
 
     spike_output_dir: str = "spike-output"
 

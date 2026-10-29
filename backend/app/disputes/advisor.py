@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import push
 from app.ai.gemini import AIUnavailable, generate_json
 from app.ai.reporter import has_stray_numbers
 from app.ai.schemas import ATTACK_CLASSES
@@ -183,6 +184,13 @@ async def gather(session: AsyncSession, attempt: CheckoutAttempt) -> dict[str, A
     }
 
 
+DISPUTE_PUSH = {
+    "contest": "Our records support you: Checkout Guard recommends contesting and drafted the evidence.",
+    "accept": "This payment came from the attack: Checkout Guard recommends accepting it.",
+    "review": "Checkout Guard drafted a response. You decide whether to contest.",
+}
+
+
 def recommend(reason: str | None, facts: dict[str, Any]) -> tuple[str, str, str | None, dict[str, Any]]:
     """(recommendation, rule, evidence_type, evidence_info). Our records only, in this order."""
     if facts["refunded"]:
@@ -279,6 +287,14 @@ async def open_new_cases(session: AsyncSession, shop_id: str) -> int:
     for attempt in rows:
         case = await open_case(session, attempt)
         log.info("dispute_case_opened", dispute=case.id, recommendation=case.recommendation, rule=case.rule)
+        push.queue(
+            session,
+            "dispute",
+            f"New PayPal dispute: ${case.amount:.2f}",
+            DISPUTE_PUSH.get(case.recommendation, "Checkout Guard drafted a response. You decide."),
+            "/guard#disputes",
+            f"dispute-{case.id}",
+        )
     if rows:
         await session.commit()
     return len(rows)

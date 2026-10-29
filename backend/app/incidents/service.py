@@ -22,7 +22,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import notify
+from app import notify, push
 from app.actions.executor import Executor
 from app.ai import analyst, gemini, reporter
 from app.ai.schemas import Verdict
@@ -738,6 +738,7 @@ class IncidentService:
         await self.s.commit()
         if notify_owner:
             notify.send(report.alert_text or "", incident.id)  # after commit, in the background
+            push.send(*alert_push(incident, report.alert_text or ""))
         return report
 
     async def close(self, incident: Incident, rule: str) -> None:
@@ -751,6 +752,15 @@ class IncidentService:
         await self.s.commit()
         log.info("incident_closed", incident=incident.id, rule=rule)
         await self.write_report(incident)
+
+
+def alert_push(incident: Incident, text: str) -> tuple[str, str, str, str, str]:
+    """(kind, title, body, url, tag) for the owner alert: "incident" while it is open, "report" after."""
+    label = reporter.LABELS.get(incident.classification or "", "unusual checkout activity")
+    url = f"/guard/incidents/{incident.id}"
+    if incident.status == IncidentStatus.OPEN:
+        return "incident", f"{label[:1].upper()}{label[1:]}", text, url, f"incident-{incident.id}"
+    return "report", "It's over: your incident report is ready", text, url, f"incident-{incident.id}"
 
 
 def incident_event(i: Incident) -> dict[str, Any]:

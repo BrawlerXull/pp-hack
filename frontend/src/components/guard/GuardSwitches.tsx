@@ -62,7 +62,7 @@ export function GuardSwitches({ switches }: { switches: Summary["switches"] }) {
               disabled={busy !== null}
               onClick={() => flip(key)}
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50 ${
-                on ? (key === "kill_switch" ? "bg-red-500" : "bg-guard") : "bg-gray-100"
+                on ? (key === "kill_switch" ? "bg-red-500" : "bg-guard") : "bg-gray-300"
               }`}
             >
               <span className={`inline-block size-5 rounded-full bg-white shadow transition ${on ? "translate-x-5" : "translate-x-0.5"}`} />

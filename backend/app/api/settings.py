@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import OwnerShop
+from app.api.deps import ManagerShop, OwnerShop
 from app.db.audit import audit
 from app.db.models import MerchantSettings
 from app.db.session import get_session
@@ -66,7 +66,7 @@ async def get_settings_(
 
 @router.put("")
 async def put_settings(
-    body: SettingsBody, shop_id: OwnerShop, session: Annotated[AsyncSession, Depends(get_session)]
+    body: SettingsBody, shop_id: ManagerShop, session: Annotated[AsyncSession, Depends(get_session)]
 ) -> SettingsBody:
     ms = await session.get(MerchantSettings, shop_id)
     assert ms is not None
@@ -93,7 +93,7 @@ class SwitchesBody(BaseModel):
 
 @router.patch("/switches")
 async def patch_switches(
-    body: SwitchesBody, shop_id: OwnerShop, session: Annotated[AsyncSession, Depends(get_session)]
+    body: SwitchesBody, shop_id: ManagerShop, session: Annotated[AsyncSession, Depends(get_session)]
 ) -> SettingsBody:
     ms = await session.get(MerchantSettings, shop_id, with_for_update=True)
     assert ms is not None

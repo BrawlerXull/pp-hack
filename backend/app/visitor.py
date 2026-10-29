@@ -1,15 +1,21 @@
-"""Which dashboard visitor made a request. Every judge logs in with the same owner password, so each login
-gets its own random visitor id (in the signed session): the shared demo can then say "another visitor
-changed this" instead of silently mixing two people's runs. Set by require_owner, read by audit()."""
+"""Who made a dashboard request: the signed-in member's id and role, set by require_owner and read by
+audit() and require_manager. Each member has their own id, so the shared demo can say "another visitor
+changed this" instead of silently mixing two people's runs."""
 
 from contextvars import ContextVar
 
 _visitor: ContextVar[str | None] = ContextVar("owner_visitor", default=None)
+_role: ContextVar[str | None] = ContextVar("member_role", default=None)
 
 
 def current() -> str | None:
     return _visitor.get()
 
 
-def set_current(visitor_id: str | None) -> None:
+def role() -> str | None:
+    return _role.get()
+
+
+def set_current(visitor_id: str | None, role: str | None = None) -> None:
     _visitor.set(visitor_id)
+    _role.set(role)

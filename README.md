@@ -11,14 +11,15 @@ Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox*
 | | |
 |---|---|
 | Hosted demo | `https://<frontend-host>` *(placeholder: filled in at submission)*: product page, with links to the shop and the dashboard |
-| Owner dashboard | `https://<frontend-host>/guard`, password: `<judge password>` *(given in the submission form)* |
+| Owner dashboard | `https://<frontend-host>/guard`: sign in as `demo@wickandwax.example` with `<judge password>` *(given in the submission form)*, or create your own account (it joins as a viewer) |
+| Mobile app | Open the hosted demo on a phone and choose **Install app** (Android, desktop Chrome/Edge) or **Share → Add to Home Screen** (iPhone). Then **Settings → Notifications → Turn on** for push alerts |
 | Sandbox buyer (PayPal button) | `<sandbox-buyer-email>` / `<sandbox-buyer-password>` *(placeholder)* |
 
 ### Click path (about 5 minutes)
 
 1. **Product page** (`/`): what Checkout Guard does, attack vs flash sale, the PayPal capabilities it uses, and what's real vs simulated.
    **Shop** (`/shop`): the demo store "Wick & Wax". *Buy now* opens a real PayPal sandbox checkout (JS SDK v6): the PayPal button (log in with the sandbox buyer above) or **Pay by card** (PayPal-hosted card fields; the sheet lists sandbox test cards). The backend runs the guard check before it creates the order. After an attack has switched 3-D Secure on, pay by card with `4868719166101368` (the bank challenge passes and the payment goes through) and with `4868719181895556` (the challenge fails: not charged, and the War Room shows **3-D Secure failed**).
-2. **Shop owner → log in** with the judge password. You land on the **War Room**.
+2. **Shop owner → sign in** as `demo@wickandwax.example` with the judge password (the login page fills the email in). You land on the **War Room**.
 3. The 28 days of normal history are seeded automatically and renewed before they age out. To re-seed by hand: **Demo lab → Seed 28 days of normal history**.
 4. **Simulation bar (bottom of every dashboard page) → Card-testing attack** (150 offline attempts over about 2 minutes). Watch:
    - The **status pills** in the header: AI, detector, PayPal, simulator and live updates.
@@ -192,6 +193,10 @@ The Demo lab's **Webhooks only** mode runs any scenario as observer mode: the at
 - **Webhooks.** A body over 256 KB is refused before it is read whole. A signing certificate that is not served over https from paypal.com is refused without asking PayPal. Buyer names, emails, addresses and phone numbers are removed before an event is stored; the signature is still checked against the body exactly as received.
 - **Rate limits** per client IP, counted with the same trusted-proxy rule as the guard. Login: 10 wrong passwords per 5 minutes (correct logins don't count). Orders: 30 per minute. Precheck: 60. Human check: 10. Card tokens: 20. AI agent turns: 60. `RATE_LIMITS_ENABLED=false` switches them off for load tests.
 - **One open incident per shop**, enforced by a partial unique index in Postgres.
+
+**Accounts and roles.** Everyone signs in with their own email and password (scrypt hashes; sign-up is limited to 5 per hour per IP). The shared demo account `DEMO_EMAIL` has no stored password: it signs in with `ADMIN_PASSWORD`, so rotating that env var is enough. Members are **owners** (settings, approvals, the kill switch, device unblocks, disputes, the team) or **viewers** (everything else, including running simulations). New sign-ups get `SIGNUP_ROLE` (`viewer` by default); `SIGNUP_ENABLED=false` closes sign-ups. The role is checked on every request, so a demotion or removal applies at once.
+
+**Installable app and push notifications.** The dashboard is a Progressive Web App: a manifest, icons and a service worker (`frontend/public/sw.js`) that adds an offline page and never caches API calls. Push goes through **Firebase Cloud Messaging** (HTTP v1, `backend/app/push.py`): each member turns notifications on per device and picks what they hear about: an attack detected, payments that need their approval, a new dispute, and the attack being over. A push is queued inside the transaction that caused it and sent only after it commits. Tokens FCM reports as gone are deleted. On iPhone, push works once the app is on the Home Screen (iOS 16.4+).
 
 ## Run it
 

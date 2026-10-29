@@ -15,7 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 from app import visitor
 from app.actions.executor import DisputedCapture, Executor, action_event
 from app.ai import gemini
-from app.api.deps import OwnerShop, get_broadcaster, get_paypal
+from app.api.deps import ManagerShop, OwnerShop, get_broadcaster, get_paypal
 from app.config import Settings, get_settings
 from app.db.audit import audit
 from app.db.models import (
@@ -179,7 +179,7 @@ class DisputeAnswerIn(BaseModel):
 async def answer_dispute(
     dispute_id: str,
     decision: Literal["accept", "contest", "dismiss"],
-    shop_id: OwnerShop,
+    shop_id: ManagerShop,
     session: Session,
     paypal: Annotated[PayPalClient, Depends(get_paypal)],
     body: DisputeAnswerIn | None = None,
@@ -457,7 +457,7 @@ class ApproveIn(BaseModel):
 async def approve(
     incident_id: str,
     action_id: str,
-    shop_id: OwnerShop,
+    shop_id: ManagerShop,
     session: Session,
     paypal: Annotated[PayPalClient, Depends(get_paypal)],
     body: ApproveIn | None = None,
@@ -479,7 +479,7 @@ async def approve(
 
 
 @router.post("/incidents/{incident_id}/actions/{action_id}/reject")
-async def reject(incident_id: str, action_id: str, shop_id: OwnerShop, session: Session) -> dict[str, Any]:
+async def reject(incident_id: str, action_id: str, shop_id: ManagerShop, session: Session) -> dict[str, Any]:
     inc = await _incident_or_404(session, shop_id, incident_id)
     action = await Executor(session, None).reject(inc, await _pending_action(session, inc, action_id))
     await session.commit()
@@ -489,7 +489,7 @@ async def reject(incident_id: str, action_id: str, shop_id: OwnerShop, session: 
 @router.post("/incidents/{incident_id}/close")
 async def close_incident(
     incident_id: str,
-    shop_id: OwnerShop,
+    shop_id: ManagerShop,
     session: Session,
     paypal: Annotated[PayPalClient, Depends(get_paypal)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -559,7 +559,7 @@ async def regenerate_report(
 
 
 @router.post("/guard/reset")
-async def reset_guard(shop_id: OwnerShop, session: Session) -> dict[str, Any]:
+async def reset_guard(shop_id: ManagerShop, session: Session) -> dict[str, Any]:
     """Clear all defences (unblock devices, release SKUs, SCA off). Trusted devices stay trusted."""
     gs = await session.get(GuardState, shop_id, with_for_update=True)
     assert gs is not None
@@ -593,7 +593,7 @@ async def list_devices(shop_id: OwnerShop, session: Session) -> dict[str, list[d
 
 
 @router.post("/devices/{fingerprint}/unblock")
-async def unblock_device(fingerprint: str, shop_id: OwnerShop, session: Session) -> dict[str, Any]:
+async def unblock_device(fingerprint: str, shop_id: ManagerShop, session: Session) -> dict[str, Any]:
     """Owner vouches for a device: its block is released and it is trusted, so the next enforcement pass
     neither blocks it again nor refunds its payments (it is left out of the signature and refund matching).
     Under the GuardState lock, like every other write to the device lists."""

@@ -156,6 +156,44 @@ class Shop(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Role(StrEnum):
+    OWNER = "owner"  # everything, including settings, approvals and the team
+    VIEWER = "viewer"  # sees everything and runs simulations; cannot change settings or move money
+
+
+# What a member can be pushed about (app/push.py); each member picks theirs, all on by default.
+PUSH_KINDS = ("incident", "approval", "dispute", "report")
+
+
+class User(Base):
+    """A team member of a shop. Passwords are scrypt hashes (app/passwords.py); the demo account has none
+    and signs in with ADMIN_PASSWORD, so rotating that env var is enough."""
+
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default=new_id)
+    shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"), index=True)
+    email: Mapped[str] = mapped_column(String(254), unique=True)
+    name: Mapped[str] = mapped_column(String(100))
+    password_hash: Mapped[str | None] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(String(10), default=Role.VIEWER)
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    push_kinds: Mapped[list[str]] = mapped_column(JsonB, default=lambda: list(PUSH_KINDS))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PushDevice(Base):
+    """One browser or installed app that accepted notifications: its FCM registration token."""
+
+    __tablename__ = "push_devices"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token: Mapped[str] = mapped_column(String(512), unique=True)
+    label: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class MerchantSettings(Base):
     __tablename__ = "merchant_settings"
     shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"), primary_key=True)

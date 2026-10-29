@@ -1,10 +1,11 @@
 "use client";
 
-import { Check, CircleSlash, Loader2, PartyPopper, Save, ShieldCheck, Sparkles, X } from "lucide-react";
+import { Check, CircleSlash, Loader2, Lock, PartyPopper, Save, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useState } from "react";
 import useSWR from "swr";
-import { Button, Card, PageHeader, Skeleton } from "@/components/guard/ui";
-import { api, type MerchantSettings } from "@/lib/api";
+import { AccountSettings } from "@/components/guard/AccountSettings";
+import { Button, Card, PageHeader, Skeleton, Toggle } from "@/components/guard/ui";
+import { api, type MerchantSettings, type Me } from "@/lib/api";
 
 export default function SettingsPage() {
   const { data, mutate } = useSWR<MerchantSettings>("/settings");
@@ -16,6 +17,8 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
   // The form shows the server's settings until the owner edits something. Following server changes (e.g. a
   // flash sale started from the demo bar) means a save never sends back a stale copy that erases a sale window.
   const [draft, setDraft] = useState<MerchantSettings | null>(null);
+  const { data: me } = useSWR<Me>("/auth/me");
+  const viewer = me?.role === "viewer";
   const form = draft ?? current;
   const dirty = draft !== null;
   const [saving, setSaving] = useState(false);
@@ -53,14 +56,21 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
         title="Settings"
         subtitle="You set the limits. Checkout Guard acts inside them, and the AI can never change them."
         action={
-          <Button onClick={() => save()} disabled={saving || !dirty}>
+          <Button onClick={() => save()} disabled={saving || !dirty || viewer}>
             {saving ? <Loader2 className="size-4 animate-spin" /> : saved ? <Check className="size-4" /> : <Save className="size-4" />} {saved ? "Saved" : "Save changes"}
           </Button>
         }
       />
       {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
+      {viewer && (
+        <p className="flex items-start gap-2 rounded-lg border border-line bg-white px-4 py-3 text-sm text-ink-2">
+          <Lock className="mt-0.5 size-4 shrink-0 text-ink-3" aria-hidden />
+          You&apos;re a viewer, so the shop&apos;s protection settings are read-only. An owner can change your role under Team below.
+        </p>
+      )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <h2 className="sr-only">Shop protection</h2>
+      <fieldset disabled={viewer} className="grid min-w-0 gap-6 lg:grid-cols-2">
         <Card title="Autopilot" icon={ShieldCheck}>
           <Toggle
             label="Act automatically"
@@ -142,31 +152,10 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
             ))}
           </ul>
         </Card>
-      </div>
-    </>
-  );
-}
+      </fieldset>
 
-function Toggle({ label, hint, checked, onChange, danger }: { label: string; hint: string; checked: boolean; onChange: (v: boolean) => void; danger?: boolean }) {
-  return (
-    <div className="flex items-start justify-between gap-4">
-      <span>
-        <span className="block text-sm font-medium text-ink-1">{label}</span>
-        <span className="mt-0.5 block text-xs leading-relaxed text-ink-3">{hint}</span>
-      </span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        onClick={() => onChange(!checked)}
-        className={`relative h-6 w-11 shrink-0 rounded-full transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-guard ${
-          checked ? (danger ? "bg-red-500" : "bg-guard") : "bg-gray-100"
-        }`}
-      >
-        <span className={`absolute top-0.5 size-5 rounded-full bg-white shadow transition-all ${checked ? "left-5.5" : "left-0.5"}`} />
-      </button>
-    </div>
+      <AccountSettings />
+    </>
   );
 }
 

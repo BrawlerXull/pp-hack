@@ -29,3 +29,7 @@ coverage/
 
 # spike output (may contain sandbox ids)
 backend/spike-output/
+
+# Firebase service-account keys (push notifications)
+firebase-service-account*.json
+*-firebase-adminsdk-*.json

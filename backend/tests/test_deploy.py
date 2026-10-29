@@ -9,12 +9,12 @@ import pytest
 import respx
 from fastapi import Response
 from pydantic import ValidationError
-from starlette.requests import Request
 
 from app.ai import analyst, gemini, reporter
 from app.api import auth
 from app.api.deps import SESSION_COOKIE, get_paypal, require_owner
 from app.config import Settings
+from app.db.models import User
 from app.db.session import get_session
 from app.events import Broadcaster
 from app.main import app
@@ -66,8 +66,7 @@ def test_refusal_does_not_echo_other_secrets_into_the_log():
 def test_session_cookie_is_secure_in_production(environment, secure):
     settings = Settings(_env_file=None, environment=environment, **STRONG)
     response = Response()
-    request = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
-    auth.login(auth.LoginIn(password=STRONG["admin_password"]), request, response, settings)
+    auth._start_session(response, settings, User(id="u1", shop_id=SHOP, email="a@b.co", name="A"))
     cookie = response.headers["set-cookie"]
     assert cookie.startswith(f"{SESSION_COOKIE}=") and ("; Secure" in cookie) is secure
 

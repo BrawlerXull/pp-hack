@@ -19,6 +19,8 @@ export class ApiError extends Error {
 function errorMessage(status: number, body: unknown): string {
   const d = typeof body === "object" && body && "detail" in body ? (body as { detail: unknown }).detail : undefined;
   if (typeof d === "object" && d && "message" in d) return String((d as { message: unknown }).message);
+  // Pydantic validation: a list of {loc, msg}; the first one is enough for a form.
+  if (Array.isArray(d) && d[0] && typeof d[0] === "object" && "msg" in d[0]) return String(d[0].msg).replace(/^Value error, /, "");
   return d !== undefined ? String(d) : `HTTP ${status}`;
 }
 
@@ -336,6 +338,32 @@ export type IncidentDetail = IncidentSummary & {
 };
 
 export type SaleWindow = { start: string; end: string; note: string };
+
+export type Role = "owner" | "viewer";
+
+export type Member = {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  is_demo: boolean;
+  created_at: string;
+  last_login_at: string | null;
+};
+
+export type Me = Member & { shop_id: string };
+
+export type AuthOptions = { demo_email: string; signup_enabled: boolean; signup_role: Role };
+
+export type PushKind = "incident" | "approval" | "dispute" | "report";
+
+export type PushConfig = {
+  enabled: boolean;
+  firebase: Record<string, string> | null;
+  vapid_key: string | null;
+  kinds: PushKind[];
+  devices: { id: string; label: string; created_at: string }[];
+};
 
 export type MerchantSettings = {
   autopilot: boolean;

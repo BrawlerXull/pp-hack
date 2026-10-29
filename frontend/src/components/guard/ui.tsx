@@ -149,3 +149,42 @@ export function PageHeader({ title, subtitle, action }: { title: ReactNode; subt
     </div>
   );
 }
+
+/** An on/off switch with its label (role=switch, so screen readers announce on/off). */
+export function Toggle({
+  label,
+  hint,
+  checked,
+  onChange,
+  danger,
+  disabled,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  danger?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <span>
+        <span className="block text-sm font-medium text-ink-1">{label}</span>
+        {hint && <span className="mt-0.5 block text-xs leading-relaxed text-ink-3">{hint}</span>}
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        onClick={() => onChange(!checked)}
+        disabled={disabled}
+        className={`relative h-6 w-11 shrink-0 rounded-full transition disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-guard ${
+          checked ? (danger ? "bg-red-500" : "bg-guard") : "bg-gray-300"
+        }`}
+      >
+        <span className={`absolute top-0.5 size-5 rounded-full bg-white shadow transition-all ${checked ? "left-5.5" : "left-0.5"}`} />
+      </button>
+    </div>
+  );
+}

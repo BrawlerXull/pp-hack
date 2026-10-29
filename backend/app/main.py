@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import breaker, gemini
-from app.api import auth, dashboard, demo, guard, settings, shop, studio, webhooks
+from app.api import auth, dashboard, demo, guard, push, settings, shop, studio, webhooks
 from app.api.deps import get_paypal
 from app.config import get_settings
 from app.db.bootstrap import ensure_shop
@@ -50,6 +50,7 @@ app.add_middleware(
 
 for router in (
     auth.router,
+    push.router,
     shop.router,
     guard.router,
     webhooks.router,

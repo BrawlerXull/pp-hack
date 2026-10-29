@@ -11,6 +11,18 @@ const BACKEND_URL = /^https?:\/\//.test(RAW_BACKEND_URL)
   : `http://${RAW_BACKEND_URL}${/:\d+$/.test(RAW_BACKEND_URL) ? "" : ":8000"}`;
 
 const nextConfig: NextConfig = {
+  // The service worker must never be cached by the browser, or a fix would not reach installed apps.
+  async headers() {
+    return [
+      {
+        source: "/sw.js",
+        headers: [
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+          { key: "Content-Type", value: "application/javascript; charset=utf-8" },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${BACKEND_URL}/:path*` }];
   },
