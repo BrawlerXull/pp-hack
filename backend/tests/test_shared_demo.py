@@ -157,6 +157,8 @@ async def test_an_idle_demo_stands_down_to_its_defaults(db, monkeypatch):
 
 
 async def test_defences_left_without_an_incident_are_switched_off_too(db):
+    # conftest turns the review window off; here the settings start at their defaults.
+    await db.execute(update(MerchantSettings).values(review_hold_min=10))
     gs = await db.get(GuardState, SHOP)
     gs.mode = GuardMode.SCA_ALL
     await db.commit()
