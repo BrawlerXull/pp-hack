@@ -24,6 +24,11 @@ import { api, ApiError, fetcher, type CaptureResult, type CheckoutResult, type P
 import { getDeviceId } from "@/lib/device";
 import { Turnstile } from "./Turnstile";
 
+// PayPal's SDK loads into its own global, not window.paypal: a browser extension (e.g. PayPal Honey) or another
+// PayPal script can leave a window.paypal without a version, and the v6 loader then fails with "Cannot read
+// properties of undefined (reading 'startsWith')" (seen in a real browser, Oct 29).
+const PAYPAL_NAMESPACE = "cgPayPal";
+
 type Phase =
   | { kind: "idle" }
   | { kind: "challenge" }
@@ -129,11 +134,11 @@ export function CheckoutSheet({
               <Loader2 className="size-4 animate-spin" /> Loading payment options…
             </p>
           ) : clientId && clientToken ? (
-            <PayPalProvider clientToken={clientToken} environment="sandbox" components={WALLET_AND_CARDS} pageType="checkout">
+            <PayPalProvider clientToken={clientToken} environment="sandbox" components={WALLET_AND_CARDS} pageType="checkout" dataNamespace={PAYPAL_NAMESPACE}>
               <CheckoutForm product={product} cardsAvailable />
             </PayPalProvider>
           ) : clientId ? (
-            <PayPalProvider clientId={clientId} environment="sandbox" components={WALLET_ONLY} pageType="checkout">
+            <PayPalProvider clientId={clientId} environment="sandbox" components={WALLET_ONLY} pageType="checkout" dataNamespace={PAYPAL_NAMESPACE}>
               <CheckoutForm product={product} cardsAvailable={false} />
             </PayPalProvider>
           ) : configFailed ? (
