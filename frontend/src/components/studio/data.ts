@@ -162,10 +162,10 @@ export function buildStudioData(p: StudioPayload): AgDataSourcesDefinition<Guard
     incident: a.incident_id ? (incidentNames.get(a.incident_id) ?? a.incident_id) : "No incident",
     attempts: 1,
     reached: a.reached_paypal ? 1 : 0,
-    paid: a.outcome === "captured" ? 1 : 0,
+    paid: a.outcome === "captured" || a.outcome === "authorized" ? 1 : 0,
     declined: a.outcome === "declined" ? 1 : 0,
     stopped: STOPPED.has(a.outcome) ? 1 : 0,
-    refunded: a.outcome === "refunded" ? 1 : 0,
+    refunded: a.outcome === "refunded" || a.outcome === "voided" ? 1 : 0,
   }));
 
   const incidents = p.incidents.map((i) => ({

@@ -298,4 +298,6 @@ async def test_new_shopper_on_held_item_is_challenged_then_allowed_with_3ds(db, 
 
     token = issue_challenge_token(fingerprint("new-human-1", "Mozilla/5.0"))
     second = await place_order(db, None, CheckoutRequest(**human, challenge_token=token))
-    assert second.decision == Decision.ALLOW_WITH_SCA and second.outcome == Outcome.CAPTURED
+    # Passed 3-D Secure, and as a first-time shopper during the attack the payment is held (authorised, not
+    # captured): app/actions/holds.py captures it once the incident is over (the attack does not match it).
+    assert second.decision == Decision.ALLOW_WITH_SCA and second.outcome == Outcome.AUTHORIZED

@@ -119,12 +119,16 @@ class Executor:
     async def apply(self, incident: Incident, planned: list[PlannedAction]) -> list[Action]:
         """Commits. Guard-state changes go first and are committed at once, so 3-D Secure, blocks and holds
         are live (and the GuardState row lock released: owner reset, close) before any PayPal refund call.
-        Refunds then run one short transaction per capture."""
+        Refunds then run one short transaction per capture. The same policy decision voids the attack's held
+        payments (app/actions/holds.py) first: a hold voided is a refund that never has to happen."""
+        from app.actions.holds import Holds
+
         done = await self._apply_guard(incident, [p for p in planned if p.type != ActionType.REFUND])
         await self.s.commit()
         invalidate_cache(incident.shop_id)
         for p in planned:
             if p.type == ActionType.REFUND:
+                done.extend(await Holds(self).void_matched(incident, p))
                 done.extend(await self.refund_matched(incident, p))
         return done
 
@@ -552,7 +556,20 @@ class Executor:
 
     async def approve(self, incident: Incident, action: Action, override_dispute: bool = False) -> Action:
         """Commits for a live refund (the claim goes in flight before PayPal is called). Raises
-        DisputedCapture for a disputed capture unless the owner explicitly overrides."""
+        DisputedCapture for a disputed capture unless the owner explicitly overrides. A pending VOID (a held
+        payment the attack matched weakly) is voided."""
+        if action.type == ActionType.VOID:
+            from app.actions.holds import Holds
+
+            held = await self.s.get(
+                CheckoutAttempt, action.params["attempt_id"], with_for_update=True, populate_existing=True
+            )
+            if held is None or held.outcome != Outcome.AUTHORIZED:
+                action.status, action.error = ActionStatus.REJECTED, "payment is no longer held"
+                return action
+            return await Holds(self).void(
+                incident, held, action.params, action.policy_rule, approved_by="owner", pending=action
+            )
         # Locked and re-read: an autopilot refund or another incident's approval of the same capture may
         # have just refunded it (same refund key, so PayPal would replay that refund as if it were ours).
         attempt = await self.s.get(
@@ -582,8 +599,13 @@ class Executor:
     async def reject(self, incident: Incident, action: Action) -> Action:
         action.status = ActionStatus.REJECTED
         action.approved_by = "owner"
-        audit(self.s, "owner", "refund.rejected", incident.id, action_id=action.id)
+        kind = "void" if action.type == ActionType.VOID else "refund"
+        audit(self.s, "owner", f"{kind}.rejected", incident.id, action_id=action.id)
         await publish(self.s, "action", action_event(action))
+        if action.type == ActionType.VOID:  # "Keep": the held payment is captured now
+            from app.actions.holds import Holds
+
+            await Holds(self).owner_kept(incident, action)
         return action
 
     async def deescalate(self, incident: Incident, rule: str) -> None:

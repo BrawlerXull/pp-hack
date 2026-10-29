@@ -83,6 +83,8 @@ class _Order:
     unit: dict[str, Any]
     card: dict[str, Any] | None
     capture: dict[str, Any] | None = None
+    intent: str = "CAPTURE"
+    authorization: dict[str, Any] | None = None  # intent AUTHORIZE: the payment hold, once authorised
 
 
 @dataclass
@@ -97,6 +99,7 @@ class SandboxDouble:
     valid_signature: str = "valid-sig"
     orders: dict[str, _Order] = field(default_factory=dict)
     refunds: dict[str, dict[str, Any]] = field(default_factory=dict)  # capture id → refund
+    authorizations: dict[str, "_Order"] = field(default_factory=dict)  # authorization id → its order
     calls: list[tuple[str, str, str | None]] = field(default_factory=list)  # (method, path, request id)
     bodies: list[bytes] = field(default_factory=list)  # every request body our server sent
     verify_bodies: list[dict[str, Any]] = field(default_factory=list)
@@ -159,9 +162,11 @@ class SandboxDouble:
         unit = dict(o.unit)
         if o.capture:
             unit["payments"] = {"captures": [o.capture]}
+        if o.authorization:
+            unit["payments"] = {"authorizations": [o.authorization]}
         body: dict[str, Any] = {
             "id": o.id,
-            "intent": "CAPTURE",
+            "intent": o.intent,
             "status": o.status,
             "purchase_units": [unit],
             "create_time": "2026-10-18T10:00:00Z",
@@ -268,7 +273,7 @@ class SandboxDouble:
             status, sca = "CREATED", False
         else:
             status = "PAYER_ACTION_REQUIRED" if sca else "APPROVED"
-        order = _Order(self._id("ORD"), status, dict(unit), card)
+        order = _Order(self._id("ORD"), status, dict(unit), card, intent=payload.get("intent", "CAPTURE"))
         self.orders[order.id] = order
         return httpx.Response(200 if sca else 201, json=self._order_json(order))
 
@@ -278,6 +283,8 @@ class SandboxDouble:
             return httpx.Response(
                 404, json={"name": "RESOURCE_NOT_FOUND", "details": [{"issue": "INVALID_RESOURCE_ID"}]}
             )
+        if o.intent != "CAPTURE":
+            return self._err(422, "ACTION_DOES_NOT_MATCH_INTENT")
         if o.capture is not None:
             return self._err(422, "ORDER_ALREADY_CAPTURED")
         if o.status == "PAYER_ACTION_REQUIRED":
@@ -288,6 +295,56 @@ class SandboxDouble:
             return self._err(422, "ORDER_NOT_APPROVED")
         self._capture(o)
         return httpx.Response(201, json=self._order_json(o), headers={"paypal-debug-id": "dbg-cap"})
+
+    def _authorize_route(self, request: httpx.Request, oid: str) -> httpx.Response:
+        """Intent AUTHORIZE: a payment hold. Declines like a capture (CCREJECT-* name → DENIED)."""
+        o = self.orders.get(oid)
+        if o is None:
+            return httpx.Response(404, json={"name": "RESOURCE_NOT_FOUND"})
+        if o.intent != "AUTHORIZE":
+            return self._err(422, "ACTION_DOES_NOT_MATCH_INTENT")
+        if o.authorization is not None:
+            return self._err(422, "ORDER_ALREADY_AUTHORIZED")
+        if o.status == "PAYER_ACTION_REQUIRED":
+            return self._err(422, "PAYER_ACTION_REQUIRED")
+        if o.status == "CREATED" and not (o.card or {}).get("number"):
+            return self._err(422, "ORDER_NOT_APPROVED")
+        code = trigger_code((o.card or {}).get("name"))
+        o.status = "COMPLETED"
+        o.authorization = {
+            "id": self._id("AUTH"),
+            "status": "DENIED" if code else "CREATED",
+            "amount": o.unit["amount"],
+            "custom_id": o.unit.get("custom_id"),
+            "processor_response": {"response_code": code or "0000"},
+            "expiration_time": "2026-11-17T10:00:00Z",
+        }
+        self.authorizations[o.authorization["id"]] = o
+        return httpx.Response(201, json=self._order_json(o))
+
+    def _void_route(self, request: httpx.Request, aid: str) -> httpx.Response:
+        o = self.authorizations.get(aid)
+        if o is None or o.authorization is None:
+            return httpx.Response(404, json={"name": "RESOURCE_NOT_FOUND"})
+        if o.authorization["status"] != "CREATED":
+            return self._err(422, f"AUTHORIZATION_ALREADY_{o.authorization['status']}")
+        o.authorization["status"] = "VOIDED"
+        return httpx.Response(204)
+
+    def _capture_auth_route(self, request: httpx.Request, aid: str) -> httpx.Response:
+        o = self.authorizations.get(aid)
+        if o is None or o.authorization is None:
+            return httpx.Response(404, json={"name": "RESOURCE_NOT_FOUND"})
+        if o.authorization["status"] != "CREATED":
+            return self._err(422, f"AUTHORIZATION_ALREADY_{o.authorization['status']}")
+        o.authorization["status"] = "CAPTURED"
+        cap = {
+            "id": self._id("CAP"),
+            "status": "COMPLETED",
+            "amount": o.unit["amount"],
+            "final_capture": True,
+        }
+        return httpx.Response(201, json=cap)
 
     def _get_order(self, request: httpx.Request, oid: str) -> httpx.Response:
         self.calls.append((request.method, request.url.path, None))
@@ -339,6 +396,15 @@ class SandboxDouble:
         router.post("/v2/checkout/orders").mock(side_effect=lambda r: self._idempotent(r, self._create))
         router.post(path__regex=r"^/v2/checkout/orders/(?P<oid>[^/]+)/capture$").mock(
             side_effect=lambda r, oid: self._idempotent(r, self._capture_route, oid=oid)
+        )
+        router.post(path__regex=r"^/v2/checkout/orders/(?P<oid>[^/]+)/authorize$").mock(
+            side_effect=lambda r, oid: self._idempotent(r, self._authorize_route, oid=oid)
+        )
+        router.post(path__regex=r"^/v2/payments/authorizations/(?P<aid>[^/]+)/void$").mock(
+            side_effect=lambda r, aid: self._idempotent(r, self._void_route, aid=aid)
+        )
+        router.post(path__regex=r"^/v2/payments/authorizations/(?P<aid>[^/]+)/capture$").mock(
+            side_effect=lambda r, aid: self._idempotent(r, self._capture_auth_route, aid=aid)
         )
         router.get(path__regex=r"^/v2/checkout/orders/(?P<oid>[^/]+)$").mock(side_effect=self._get_order)
         router.post(path__regex=r"^/v2/payments/captures/(?P<cid>[^/]+)/refund$").mock(

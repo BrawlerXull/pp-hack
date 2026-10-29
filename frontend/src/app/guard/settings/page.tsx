@@ -27,7 +27,7 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
   const activeSale = form.sale_windows.find((w) => new Date(w.start) <= now && now <= new Date(w.end));
 
   async function save(next = form) {
-    const limits = [next.max_auto_refund_per_txn, next.max_auto_refund_per_incident, next.max_auto_refund_per_day, next.deescalate_after_min];
+    const limits = [next.max_auto_refund_per_txn, next.max_auto_refund_per_incident, next.max_auto_refund_per_day, next.deescalate_after_min, next.review_hold_min];
     if (limits.some((v) => v === "" || !Number.isFinite(Number(v)) || Number(v) < 0)) {
       setError("Limits must be numbers of 0 or more.");
       return;
@@ -83,9 +83,13 @@ function SettingsForm({ current, onSaved }: { current: MerchantSettings; onSaved
             <NumberField label="Max auto-refund per payment" prefix="$" value={form.max_auto_refund_per_txn} onChange={(v) => set("max_auto_refund_per_txn", v)} />
             <NumberField label="Max auto-refund per incident" prefix="$" value={form.max_auto_refund_per_incident} onChange={(v) => set("max_auto_refund_per_incident", v)} />
             <NumberField label="Max auto-refund per day (all incidents)" prefix="$" value={form.max_auto_refund_per_day} onChange={(v) => set("max_auto_refund_per_day", v)} />
+            <NumberField label="Hold first-time shoppers' payments for" suffix="min" value={form.review_hold_min} onChange={(v) => set("review_hold_min", v)} />
             <NumberField label="Stand down after quiet for" suffix="min" value={form.deescalate_after_min} onChange={(v) => set("deescalate_after_min", v)} />
           </div>
-          <p className="mt-4 text-xs text-ink-3">Anything above these limits is queued for your approval.</p>
+          <p className="mt-4 text-xs text-ink-3">
+            Anything above these limits is queued for your approval. A first-time shopper&apos;s payment is approved at checkout and charged after the hold, so payments
+            from an attack can be voided (never charged, no PayPal fee) instead of refunded. 0 charges at once.
+          </p>
         </Card>
 
         <Card title="Sales & promotions" icon={PartyPopper}>

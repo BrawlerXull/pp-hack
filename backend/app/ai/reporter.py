@@ -299,6 +299,9 @@ async def gather_facts(session: AsyncSession, incident: Incident) -> dict[str, A
         # Stopped by 3-D Secure: bot orders left at the bank's check, and browser cards that failed it.
         "sca_required": str(counts.get(Outcome.SCA_REQUIRED, 0) + counts.get(Outcome.SCA_FAILED, 0)),
         "got_through": str(counts.get(Outcome.CAPTURED, 0) + counts.get(Outcome.REFUNDED, 0)),
+        # Payment holds (app/actions/holds.py): approved by the bank, voided before anything settled.
+        "held_count": str(counts.get(Outcome.AUTHORIZED, 0)),
+        "voided_count": str(counts.get(Outcome.VOIDED, 0)),
         "refunded_count": str(len(refunds)),
         "refunded_total": f"${refunded_total:.2f}",
         "refunded_capture_ids": ", ".join(_capture_label(a.params) for a in refunds) or "none",

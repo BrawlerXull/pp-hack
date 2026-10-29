@@ -68,14 +68,16 @@ export const OUTCOME_META: Record<Outcome, { label: string; tone: Tone; color: s
   sca_required: { label: "3-D Secure", tone: "info", color: "var(--color-series-stopped)" },
   refunded: { label: "Refunded", tone: "info", color: "var(--color-series-refunded)" },
   sca_failed: { label: "3-D Secure failed", tone: "bad", color: "var(--color-series-stopped)" },
+  authorized: { label: "Held: approved, not settled", tone: "info", color: "var(--color-series-paid)" },
+  voided: { label: "Voided: never charged", tone: "good", color: "var(--color-series-refunded)" },
 };
 
-/** The activity chart folds the eight outcomes into five stories, in validated palette order. */
+/** The activity chart folds the outcomes into five stories, in validated palette order. */
 export const SERIES = [
-  { key: "paid", label: "Paid", color: "#3987e5", outcomes: ["captured"] },
+  { key: "paid", label: "Paid", color: "#3987e5", outcomes: ["captured", "authorized"] },
   { key: "declined", label: "Declined by bank", color: "#d95926", outcomes: ["declined"] },
   { key: "stopped", label: "Stopped by Checkout Guard", color: "#199e70", outcomes: ["blocked", "challenged", "sca_required", "sca_failed"] },
-  { key: "refunded", label: "Refunded before dispute", color: "#c98500", outcomes: ["refunded"] },
+  { key: "refunded", label: "Refunded or voided before dispute", color: "#c98500", outcomes: ["refunded", "voided"] },
   { key: "error", label: "PayPal error", color: "#9085e9", outcomes: ["error"] },
 ] as const satisfies readonly { key: string; label: string; color: string; outcomes: readonly Outcome[] }[];
 
@@ -91,6 +93,7 @@ export const ACTION_LABEL: Record<ActionRow["type"], string> = {
   BLOCK_FP: "Blocked devices showing card-testing behaviour",
   HOLD_SKU: "Human check for first-time buyers of the targeted item",
   REFUND: "Refund",
+  VOID: "Held payment voided: never charged, no fee",
   NOTIFY: "Owner notified",
   DEESCALATE: "Stood down: checkout back to normal",
   RELAX: "Extra checks switched off: judged not to be fraud",
@@ -102,6 +105,7 @@ export const ACTION_MECHANISM: Record<ActionRow["type"], string> = {
   BLOCK_FP: "Stopped before a PayPal order is created",
   HOLD_SKU: "Guard check before order creation",
   REFUND: "Payments v2 · captures/{id}/refund",
+  VOID: "Payments v2 · authorizations/{id}/void",
   NOTIFY: "Phone alert + morning report",
   DEESCALATE: "Guard state restored",
   RELAX: "Guard state restored",
@@ -251,7 +255,9 @@ export const GUARD_REASON_LABEL: Record<string, string> = {
   device_velocity: "Fast retries: challenged",
   network_velocity: "Many new devices with declines from one network: challenged",
   sku_on_hold: "Item on hold for new shoppers",
-  sca_mode: "3-D Secure on for every card",
+  sca_mode: "First-time shopper during an attack: 3-D Secure",
+  returning_customer: "Returning customer: no extra checks",
+  payment_hold: "First-time shopper during an attack: payment held",
   guard_unavailable: "Guard too slow: let through (fail-open)",
 };
 
@@ -260,6 +266,7 @@ export const ACTION_SHORT: Record<string, string> = {
   BLOCK_FP: "Block devices",
   HOLD_SKU: "Hold item",
   REFUND: "Refund",
+  VOID: "Void hold",
   NOTIFY: "Notify owner",
   DEESCALATE: "Stand down",
   RELAX: "Relax checks",

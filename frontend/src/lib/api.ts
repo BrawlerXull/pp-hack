@@ -70,7 +70,10 @@ export type Outcome =
   | "challenged"
   | "sca_required"
   | "sca_failed"
-  | "refunded";
+  | "refunded"
+  // Payment hold: authorised during an incident, not settled yet; voided = released, never charged.
+  | "authorized"
+  | "voided";
 
 export type CheckoutResult = {
   attempt_id: string;
@@ -274,7 +277,7 @@ export type Verdict = {
 export type ActionRow = {
   id: string;
   incident_id: string;
-  type: "SCA_ON" | "BLOCK_FP" | "HOLD_SKU" | "REFUND" | "NOTIFY" | "DEESCALATE" | "RELAX";
+  type: "SCA_ON" | "BLOCK_FP" | "HOLD_SKU" | "REFUND" | "VOID" | "NOTIFY" | "DEESCALATE" | "RELAX";
   // in_flight: a refund sent to PayPal whose answer is not in yet (re-sent with the same request id if lost).
   status: "executed" | "awaiting_approval" | "rejected" | "failed" | "in_flight";
   rule: string;
@@ -312,6 +315,7 @@ export type MerchantSettings = {
   max_auto_refund_per_incident: string | number;
   max_auto_refund_per_day: string | number;
   deescalate_after_min: string | number;
+  review_hold_min: string | number;
   sale_windows: SaleWindow[];
 };
 

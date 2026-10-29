@@ -228,7 +228,7 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
 
   async function onApprove({ orderId }: { orderId: string }) {
     const res = await capture(orderId);
-    if (res.outcome === "captured") setPhase({ kind: "paid", orderId, captureId: res.capture_id });
+    if (res.outcome === "captured" || res.outcome === "authorized") setPhase({ kind: "paid", orderId, captureId: res.capture_id });
     else setPhase({ kind: "error", message: paymentProblem(res) });
   }
 
@@ -248,7 +248,7 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
         return;
       }
       const res = await capture(orderId);
-      if (res.outcome === "captured") setPhase({ kind: "paid", orderId, captureId: res.capture_id });
+      if (res.outcome === "captured" || res.outcome === "authorized") setPhase({ kind: "paid", orderId, captureId: res.capture_id });
       else setPhase({ kind: "error", message: paymentProblem(res) });
     } catch {
       setPhase({ kind: "error", message: "We couldn't confirm the payment. Please try again." });

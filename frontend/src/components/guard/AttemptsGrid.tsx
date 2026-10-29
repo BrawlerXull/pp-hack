@@ -45,9 +45,9 @@ const STOPPED: Outcome[] = ["blocked", "challenged", "sca_required", "sca_failed
 const FILTERS: { key: string; label: string; test: (a: Attempt) => boolean }[] = [
   { key: "all", label: "All", test: () => true },
   { key: "stopped", label: "Stopped by guard", test: (a) => STOPPED.includes(a.outcome) },
-  { key: "paid", label: "Paid", test: (a) => a.outcome === "captured" },
+  { key: "paid", label: "Paid or held", test: (a) => a.outcome === "captured" || a.outcome === "authorized" },
   { key: "declined", label: "Declined by bank", test: (a) => a.outcome === "declined" },
-  { key: "refunded", label: "Refunded", test: (a) => a.outcome === "refunded" },
+  { key: "refunded", label: "Refunded or voided", test: (a) => a.outcome === "refunded" || a.outcome === "voided" },
 ];
 
 function OutcomeCell({ value }: ICellRendererParams<Attempt, Attempt["outcome"]>) {

@@ -67,6 +67,12 @@ class Outcome(StrEnum):
     # the guard required it): not captured. app/paypal/three_ds.py decides.
     SCA_FAILED = "sca_failed"
     REFUNDED = "refunded"
+    # Payment hold (app/actions/holds.py): during an incident a first-time shopper's order is authorised, not
+    # captured. The bank approved the card, but no money has settled yet.
+    AUTHORIZED = "authorized"
+    # A hold the attack matched was voided: the authorisation was released, nothing settled, no fee, nothing
+    # left to dispute.
+    VOIDED = "voided"
 
 
 class DeclineCategory(StrEnum):
@@ -97,6 +103,7 @@ class ActionType(StrEnum):
     NOTIFY = "NOTIFY"
     DEESCALATE = "DEESCALATE"
     RELAX = "RELAX"  # a confident harmless verdict undid this incident's 3-D Secure / SKU holds (policy R2)
+    VOID = "VOID"  # released a held payment the attack matched (never settled), instead of capture + refund
 
 
 class ActionStatus(StrEnum):
@@ -159,6 +166,9 @@ class MerchantSettings(Base):
     # [{"start": iso, "end": iso, "note": "..."}]: owner-announced sales
     sale_windows: Mapped[list[dict[str, Any]]] = mapped_column(JsonB, default=list)
     deescalate_after_min: Mapped[int] = mapped_column(Integer, default=10)
+    # Review window: a first-time shopper's payment is authorised at checkout and captured this many minutes
+    # later, unless an attack it belongs to is confirmed first (then it is voided). 0: capture at once.
+    review_hold_min: Mapped[int] = mapped_column(Integer, default=10, server_default="10")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -213,6 +223,13 @@ class CheckoutAttempt(Base):
     # Definitive (4xx) capture refusals so far. Part of the capture PayPal-Request-Id, so a capture
     # after 3-D Secure or a new funding source is a new request, not a replay of the cached refusal.
     capture_tries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Payment hold (app/actions/holds.py): why this order was authorised instead of captured ("review": a
+    # first-time shopper's payment settles after the owner's review window; "incident": held while an
+    # incident's defences were on), that incident, and PayPal's authorization id. A hold is then voided
+    # (the attack matched it) or captured (everything else).
+    hold_reason: Mapped[str | None] = mapped_column(String(12))
+    hold_incident_id: Mapped[str | None] = mapped_column(String(16), index=True)
+    authorization_id: Mapped[str | None] = mapped_column(String(40))
     outcome: Mapped[str] = mapped_column(String(20))
     # Canonical name from app/paypal/codes.py (e.g. SUSPECTED_FRAUD), set on DECLINED and ERROR rows.
     decline_code: Mapped[str | None] = mapped_column(String(80))

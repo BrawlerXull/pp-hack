@@ -126,6 +126,7 @@ async def restore_if_idle(
             "max_auto_refund_per_incident": _default("max_auto_refund_per_incident"),
             "max_auto_refund_per_day": _default("max_auto_refund_per_day"),
             "deescalate_after_min": _default("deescalate_after_min"),
+            "review_hold_min": _default("review_hold_min"),
         }
         if any(getattr(ms, k) != v for k, v in defaults.items()):
             for k, v in defaults.items():

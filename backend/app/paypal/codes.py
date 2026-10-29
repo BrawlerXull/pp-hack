@@ -180,8 +180,11 @@ def classify(
     issue: str | None,
     processor_code: str | None = None,
     card: bool = True,
+    authorization_status: str | None = None,
 ) -> Classification:
-    """`card`: the attempt pays by card. Only then is an unknown 422 read as an issuer decline."""
+    """`card`: the attempt pays by card. Only then is an unknown 422 read as an issuer decline.
+    `authorization_status`: an intent-AUTHORIZE order's hold. CREATED (or PENDING) is a held payment:
+    the bank approved it, nothing settled. DENIED is a decline like a declined capture."""
     if http == 0 or http >= 500:
         return Classification(Outcome.ERROR, issue or f"HTTP_{http}", C.PROCESSOR)
     if capture_status in {"DECLINED", "FAILED"}:
@@ -192,6 +195,18 @@ def classify(
         return Classification(
             Outcome.DECLINED, processor_code or issue or "CAPTURE_DECLINED", C.UNKNOWN_DECLINE, processor_code
         )
+    if authorization_status in {"DENIED", "FAILED"}:
+        code = lookup(processor_code) or lookup(issue)
+        if code and code.outcome == Outcome.DECLINED:
+            return Classification(Outcome.DECLINED, code.name, code.category, processor_code)
+        return Classification(
+            Outcome.DECLINED,
+            processor_code or issue or "AUTHORIZATION_DENIED",
+            C.UNKNOWN_DECLINE,
+            processor_code,
+        )
+    if authorization_status in {"CREATED", "PENDING"}:
+        return Classification(Outcome.AUTHORIZED)
     if capture_status == "COMPLETED" or order_status == "COMPLETED":
         return Classification(Outcome.CAPTURED)
     if order_status == "PAYER_ACTION_REQUIRED":

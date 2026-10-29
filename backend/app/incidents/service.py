@@ -147,7 +147,10 @@ class IncidentService:
                 sale_active=active_sale_window(ms, now) is not None,
                 attempts_15m=features[15].attempts,
                 new_captures=incident.last_assessed_at is not None
-                and any(r.outcome == Outcome.CAPTURED and r.ts > incident.last_assessed_at for r in rows),
+                and any(
+                    r.outcome in {Outcome.CAPTURED, Outcome.AUTHORIZED} and r.ts > incident.last_assessed_at
+                    for r in rows
+                ),
                 base=self.reassess_after,
                 max_age=self.verdict_max_age,
             ):

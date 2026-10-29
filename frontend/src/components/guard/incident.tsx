@@ -1,21 +1,6 @@
 "use client";
 
-import {
-  Ban,
-  BellRing,
-  Bot,
-  Check,
-  CircleDollarSign,
-  Clock,
-  Loader2,
-  PauseCircle,
-  RotateCcw,
-  ShieldCheck,
-  Sparkles,
-  TriangleAlert,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { Ban, BellRing, Bot, Check, CircleDollarSign, Clock, Loader2, PauseCircle, RotateCcw, ShieldCheck, Sparkles, TriangleAlert, Undo2, X, type LucideIcon } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useState } from "react";
@@ -247,6 +232,7 @@ const ACTION_ICON: Record<ActionRow["type"], LucideIcon> = {
   BLOCK_FP: Ban,
   HOLD_SKU: PauseCircle,
   REFUND: CircleDollarSign,
+  VOID: Undo2,
   NOTIFY: BellRing,
   DEESCALATE: RotateCcw,
   RELAX: RotateCcw,
@@ -263,15 +249,18 @@ const STATUS_BADGE: Record<ActionRow["status"], { tone: "good" | "warn" | "neutr
 /** What Checkout Guard did, in order, with the rule that allowed it and the PayPal mechanism that carried it out. */
 export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail; onChange: () => void }) {
   const refunds = incident.actions.filter((a) => a.type === "REFUND");
-  const others = incident.actions.filter((a) => a.type !== "REFUND");
+  // Payment holds: the attack's held payments voided (never charged) instead of captured and refunded.
+  const voids = incident.actions.filter((a) => a.type === "VOID");
+  const voided = voids.filter((a) => a.status === "executed");
+  const others = incident.actions.filter((a) => a.type !== "REFUND" && a.type !== "VOID");
   const executed = refunds.filter((a) => a.status === "executed");
-  const pending = refunds.filter((a) => a.status === "awaiting_approval");
+  const pending = [...refunds, ...voids].filter((a) => a.status === "awaiting_approval");
   const inFlight = refunds.filter((a) => a.status === "in_flight");
   // Refused by PayPal, or no answer after every retry: money may already have moved, so each one is shown.
   // A failed try that a later one settled (retry, approval) is history, not something to check.
   const settled = new Set(refunds.filter((a) => a.status !== "failed").map((a) => String(a.params.attempt_id)));
   const failed = refunds.filter((a) => a.status === "failed" && !settled.has(String(a.params.attempt_id)));
-  const kept = refunds.filter((a) => a.status === "rejected");
+  const kept = [...refunds, ...voids].filter((a) => a.status === "rejected");
   const total = executed.reduce((s, a) => s + Number(a.params.amount ?? 0), 0);
   const simulated = executed.some((a) => a.params.simulated);
   const refs = executed.map((a) => a.paypal_ref).filter(Boolean) as string[];
@@ -302,6 +291,18 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
       ),
     });
   }
+  if (voided.length) {
+    const voidedTotal = voided.reduce((s, a) => s + Number(a.params.amount ?? 0), 0);
+    rows.push({
+      key: "voids",
+      at: voided[0].created_at,
+      type: "VOID",
+      title: `Voided ${voided.length} held payment${voided.length === 1 ? "" : "s"} (${money(voidedTotal)}): never charged, no fee, nothing to dispute`,
+      why: ruleLabel(voided[0].rule),
+      status: "executed",
+      extra: voided.some((a) => a.params.simulated) ? <p className="mt-1 text-[11px] text-ink-3">Simulated holds: no PayPal call</p> : undefined,
+    });
+  }
   if (inFlight.length) {
     rows.push({
       key: "in-flight",
@@ -328,7 +329,7 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
                 {i < rows.length - 1 && <span className="absolute top-11 bottom-0 left-[1.45rem] w-px bg-white/[0.08]" aria-hidden />}
                 <span
                   className={`relative flex size-8 shrink-0 items-center justify-center rounded-full ring-1 ${
-                    r.type === "REFUND"
+                    r.type === "REFUND" || r.type === "VOID"
                       ? "bg-amber-400/10 text-amber-300 ring-amber-400/25"
                       : r.type === "NOTIFY"
                         ? "bg-violet-400/10 text-violet-300 ring-violet-400/25"
@@ -371,12 +372,12 @@ export function DecisionTrace({ incident, onChange }: { incident: IncidentDetail
           ))}
         </ul>
       )}
-      {kept.length > 0 && <p className="px-1 text-xs text-ink-3">{kept.length} payment{kept.length === 1 ? "" : "s"} kept at your request (no refund).</p>}
+      {kept.length > 0 && <p className="px-1 text-xs text-ink-3">{kept.length} payment{kept.length === 1 ? "" : "s"} kept at your request (charged as usual).</p>}
 
       {pending.length > 0 && (
         <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-3">
           <p className="text-sm font-medium text-amber-100">
-            {pending.length} refund{pending.length === 1 ? "" : "s"} need your approval
+            {pending.length} payment{pending.length === 1 ? "" : "s"} need your decision
           </p>
           <ul className="mt-2 space-y-2">
             {pending.map((a) => (
@@ -435,7 +436,9 @@ function PendingRefund({ action, onChange }: { action: ActionRow; onChange: () =
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 text-sm">
       <span className="min-w-0 text-amber-50">
-        {money(String(action.params.amount ?? 0))} · <code className="font-mono text-xs text-amber-200/80">{String(action.params.capture_id)}</code>
+        {action.type === "VOID" ? "Held " : ""}
+        {money(String(action.params.amount ?? 0))} ·{" "}
+        <code className="font-mono text-xs text-amber-200/80">{String(action.type === "VOID" ? action.params.authorization_id : action.params.capture_id)}</code>
         <span className="block text-xs text-amber-200/70">{refundReason(action)}</span>
         {error && <span className="block text-xs text-red-300">{error}</span>}
       </span>
@@ -444,7 +447,7 @@ function PendingRefund({ action, onChange }: { action: ActionRow; onChange: () =
           <X className="size-3.5" /> Keep
         </Button>
         <Button size="sm" disabled={busy} onClick={() => act("approve")}>
-          <Check className="size-3.5" /> Refund
+          <Check className="size-3.5" /> {action.type === "VOID" ? "Void" : "Refund"}
         </Button>
       </span>
     </li>

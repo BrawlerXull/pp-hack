@@ -22,13 +22,14 @@ os.environ["SIMULATOR_ENABLED"] = "true"
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 import respx  # noqa: E402
+from sqlalchemy import update  # noqa: E402
 
 from app.ai import breaker, gemini  # noqa: E402
 from app.api import ratelimit  # noqa: E402
 from app.config import SANDBOX_API_BASE, Settings, get_settings  # noqa: E402
 from app.db import session as db_session  # noqa: E402
 from app.db.bootstrap import ensure_shop  # noqa: E402
-from app.db.models import Base  # noqa: E402
+from app.db.models import Base, MerchantSettings  # noqa: E402
 from app.guard import devices  # noqa: E402
 from app.guard.check import invalidate_cache  # noqa: E402
 from app.paypal.client import PayPalClient  # noqa: E402
@@ -115,6 +116,10 @@ async def db():
     invalidate_cache()
     async with db_session.get_sessionmaker()() as s:
         await ensure_shop(s, SHOP)
+        # Most tests exercise capture-then-refund for brand-new devices, which a shop gets with the review
+        # window off (review_hold_min=0). The default (10 min of payment hold) is tested in test_holds.py.
+        await s.execute(update(MerchantSettings).values(review_hold_min=0))
+        await s.commit()
         yield s
     await engine.dispose()
 

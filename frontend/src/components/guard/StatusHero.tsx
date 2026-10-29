@@ -39,6 +39,8 @@ export function defencesSummary(incident: IncidentDetail): string[] {
   if (done.some((a) => a.type === "HOLD_SKU")) parts.push("item on hold");
   const refunds = done.filter((a) => a.type === "REFUND");
   if (refunds.length) parts.push(`${refunds.length} refunded (${money(refunds.reduce((s, a) => s + Number(a.params.amount ?? 0), 0))})`);
+  const voids = done.filter((a) => a.type === "VOID");
+  if (voids.length) parts.push(`${voids.length} held payment${voids.length === 1 ? "" : "s"} voided (${money(voids.reduce((s, a) => s + Number(a.params.amount ?? 0), 0))})`);
   if (done.some((a) => a.type === "RELAX" || a.type === "DEESCALATE")) parts.push("stood down");
   return parts;
 }
@@ -79,7 +81,7 @@ function steps(summary: Summary, inc: IncidentDetail | null | undefined): Step[]
       : { name: "Judge", icon: Sparkles, state: "done", title: "Fixed rules (AI unavailable)", detail: inc.ai_fallback_reason ? `AI: ${inc.ai_fallback_reason}` : "Safe defaults applied" };
 
   const parts = defencesSummary(inc);
-  const pending = inc.actions.filter((a) => a.type === "REFUND" && a.status === "awaiting_approval").length;
+  const pending = inc.actions.filter((a) => (a.type === "REFUND" || a.type === "VOID") && a.status === "awaiting_approval").length;
   const harmless = v && (v.classification === "genuine_rush" || v.classification === "paypal_outage");
   const act: Step = parts.length
     ? { name: "Act", icon: Gavel, state: "done", title: parts.slice(0, 2).join(" · "), detail: parts.slice(2).join(" · ") || "Within your safety limits" }

@@ -19,6 +19,7 @@ import structlog
 from sqlalchemy import text
 
 from app.actions.executor import Executor
+from app.actions.holds import Holds
 from app.ai import breaker
 from app.config import get_settings
 from app.db.bootstrap import ensure_shop
@@ -70,6 +71,8 @@ async def run() -> None:
                     await s.commit()
                 async with sessions() as s:
                     await Executor(s, paypal).sweep_in_flight(settings.shop_id)
+                async with sessions() as s:
+                    await Holds(Executor(s, paypal)).settle(settings.shop_id)
                 async with sessions() as s:
                     svc = IncidentService(s, paypal, timedelta(seconds=settings.reassess_interval_s))
                     await svc.tick(settings.shop_id)

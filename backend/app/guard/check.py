@@ -11,8 +11,20 @@ Decision order (first match wins):
   4. network velocity: 6+ devices with 3+ declines from this device's network (IPv4 /24) in 10 min, and no
      valid challenge token → challenge (a bot that rotates its device id on every request)
   5. SKU on hold + first-time fingerprint without a valid challenge token → challenge
-  6. SCA mode + card payment   → allow_with_sca (order is created with 3-D Secure SCA_ALWAYS)
+  6. SCA mode + card payment + first-time fingerprint → allow_with_sca (3-D Secure SCA_ALWAYS). A returning
+     customer is not asked: targeted 3-D Secure costs real customers no friction (reason returning_customer)
   7. otherwise                 → allow
+
+Payment hold: an allowed order from a first-time fingerprint is held, created with intent AUTHORIZE, so the
+bank approves it but nothing settles. In normal times that is the owner's review window (review_hold_min,
+10 min by default: the payment is captured after it); while an incident's fraud defences are on it lasts
+until the incident is judged. app/actions/holds.py voids the holds an attack matches (no fee, nothing to
+dispute) and captures the rest. Because the window starts at checkout, the attack's first payments, made
+before anything was detected, are still holds when the attack is confirmed: voided, not refunded. A
+returning customer's order is captured at once.
+
+"First-time" means no capture from this device before the attack window (KNOWN_BEFORE ahead of the moment
+the defences went on): a bot whose test payments got through before detection is not a returning customer.
 
 The velocity breaker works with no incident open and no AI: it slows one device down within seconds,
 while detection needs a burst across the shop. It keys on the device: a signed cookie the shop server
@@ -41,7 +53,7 @@ after a server-verified captcha.
 import asyncio
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from itsdangerous import BadSignature, TimestampSigner
@@ -56,6 +68,8 @@ log = structlog.get_logger()
 
 CACHE_TTL_S = 2.0
 STALE_STATE_MAX_S = 600.0  # fail-open uses the last state seen if it is at most this old
+# A returning customer captured before the attack began: same lead the detector uses for incident windows.
+KNOWN_BEFORE = timedelta(minutes=15)
 CHALLENGE_MAX_AGE_S = 600
 
 
@@ -98,6 +112,8 @@ class GuardVerdict:
     decision: Decision
     reason: str
     incident_id: str | None = None
+    hold: bool = False  # authorise, don't capture (payment hold); only with an allow decision
+    hold_reason: str | None = None  # "review" (first-time shopper, normal times) or "incident"
 
 
 @dataclass
@@ -108,6 +124,7 @@ class _CachedState:
     kill_switch: bool
     incident_id: str | None
     updated_at: datetime
+    review_hold_min: int
     loaded_at: float = field(default_factory=time.monotonic)
 
 
@@ -135,6 +152,7 @@ async def _state(session: AsyncSession, shop_id: str) -> _CachedState:
         kill_switch=bool(ms and ms.kill_switch),
         incident_id=gs.set_by_incident if gs else None,
         updated_at=gs.updated_at if gs else datetime.min,
+        review_hold_min=ms.review_hold_min if ms else 0,
     )
     _cache[shop_id] = state
     return state
@@ -238,12 +256,25 @@ async def check(session: AsyncSession, ctx: GuardContext) -> GuardVerdict:
         net_devices, net_declines = await _network_activity(session, ctx.shop_id, ctx.ip_net_hash, lim.window)
         if net_devices >= lim.devices and net_declines >= lim.declines:
             return GuardVerdict(Decision.CHALLENGE, "network_velocity", st.incident_id)
-    if ctx.sku in st.held_skus and not has_token:
-        if not await _is_known_customer(session, ctx.shop_id, ctx.fingerprint_hash, st.updated_at):
-            return GuardVerdict(Decision.CHALLENGE, "sku_on_hold", st.incident_id)
+    defences_on = st.incident_id is not None and (st.mode == GuardMode.SCA_ALL or bool(st.held_skus))
+    known: bool | None = None
+    if defences_on or st.review_hold_min > 0:
+        # Before the attack window when defences are on; otherwise before KNOWN_BEFORE ago (a device that
+        # paid minutes ago in this very burst is not "returning").
+        since = (st.updated_at if defences_on else datetime.now(UTC)) - KNOWN_BEFORE
+        known = await _is_known_customer(session, ctx.shop_id, ctx.fingerprint_hash, since)
+    if ctx.sku in st.held_skus and not has_token and not known:
+        return GuardVerdict(Decision.CHALLENGE, "sku_on_hold", st.incident_id)
+    reason = "incident" if defences_on else "review" if st.review_hold_min > 0 else None
+    hold = reason is not None and not known
+    held = {"hold": hold, "hold_reason": reason if hold else None}
     if st.mode == GuardMode.SCA_ALL and ctx.method == Method.CARD:
-        return GuardVerdict(Decision.ALLOW_WITH_SCA, "sca_mode", st.incident_id)
-    return GuardVerdict(Decision.ALLOW, "normal")
+        if not known:
+            return GuardVerdict(Decision.ALLOW_WITH_SCA, "sca_mode", st.incident_id, **held)
+        return GuardVerdict(Decision.ALLOW, "returning_customer", st.incident_id)
+    if hold and defences_on:
+        return GuardVerdict(Decision.ALLOW, "payment_hold", st.incident_id, **held)
+    return GuardVerdict(Decision.ALLOW, "normal", **held)
 
 
 def fail_open_verdict(ctx: GuardContext) -> GuardVerdict:

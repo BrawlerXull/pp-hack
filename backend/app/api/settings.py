@@ -37,6 +37,8 @@ class SettingsBody(BaseModel):
     # Optional for older clients: across incidents, rolling 24 h.
     max_auto_refund_per_day: Decimal = Field(default=Decimal("250.00"), ge=0, le=100000)
     deescalate_after_min: int = Field(ge=1, le=240)
+    # Payment hold for first-time shoppers (app/actions/holds.py); 0 captures at once. Optional.
+    review_hold_min: int = Field(default=10, ge=0, le=1440)
     sale_windows: list[SaleWindow] = []
 
 
@@ -48,6 +50,7 @@ def _out(ms: MerchantSettings) -> SettingsBody:
         max_auto_refund_per_incident=ms.max_auto_refund_per_incident,
         max_auto_refund_per_day=ms.max_auto_refund_per_day,
         deescalate_after_min=ms.deescalate_after_min,
+        review_hold_min=ms.review_hold_min,
         sale_windows=[SaleWindow.model_validate(w) for w in ms.sale_windows or []],
     )
 
@@ -73,6 +76,7 @@ async def put_settings(
     ms.max_auto_refund_per_incident = body.max_auto_refund_per_incident
     ms.max_auto_refund_per_day = body.max_auto_refund_per_day
     ms.deescalate_after_min = body.deescalate_after_min
+    ms.review_hold_min = body.review_hold_min
     ms.sale_windows = [w.model_dump(mode="json") for w in body.sale_windows]
     audit(session, "owner", "settings.updated", **body.model_dump(mode="json"))
     await session.commit()

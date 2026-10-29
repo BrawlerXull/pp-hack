@@ -343,7 +343,10 @@ def compute(rows: list[AttemptRow], window_min: int, now: datetime, baseline: Ba
     )
     f.fraud_decline_share = _ratio(f.fraud_declines, f.declined)
     f.error_rate = _ratio(f.errors, len(reached))
-    captured = [r for r in w if r.outcome in {Outcome.CAPTURED, Outcome.REFUNDED}]
+    # The bank said yes: captured, refunded, or a payment hold (authorised, then voided or captured). A held
+    # card is as validated for a card tester as a captured one.
+    approved = {Outcome.CAPTURED, Outcome.REFUNDED, Outcome.AUTHORIZED, Outcome.VOIDED}
+    captured = [r for r in w if r.outcome in approved]
     f.captured = len(captured)
     f.captured_amount = sum(r.amount for r in captured)
     f.blocked_or_challenged = sum(r.outcome in {Outcome.BLOCKED, Outcome.CHALLENGED} for r in w)

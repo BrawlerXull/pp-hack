@@ -29,12 +29,16 @@ def order_payload(
     card_fields: bool = False,
     return_url: str | None = None,
     cancel_url: str | None = None,
+    hold: bool = False,
 ) -> dict[str, Any]:
-    """`card_fields`: a browser card order. It carries no card data (PayPal's hosted Card Fields send the
+    """`hold`: intent AUTHORIZE instead of CAPTURE (payment hold, app/actions/holds.py): the bank approves the
+    payment but nothing settles until we capture the authorization, or void it.
+
+    `card_fields`: a browser card order. It carries no card data (PayPal's hosted Card Fields send the
     number straight to PayPal on submit), only the 3-D Secure method: SCA_ALWAYS while the guard requires
     it, else SCA_WHEN_REQUIRED (the bank decides)."""
     payload: dict[str, Any] = {
-        "intent": "CAPTURE",
+        "intent": "AUTHORIZE" if hold else "CAPTURE",
         "purchase_units": [
             {
                 "reference_id": sku,
@@ -82,6 +86,9 @@ class OrderResult:
     latency_ms: int
     payer_action_url: str | None = None
     processor_code: str | None = None  # processor_response.response_code of a declined capture
+    # Intent AUTHORIZE: the authorization (payment hold) and its status (CREATED = held, DENIED = refused).
+    authorization_id: str | None = None
+    authorization_status: str | None = None
     # payment_source.card: brand, last 4, BIN and the 3-D Secure result (never the number).
     card: CardInfo | None = None
 
@@ -89,13 +96,18 @@ class OrderResult:
 def parse_order(res: PayPalResponse) -> OrderResult:
     body = res.json if isinstance(res.json, dict) else {}
     units = body.get("purchase_units") or [{}]
-    captures = (units[0].get("payments") or {}).get("captures") or []
+    payments = units[0].get("payments") or {}
+    captures = payments.get("captures") or []
     cap = captures[0] if captures else {}
+    auths = payments.get("authorizations") or []
+    auth = auths[0] if auths else {}
     err = res.error_summary() or {}
     issue = next((i for i in err.get("issues", []) if i), None) or err.get("name")
     processor_code = None
     if cap.get("status") in {"DECLINED", "FAILED"}:
         processor_code = (cap.get("processor_response") or {}).get("response_code")
+    elif auth.get("status") in {"DENIED", "FAILED"}:
+        processor_code = (auth.get("processor_response") or {}).get("response_code")
     return OrderResult(
         http=res.status,
         order_id=body.get("id"),
@@ -110,6 +122,8 @@ def parse_order(res: PayPalResponse) -> OrderResult:
         ),
         processor_code=processor_code,
         card=parse_card(body.get("payment_source")),
+        authorization_id=auth.get("id"),
+        authorization_status=auth.get("status"),
     )
 
 
@@ -123,6 +137,15 @@ def capture_request_id(order_id: str, tries: int = 0) -> str:
     replays a cached response for a reused key, which would replay the refusal to the legitimate
     capture after 3-D Secure or after the buyer picked another funding source."""
     return f"cg-capture-{order_id}" + (f"-{tries}" if tries else "")
+
+
+def authorize_request_id(order_id: str, tries: int = 0) -> str:
+    return f"cg-authorize-{order_id}" + (f"-{tries}" if tries else "")
+
+
+def hold_request_id(attempt_id: str, verb: str) -> str:
+    # One key per held payment and verb: a retried capture or void of the same hold is one request at PayPal.
+    return f"cg-hold-{verb}-{attempt_id}"
 
 
 def refund_request_id(attempt_id: str) -> str:
@@ -151,6 +174,39 @@ async def capture_order(client: PayPalClient, order_id: str, tries: int = 0) -> 
     result = parse_order(res)
     result.order_id = result.order_id or order_id
     return result
+
+
+async def authorize_order(client: PayPalClient, order_id: str, tries: int = 0) -> OrderResult:
+    """An approved intent-AUTHORIZE order → a payment hold (authorization), nothing settled."""
+    res = await client.request(
+        "POST",
+        f"/v2/checkout/orders/{order_id}/authorize",
+        headers={"Prefer": "return=representation"},
+        request_id=authorize_request_id(order_id, tries),
+    )
+    result = parse_order(res)
+    result.order_id = result.order_id or order_id
+    return result
+
+
+async def capture_authorization(
+    client: PayPalClient, authorization_id: str, request_id: str
+) -> PayPalResponse:
+    """Settle a payment hold. The answer is a capture (id, status), not an order."""
+    return await client.request(
+        "POST",
+        f"/v2/payments/authorizations/{authorization_id}/capture",
+        json={"final_capture": True},
+        headers={"Prefer": "return=representation"},
+        request_id=request_id,
+    )
+
+
+async def void_authorization(client: PayPalClient, authorization_id: str, request_id: str) -> PayPalResponse:
+    """Release a payment hold: nothing settles, so there is no fee and nothing for anyone to dispute."""
+    return await client.request(
+        "POST", f"/v2/payments/authorizations/{authorization_id}/void", request_id=request_id
+    )
 
 
 async def get_order(client: PayPalClient, order_id: str) -> OrderResult:
