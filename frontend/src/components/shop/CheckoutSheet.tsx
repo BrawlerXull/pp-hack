@@ -210,6 +210,7 @@ function CheckoutForm({ product, cardsAvailable }: { product: Product; cardsAvai
     } catch (err) {
       if (err instanceof ApiError && err.status === 428) setPhase({ kind: "challenge" });
       else if (err instanceof ApiError && err.status === 403) setPhase({ kind: "blocked" });
+      else if (err instanceof ApiError && err.status === 429) setPhase({ kind: "error", message: "Too many tries in a short time. Please wait a minute and try again." });
       else setPhase({ kind: "error", message: err instanceof ApiError ? "We couldn't start the payment. Please try again." : err instanceof Error ? err.message : "Something went wrong" });
       throw err;
     }

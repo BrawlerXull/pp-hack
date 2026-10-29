@@ -309,6 +309,12 @@ class Incident(Base):
     class_margin: Mapped[float | None]
     scorecard: Mapped[dict[str, Any] | None] = mapped_column(JsonB)
 
+    __table_args__ = (
+        # One open incident per shop: the detector extends the open one instead of opening a second, and
+        # this makes a second one impossible even if two detectors ever ran at once (the worker lock).
+        Index("uq_incidents_one_open", "shop_id", unique=True, postgresql_where=text("status = 'open'")),
+    )
+
 
 class Action(Base):
     __tablename__ = "actions"

@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # Shown to a shopper the guard blocked, so a false positive has somewhere to go.
     shop_contact_email: str = "help@wickandwax.example"
 
+    # Per-IP request limits on login, orders, the human check, client tokens and the AI agent
+    # (app/api/ratelimit.py). Off only for load tests.
+    rate_limits_enabled: bool = True
+
     # The guard check gets this long before the checkout goes on without it (fail-open, app/guard/check.py).
     guard_check_budget_ms: int = 800
 

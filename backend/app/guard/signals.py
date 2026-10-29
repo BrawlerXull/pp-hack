@@ -13,6 +13,8 @@ import hashlib
 import hmac
 import ipaddress
 
+from starlette.requests import Request
+
 from app.config import get_settings
 
 
@@ -22,6 +24,15 @@ def client_ip(forwarded_for: str | None, peer: str | None, hops: int) -> str | N
         if len(entries) >= hops:
             return _valid(entries[-hops])
     return _valid(peer)
+
+
+def request_ip(request: Request) -> str | None:
+    """client_ip() for an incoming request, with this deploy's TRUSTED_PROXY_HOPS."""
+    return client_ip(
+        request.headers.get("x-forwarded-for"),
+        request.client.host if request.client else None,
+        get_settings().trusted_proxy_hops,
+    )
 
 
 def _valid(ip: str | None) -> str | None:

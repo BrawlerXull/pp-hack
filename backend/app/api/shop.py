@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_paypal
+from app.api.ratelimit import limit
 from app.config import Settings, get_settings
 from app.db.models import CheckoutAttempt, Decision
 from app.db.session import get_session
@@ -72,11 +73,7 @@ class ChallengeIn(BaseModel):
 
 def client_ip(request: Request) -> str | None:
     """Counted from the right of X-Forwarded-For (app/guard/signals.py): the left end is client-written."""
-    return signals.client_ip(
-        request.headers.get("x-forwarded-for"),
-        request.client.host if request.client else None,
-        get_settings().trusted_proxy_hops,
-    )
+    return signals.request_ip(request)
 
 
 def _device_signer(settings: Settings) -> Signer:
@@ -123,7 +120,7 @@ def config(settings: Annotated[Settings, Depends(get_settings)]) -> dict:
     }
 
 
-@router.post("/client-token")
+@router.post("/client-token", dependencies=[Depends(limit("client-token", 20, 60))])
 async def client_token(paypal: PayPal) -> dict:
     token = await generate_client_token(paypal)
     if not token:
@@ -131,7 +128,7 @@ async def client_token(paypal: PayPal) -> dict:
     return {"client_token": token}
 
 
-@router.post("/orders")
+@router.post("/orders", dependencies=[Depends(limit("orders", 30, 60))])
 async def create(
     body: OrderIn,
     request: Request,
@@ -196,7 +193,7 @@ def _capture_answer(order_id: str, attempt: CheckoutAttempt | None) -> dict:
     }
 
 
-@router.post("/challenge")
+@router.post("/challenge", dependencies=[Depends(limit("challenge", 10, 60))])
 async def challenge(
     body: ChallengeIn,
     request: Request,
@@ -233,7 +230,7 @@ async def _turnstile_ok(token: str, ip: str | None, settings: Settings) -> bool:
     return ok
 
 
-@router.post("/precheck")
+@router.post("/precheck", dependencies=[Depends(limit("precheck", 60, 60))])
 async def precheck(
     body: PrecheckIn,
     request: Request,

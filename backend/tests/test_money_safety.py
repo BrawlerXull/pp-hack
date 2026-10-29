@@ -372,6 +372,8 @@ async def test_keep_in_one_incident_is_respected_by_the_next(db, monkeypatch):
 async def test_a_second_claim_on_one_capture_is_refused_by_the_index_in_a_savepoint(db):
     a = await captured(db, "bot")
     inc_a = await incident_with(db, {})
+    inc_a.status = IncidentStatus.CLOSED  # one open incident per shop: the earlier one is closed
+    await db.commit()
     inc_b = await incident_with(db, {})
     params = {"attempt_id": a.id, "capture_id": a.capture_id, "amount": "3.10"}
     ex = Executor(db, None)
@@ -552,6 +554,8 @@ async def test_a_human_with_honest_declines_is_not_auto_refunded_under_an_attack
 
 async def test_only_a_block_from_another_incident_that_saw_a_strong_bot_counts_as_strong(db):
     inc_a = await incident_with(db, {"strong_fingerprints": ["bot"], "fingerprints": ["bot", "weakling"]})
+    inc_a.status = IncidentStatus.CLOSED  # one open incident per shop: the earlier one is closed
+    await db.commit()
     inc_b = await incident_with(db, {})
     now = datetime.now(UTC)
     await devices.block(db, SHOP, ["bot", "weakling"], inc_a.id, {}, now)

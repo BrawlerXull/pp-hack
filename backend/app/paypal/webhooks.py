@@ -7,6 +7,8 @@ TODO(P2): add offline self-verification (CRC32 of raw body + cert), which PayPal
 
 import json
 from enum import StrEnum
+from typing import Any
+from urllib.parse import urlsplit
 
 from app.paypal.client import PayPalClient
 
@@ -24,7 +26,48 @@ class Verification(StrEnum):
     FAILURE = "FAILURE"
     MISSING_HEADERS = "MISSING_HEADERS"
     NO_WEBHOOK_ID = "NO_WEBHOOK_ID"
+    BAD_CERT_URL = "BAD_CERT_URL"
     ERROR = "ERROR"
+
+
+def cert_url_ok(url: str | None) -> bool:
+    """PayPal signs with a certificate it serves itself: https on paypal.com. Anything else is not PayPal,
+    so it is refused here without asking PayPal (defence in depth: the postback checks the cert too)."""
+    if not url:
+        return False
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and (host == "paypal.com" or host.endswith(".paypal.com"))
+
+
+# Buyer personal data PayPal includes in events. Nothing Checkout Guard does reads it (the processor uses
+# ids, amounts, statuses and payer_id), so it is never stored.
+PII_KEYS = frozenset(
+    {
+        "name",
+        "given_name",
+        "surname",
+        "full_name",
+        "email_address",
+        "email",
+        "phone",
+        "phone_number",
+        "national_number",
+        "address",
+        "shipping",
+        "birth_date",
+        "tax_info",
+    }
+)
+REDACTED = "[redacted]"
+
+
+def redact(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: REDACTED if k in PII_KEYS else redact(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    return value
 
 
 def build_verify_body(headers: dict[str, str], webhook_id: str, raw_body: str) -> str | None:
@@ -46,9 +89,12 @@ async def verify_webhook(
 ) -> Verification:
     if not webhook_id:
         return Verification.NO_WEBHOOK_ID
-    body = build_verify_body({k.lower(): v for k, v in headers.items()}, webhook_id, raw_body)
+    lowered = {k.lower(): v for k, v in headers.items()}
+    body = build_verify_body(lowered, webhook_id, raw_body)
     if body is None:
         return Verification.MISSING_HEADERS
+    if not cert_url_ok(lowered.get(HEADER_MAP["cert_url"])):
+        return Verification.BAD_CERT_URL
     try:
         res = await client.request("POST", "/v1/notifications/verify-webhook-signature", content=body)
     except Exception:

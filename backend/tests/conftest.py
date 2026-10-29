@@ -24,6 +24,7 @@ import pytest  # noqa: E402
 import respx  # noqa: E402
 
 from app.ai import breaker, gemini  # noqa: E402
+from app.api import ratelimit  # noqa: E402
 from app.config import SANDBOX_API_BASE, Settings, get_settings  # noqa: E402
 from app.db import session as db_session  # noqa: E402
 from app.db.bootstrap import ensure_shop  # noqa: E402
@@ -90,6 +91,7 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect_ex", guard(real_connect_ex))
     monkeypatch.setattr(gemini, "_client", no_gemini)
     # Breaker state is process-global: start each test clean, in memory unless a test opts into the DB store.
+    ratelimit.reset()  # per-process request counts (app/api/ratelimit.py) start empty in every test
     monkeypatch.setattr(gemini, "_breaker", breaker.Breaker())
     monkeypatch.setattr(gemini, "_backup_breaker", breaker.Breaker())
     monkeypatch.setattr(gemini, "_backup_client", lambda key: no_gemini())

@@ -19,6 +19,7 @@ from app.db.models import (
     CheckoutAttempt,
     Decision,
     Incident,
+    IncidentStatus,
     MerchantSettings,
     Outcome,
 )
@@ -175,7 +176,9 @@ def test_the_refund_note_does_not_accuse_the_cardholder():
 
 async def test_the_daily_cap_holds_refunds_across_incidents_for_the_owner(db):
     await db.execute(update(MerchantSettings).values(max_auto_refund_per_day=Decimal("5.00")))
-    earlier = Incident(shop_id=SHOP, opened_at=datetime.now(UTC) - timedelta(hours=3))
+    earlier = Incident(
+        shop_id=SHOP, opened_at=datetime.now(UTC) - timedelta(hours=3), status=IncidentStatus.CLOSED
+    )
     db.add(earlier)
     await db.flush()
     db.add(
@@ -202,7 +205,9 @@ async def test_the_daily_cap_holds_refunds_across_incidents_for_the_owner(db):
 
 async def test_refunds_older_than_a_day_do_not_count_against_the_cap(db):
     await db.execute(update(MerchantSettings).values(max_auto_refund_per_day=Decimal("5.00")))
-    old = Incident(shop_id=SHOP, opened_at=datetime.now(UTC) - timedelta(days=2))
+    old = Incident(
+        shop_id=SHOP, opened_at=datetime.now(UTC) - timedelta(days=2), status=IncidentStatus.CLOSED
+    )
     db.add(old)
     await db.flush()
     db.add(

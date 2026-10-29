@@ -24,6 +24,7 @@ from app.db.models import (
     Decision,
     DeviceEntry,
     Incident,
+    IncidentStatus,
     MerchantSettings,
     Outcome,
 )
@@ -383,7 +384,7 @@ async def test_a_dispute_on_an_unrelated_order_in_the_window_is_not_part_of_the_
 async def test_devices_blocked_counts_the_device_table_and_ai_status_is_reported(db):
     now = datetime.now(UTC)
     inc = await attack_incident(db, ai_refresh_failed_at=now)
-    other = await attack_incident(db)
+    other = await attack_incident(db, status=IncidentStatus.CLOSED)  # one open incident per shop
     for fp, incident_id in (("d1", inc.id), ("d2", inc.id), ("d3", other.id)):
         db.add(
             DeviceEntry(

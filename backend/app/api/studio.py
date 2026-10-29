@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import gemini, studio_agent
 from app.api.deps import OwnerShop
+from app.api.ratelimit import limit
 from app.config import get_settings
 from app.db.models import Action, ActionType, CheckoutAttempt, Incident
 from app.db.session import get_session
@@ -162,7 +163,8 @@ async def studio_data(
     }
 
 
-@router.post("/agent/turn")
+# A page-building investigation is a dozen or more turns; this stops a loop from draining the Gemini quota.
+@router.post("/agent/turn", dependencies=[Depends(limit("agent-turn", 60, 60))])
 async def agent_turn(request: Request, _shop: OwnerShop) -> Any:
     """One Studio Agent Framework LLM turn on Gemini. Errors come back as {error: {code, message}}, which the
     browser adapter shows in the chat instead of failing silently."""

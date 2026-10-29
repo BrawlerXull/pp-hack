@@ -21,6 +21,7 @@ from app.db.models import (
     GuardMode,
     GuardState,
     Incident,
+    IncidentStatus,
     Outcome,
     PayPalEvent,
     Source,
@@ -426,7 +427,11 @@ async def test_two_incidents_never_both_claim_one_refund(db):
         db, None, to_request(SHOP, "t", next(flash_sale("offline", count=1, seed=4)), "offline")
     )
     a = await _attempt(db, res.attempt_id)
-    inc_a, inc_b = Incident(shop_id=SHOP), Incident(shop_id=SHOP)
+    inc_a, inc_b = (
+        Incident(shop_id=SHOP, status=IncidentStatus.CLOSED),
+        Incident(shop_id=SHOP),
+        # One open incident per shop: the earlier one is closed.
+    )
     inc_b.signature = {
         "top_sku": a.sku,
         "fingerprints": [a.fingerprint_hash],

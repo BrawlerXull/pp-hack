@@ -149,6 +149,11 @@ Why not let the LLM decide: a Gemini call takes 3 to 25 seconds, free-tier quota
 
 **If the guard itself is slow, the checkout still works (fail-open).** The guard check gets `GUARD_CHECK_BUDGET_MS` (default 800 ms). If it runs over or the database errors, the payment goes on with the last guard state the server saw: blocked devices stay blocked and 3-D Secure stays on, but the per-device velocity count and the item hold are skipped. With no recent state the payment is allowed and recorded as *Guard too slow: let through*. The public `/v1/guard/check` API behaves the same way.
 
+**Hardening.**
+- **Webhooks.** A body over 256 KB is refused before it is read whole. A signing certificate that is not served over https from paypal.com is refused without asking PayPal. Buyer names, emails, addresses and phone numbers are removed before an event is stored; the signature is still checked against the body exactly as received.
+- **Rate limits** per client IP, counted with the same trusted-proxy rule as the guard. Login: 10 wrong passwords per 5 minutes (correct logins don't count). Orders: 30 per minute. Precheck: 60. Human check: 10. Card tokens: 20. AI agent turns: 60. `RATE_LIMITS_ENABLED=false` switches them off for load tests.
+- **One open incident per shop**, enforced by a partial unique index in Postgres.
+
 ## Run it
 
 ### One command (Docker)

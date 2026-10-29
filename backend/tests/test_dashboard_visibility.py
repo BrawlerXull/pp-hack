@@ -22,6 +22,7 @@ from app.db.models import (
     AuditLog,
     CheckoutAttempt,
     Incident,
+    IncidentStatus,
     MerchantSettings,
     Source,
     SystemStatus,
@@ -451,7 +452,11 @@ async def test_timeseries_in_10_second_buckets(db, client):
 
 
 async def test_alerts_can_be_narrowed_to_one_incident(db, client):
-    a, b = Incident(shop_id=SHOP), Incident(shop_id=SHOP)
+    a, b = (
+        Incident(shop_id=SHOP, status=IncidentStatus.CLOSED),
+        Incident(shop_id=SHOP),
+        # One open incident per shop: the earlier one is closed.
+    )
     db.add_all([a, b])
     await db.flush()
     db.add_all(
