@@ -194,6 +194,22 @@ class PushDevice(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ApiKey(Base):
+    """A secret key a shop's own checkout sends as X-Guard-Key. Only its SHA-256 is stored: the key itself is
+    shown once, when it is created."""
+
+    __tablename__ = "api_keys"
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default=new_id)
+    shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    prefix: Mapped[str] = mapped_column(String(16))  # the first characters, so the owner can tell keys apart
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class MerchantSettings(Base):
     __tablename__ = "merchant_settings"
     shop_id: Mapped[str] = mapped_column(ForeignKey("shops.id"), primary_key=True)

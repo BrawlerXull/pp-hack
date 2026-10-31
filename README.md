@@ -41,8 +41,10 @@ Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox*
    - Another visitor can't start a run within 30 seconds of yours.
    - After 30 idle minutes the demo stands itself down: it closes the open incident and keeps its report, switches the defences off, unblocks devices and restores the default settings.
 7. **Investigate** (AG Studio): every attempt, incident and action from the last 48 hours as an editable report, with our own **AI verdict** and **Defence timeline** widgets. Click a bar to cross-filter the page. **Ask the Guard analyst** opens the AI assistant: ask "What happened in the last incident?" or "Investigate the latest attack", and it reads the incident through Checkout Guard's tools and has Studio's dashboard team build the page. With *Auto-investigate* on, a new incident gets its own investigation page without asking.
-8. **Settings**: autopilot, kill switch, refund caps, stand-down time, "I'm running a sale".
-9. Optional: the **attacker terminal** for a split screen, `uv run python scripts/attack.py card_testing --url https://<frontend-host>/api --password <judge password>` (see [Attacker terminal](#attacker-terminal)).
+8. **Ask Guard** (the blue button in the header, on every dashboard page): an AI assistant that looks things up and acts. Try "Is anything waiting for me?", "Explain this incident" on an incident page, "Pause the guard", or "Contest the dispute". Every change comes back as a card with **Confirm / Cancel**, and only Confirm does anything.
+9. **Connect store**: create an API key, copy the Node, Python, PHP or curl snippet, and press **Send test check**. The connection card turns green within seconds.
+10. **Settings**: autopilot, kill switch, refund caps, stand-down time, "I'm running a sale".
+11. Optional: the **attacker terminal** for a split screen, `uv run python scripts/attack.py card_testing --url https://<frontend-host>/api --password <judge password>` (see [Attacker terminal](#attacker-terminal)).
 
 ## What is real and what is simulated
 
@@ -96,6 +98,7 @@ We do **not** call the webhook simulator (`/v1/notifications/simulate-event`) or
 | **Gemini explainer** ([app/ai/analyst.py](backend/app/ai/analyst.py) `explain`) | Writes the owner-facing summary of the scorecard's decision | Change the classification or the confidence. Text that argues for another class, or cites numbers that don't match ours, is replaced by our template |
 | **Gemini tie-breaker** (`analyse`, [app/incidents/decision.py](backend/app/incidents/decision.py)) | Asked only when the scorecard is unsure (`unclear`, or a margin under 0.30), without being shown the scorecard's answer. If it agrees with the scorecard's top class (with evidence that matches our numbers), that class is used with confidence capped at 0.80 (in practice it stays under 0.70, so policy R3b applies); if it disagrees, the incident stays `unclear` (soft defences only) | Pick a class the scorecard did not rank first, raise a confidence, or reach the 0.85 refund floor |
 | **Report writer** ([app/ai/reporter.py](backend/app/ai/reporter.py)) | Writes the wording of the phone alert, the morning report and the PayPal evidence pack | Write numbers. It may only use `{{placeholders}}`, which we fill from the database |
+| **Ask Guard** (every dashboard page; [app/ai/assistant.py](backend/app/ai/assistant.py), [frontend/src/components/assistant/AskGuard.tsx](frontend/src/components/assistant/AskGuard.tsx)) | A Gemini chat with function calling. Look-up tools (status, incidents, waiting refunds, disputes, blocked devices, settings, recent checkouts) run on the server, on the member's shop. Change tools (approve or keep a refund, close an incident, kill switch, autopilot, unblock a device, clear defences, contest or accept a dispute, run a simulation) only return a **proposal**: the server checks the id against the database and writes the title and amount from our records. The dashboard shows it as a card, and **Confirm** sends the request to the same endpoint as the matching button, so the owner-only rule and every safety rule still apply | Change anything by itself, invent an id or an amount, or get round the role check: viewers see the card but can't confirm it |
 | **Guard analyst** (Investigate page; [frontend/src/components/studio/ai.ts](frontend/src/components/studio/ai.ts), [app/ai/studio_agent.py](backend/app/ai/studio_agent.py)) | An AG Studio Agent Framework agent: reads the guard's live state and incidents through read-only tools, queries the report's data, and hands dashboard building to Studio's built-in agents. Each LLM turn goes through our backend to Gemini (`POST /studio/agent/turn`), so the key stays on the server | Change defences, approve refunds or move money: its tools only read |
 
 Why not let the LLM decide: a Gemini call takes 3 to 25 seconds, free-tier quota runs out, the same input can get a different answer, and attacker-controlled text reaches the prompt. The scorecard answers in milliseconds, and a confident verdict's defences are committed **before** Gemini is asked for the words. The incident stores `classifier_version`, the per-class probabilities, the margin, the top reasons and which path decided (`scorecard`, `scorecard+gemini_agree` or `gemini_disagree_unclear`); the audit log has the same in its `verdict` event. The War Room shows "Decided by: scorecard-v1" with the probability bars and "Explained by: <model> / template".
@@ -147,8 +150,16 @@ Why not let the LLM decide: a Gemini call takes 3 to 25 seconds, free-tier quota
 | | What the shop changes | What Checkout Guard can do |
 |---|---|---|
 | **Observer mode** (no code) | Nothing in its checkout: it points its PayPal webhooks at Checkout Guard | Watches every order and capture PayPal reports (hosted buttons, plugins), detects and judges attacks, alerts the owner, writes the reports, and queues the attack's test payments for refund with **Approve all**. It cannot act *before* a payment: no blocking, no 3-D Secure, no holds. No device signal either, so its refunds always wait for the owner (matched on the attack's pattern: a first-time payer on the attacked item, during the attack). |
-| **Guard API** (a plugin) | Calls `POST /v1/guard/check` before creating each PayPal order and puts the returned `custom_id` on it | Everything: block, human check, 3-D Secure, holds. The order's PayPal webhooks reach the same attempt through the `custom_id`; `POST /v1/guard/outcome` reports what PayPal sends no webhook for (a card refused at order creation). |
+| **Guard API** (your server or a plugin) | Calls `POST /v1/guard/check` before creating each PayPal order and puts the returned `custom_id` on it | Everything: block, human check, 3-D Secure, holds. The order's PayPal webhooks reach the same attempt through the `custom_id`; `POST /v1/guard/outcome` reports what PayPal sends no webhook for (a card refused at order creation). |
 | **Demo shop** | Built in | Everything, in-process. |
+
+**Connecting takes one call.** The dashboard's **Connect store** page has everything for the Guard API:
+- **API keys**: owners create and revoke them. A key is shown once and stored as a SHA-256 hash.
+- **Copy-paste code** for Node.js, Python, PHP and curl, already filled in with this deployment's URL and the new key.
+- **What to do with each answer.**
+- **Send test check**: a dry run (`"dry_run": true`) that answers without recording anything.
+- **Live connection card**: last call, checks in the last 24 hours, latest decision.
+- **SDKs**: generated with **APIMatic** from the public OpenAPI spec (`/api/v1/openapi.json`, only the guard API and its `X-Guard-Key` scheme), in [sdks/](sdks/).
 
 The Demo lab's **Webhooks only** mode runs any scenario as observer mode: the attack arrives as the PayPal webhooks of a checkout that never calls the guard (simulated events, labelled). In the War Room these rows carry a **WEBHOOK** badge.
 
@@ -275,6 +286,8 @@ uv run python scripts/attack.py flash_sale --url https://<frontend-host>/api --p
 | Targeted 3-D Secure, FraudNet correlation id | **Built**; FraudNet's device-data script loads only with a PayPal-issued `PAYPAL_FRAUDNET_SOURCE_ID` (not set in the demo) |
 | Dashboard on AG Grid + AG Charts (Community) | **Built** |
 | AG Studio Investigate page: custom widgets, night theme, Guard analyst agent on Gemini with Studio's built-in agents, auto-investigation of new incidents | **Built** (needs `NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY` to drop the trial watermark) |
+| Ask Guard assistant with confirm-to-act proposals; Connect store page with API keys, dry runs and connection status; public OpenAPI spec | **Built** |
+| SDKs (TypeScript, Python, PHP) generated with APIMatic from the validated spec | **Built** ([sdks/](sdks/)); the Python SDK was run against the API (dry-run check) |
 | Docker compose, Render Blueprint, CI, daily health check, attacker terminal | **Built** |
 | Transaction Search (baseline from real PayPal history instead of the seeded one) | Planned |
 | PayPal Card Fields in the shop with server-checked 3-D Secure (`sca_failed` outcome) | **Built**, verified in a real browser against the sandbox (3-D Secure pass captured, fail recorded with no charge) |

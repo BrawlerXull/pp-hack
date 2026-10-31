@@ -1,0 +1,9 @@
+{
+  "ImportSettings": {
+    "AutoGenerateTestCases": false
+  },
+  "CodeGenSettings": {
+    "ProjectName": "CheckoutGuard",
+    "Timeout": 1
+  }
+}

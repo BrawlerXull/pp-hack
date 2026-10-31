@@ -1,10 +1,11 @@
 "use client";
 
-import { FlaskConical, Home, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck, Siren, Store, Telescope, UserRound } from "lucide-react";
+import { Code2, FlaskConical, Home, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck, Siren, Store, Telescope, UserRound } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Suspense, useEffect } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import useSWR, { SWRConfig } from "swr";
+import { AskGuardButton, AskGuardPanel } from "@/components/assistant/AskGuard";
 import { DemoDock } from "@/components/guard/DemoDock";
 import { api, ApiError, fetcher, type Me } from "@/lib/api";
 import { useLiveUpdates } from "@/lib/live";
@@ -16,6 +17,7 @@ const NAV = [
   { href: "/guard", label: "War Room", icon: LayoutDashboard },
   { href: "/guard/incidents", label: "Incidents", icon: Siren },
   { href: "/guard/investigate", label: "Investigate", icon: Telescope },
+  { href: "/guard/developers", label: "Connect store", icon: Code2 },
   { href: "/guard/settings", label: "Settings", icon: Settings },
   { href: "/guard/lab", label: "Demo lab", icon: FlaskConical },
 ];
@@ -36,6 +38,11 @@ function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { data: me, error } = useSWR<Me>("/auth/me", fetcher, { shouldRetryOnError: false });
   const live = useLiveUpdates();
+  const [askOpen, setAskOpen] = useState(false);
+  const closeAsk = useCallback(() => {
+    setAskOpen(false);
+    document.getElementById("ask-guard-button")?.focus();
+  }, []);
 
   useEffect(() => {
     if (error instanceof ApiError && error.status === 401) router.replace(`/login?next=${encodeURIComponent(pathname)}`);
@@ -120,7 +127,8 @@ function Shell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="flex items-center gap-2">
             <SystemPills live={live} />
-<AccountMenu me={me} onSignOut={signOut} />
+            {me && <AskGuardButton open={askOpen} onClick={() => setAskOpen((o) => !o)} />}
+            <AccountMenu me={me} onSignOut={signOut} />
           </div>
         </header>
         <DemoNotice />
@@ -133,6 +141,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
+      <AskGuardPanel open={askOpen} onClose={closeAsk} me={me} />
     </div>
   );
 }

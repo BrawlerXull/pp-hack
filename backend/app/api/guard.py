@@ -32,22 +32,44 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 
 
 class CheckIn(BaseModel):
-    sku: str = Field(max_length=64)
-    method: Literal["card", "wallet"]
-    fingerprint_hash: str = Field(min_length=8, max_length=64, description="Shop-side hash of device/IP/UA")
-    challenge_token: str | None = None
-    amount: Decimal | None = Field(default=None, ge=0, le=100000)
-    # Only the domain of the buyer's email, never the address.
-    email_domain: str | None = Field(default=None, max_length=255)
-    # The buyer's IP as the shop's server saw it: kept only as keyed hashes (app/guard/signals.py).
-    client_ip: str | None = Field(default=None, max_length=64)
+    """One checkout, as the shop's server sees it, before the PayPal order is created."""
+
+    sku: str = Field(max_length=64, description="The item being bought (your product code)")
+    method: Literal["card", "wallet"] = Field(description="card: card fields; wallet: the PayPal button")
+    fingerprint_hash: str = Field(
+        min_length=8,
+        max_length=64,
+        description="A stable hash of the buyer's device (e.g. SHA-256 of IP + user agent), never the raw "
+        "values",
+    )
+    challenge_token: str | None = Field(
+        default=None, description="The token from a passed human check, when retrying after a challenge"
+    )
+    amount: Decimal | None = Field(default=None, ge=0, le=100000, description="Order total, e.g. 3.00")
+    email_domain: str | None = Field(
+        default=None, max_length=255, description="Only the domain of the buyer's email, never the address"
+    )
+    # Kept only as keyed hashes (app/guard/signals.py).
+    client_ip: str | None = Field(
+        default=None, max_length=64, description="The buyer's IP as your server saw it (stored only hashed)"
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Answer as usual but record nothing: for testing an integration. attempt_id and "
+        "custom_id are null.",
+    )
 
 
 class CheckOut(BaseModel):
-    decision: str
-    reason: str
-    incident_id: str | None
-    sca_method: str | None = Field(
+    """What to do with this checkout."""
+
+    decision: Literal["allow", "allow_with_sca", "challenge", "block"] = Field(
+        description="allow: go on. allow_with_sca: go on with 3-D Secure. challenge: human check first. "
+        "block: don't create the order"
+    )
+    reason: str = Field(description="Why, in a few words (for your logs)")
+    incident_id: str | None = Field(description="The attack this checkout is part of, if any")
+    sca_method: Literal["SCA_ALWAYS"] | None = Field(
         description="Set payment_source.card.attributes.verification.method to this"
     )
     attempt_id: str | None = Field(description="This check, recorded; null if it could not be recorded")
@@ -56,10 +78,18 @@ class CheckOut(BaseModel):
     )
 
 
-@router.post("/check")
+@router.post(
+    "/check",
+    operation_id="check",
+    summary="Check a checkout before creating the PayPal order",
+    response_description="What to do with this checkout, and the custom_id to put on the PayPal order",
+)
 async def guard_check(
     body: CheckIn, shop_id: Annotated[str, Depends(require_shop_key)], session: Session
 ) -> CheckOut:
+    """Call this from your server before creating each PayPal order, and do what `decision` says. Put
+    `custom_id` on the order so PayPal's webhooks for it reach this checkout. If no answer comes within about
+    a second, go on as allow: the guard is built to fail open."""
     ip = signals.client_ip(None, body.client_ip, 0)
     net = signals.ip_net_hash(ip)
     # Fail-open: a slow guard answers allow (or the last known defences) rather than hold up the shop.
@@ -68,6 +98,15 @@ async def guard_check(
         GuardContext(shop_id, body.sku, body.method, body.fingerprint_hash, body.challenge_token, net),
         lock=False,
     )
+    if body.dry_run:
+        return CheckOut(
+            decision=v.decision,
+            reason=v.reason,
+            incident_id=v.incident_id,
+            sca_method="SCA_ALWAYS" if v.decision == Decision.ALLOW_WITH_SCA else None,
+            attempt_id=None,
+            custom_id=None,
+        )
     stopped = {Decision.BLOCK: Outcome.BLOCKED, Decision.CHALLENGE: Outcome.CHALLENGED}
     attempt = CheckoutAttempt(
         id=new_id(),
@@ -106,11 +145,15 @@ async def guard_check(
 
 
 class OutcomeIn(BaseModel):
-    attempt_id: str = Field(max_length=16)
-    outcome: Literal["captured", "declined", "error", "sca_failed", "abandoned"]
-    decline_code: str | None = Field(default=None, max_length=64)
-    paypal_order_id: str | None = Field(default=None, max_length=40)
-    capture_id: str | None = Field(default=None, max_length=40)
+    """What happened to a checked order."""
+
+    attempt_id: str = Field(max_length=16, description="attempt_id from the check")
+    outcome: Literal["captured", "declined", "error", "sca_failed", "abandoned"] = Field(
+        description="What PayPal (or the buyer) did"
+    )
+    decline_code: str | None = Field(default=None, max_length=64, description="PayPal's code when declined")
+    paypal_order_id: str | None = Field(default=None, max_length=40, description="The PayPal order id")
+    capture_id: str | None = Field(default=None, max_length=40, description="The PayPal capture id")
 
 
 OUTCOMES = {
@@ -122,12 +165,20 @@ OUTCOMES = {
 }
 
 
-@router.post("/outcome")
+class OutcomeOut(BaseModel):
+    """The attempt after the report."""
+
+    attempt_id: str = Field(description="The attempt reported on")
+    outcome: str = Field(description="The attempt's outcome now (unchanged if a webhook recorded it first)")
+
+
+@router.post("/outcome", operation_id="reportOutcome", summary="Report what happened to a checked order")
 async def guard_outcome(
     body: OutcomeIn, shop_id: Annotated[str, Depends(require_shop_key)], session: Session
-) -> dict:
-    """What happened to a checked order, for what PayPal sends no webhook about. Only an attempt still waiting
-    for its outcome changes: a capture or refund a webhook already recorded is never overwritten."""
+) -> OutcomeOut:
+    """For what PayPal sends no webhook about (a card refused while creating the order, an error, the buyer
+    leaving), or when your PayPal app has no webhooks. Only a checkout still waiting for its outcome changes:
+    a capture or refund a webhook already recorded is never overwritten."""
     attempt = await session.get(CheckoutAttempt, body.attempt_id, with_for_update=True)
     if attempt is None or attempt.shop_id != shop_id or attempt.source != Source.API:
         raise HTTPException(404, "unknown attempt")
@@ -138,4 +189,4 @@ async def guard_outcome(
         attempt.capture_id = body.capture_id or attempt.capture_id
         await publish(session, "attempt", attempt_event(attempt))
     await session.commit()
-    return {"attempt_id": attempt.id, "outcome": attempt.outcome}
+    return OutcomeOut(attempt_id=attempt.id, outcome=attempt.outcome)

@@ -1,0 +1,419 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Checkout Guard API",
+    "version": "1.0.0",
+    "description": "Ask Checkout Guard before you create a PayPal order, and tell it what happened. Get a key on the Connect store page of your Checkout Guard dashboard.",
+    "contact": {
+      "name": "Checkout Guard",
+      "url": "https://github.com/BrawlerXull/pp-hack"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/license/mit"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://checkout-guard-web.onrender.com/api",
+      "description": "This deployment"
+    }
+  ],
+  "paths": {
+    "/v1/guard/check": {
+      "post": {
+        "tags": [
+          "guard"
+        ],
+        "summary": "Check a checkout before creating the PayPal order",
+        "description": "Call this from your server before creating each PayPal order, and do what `decision` says. Put\n`custom_id` on the order so PayPal's webhooks for it reach this checkout. If no answer comes within about\na second, go on as allow: the guard is built to fail open.",
+        "operationId": "check",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What to do with this checkout, and the custom_id to put on the PayPal order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "GuardKey": []
+          }
+        ]
+      }
+    },
+    "/v1/guard/outcome": {
+      "post": {
+        "tags": [
+          "guard"
+        ],
+        "summary": "Report what happened to a checked order",
+        "description": "For what PayPal sends no webhook about (a card refused while creating the order, an error, the buyer\nleaving), or when your PayPal app has no webhooks. Only a checkout still waiting for its outcome changes:\na capture or refund a webhook already recorded is never overwritten.",
+        "operationId": "reportOutcome",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutcomeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutcomeOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "GuardKey": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CheckIn": {
+        "type": "object",
+        "required": [
+          "sku",
+          "method",
+          "fingerprint_hash"
+        ],
+        "title": "CheckIn",
+        "description": "One checkout, as the shop's server sees it, before the PayPal order is created.",
+        "properties": {
+          "sku": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "The item being bought (your product code)"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "card",
+              "wallet"
+            ],
+            "description": "card: card fields; wallet: the PayPal button"
+          },
+          "fingerprint_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "description": "A stable hash of the buyer's device (e.g. SHA-256 of IP + user agent), never the raw values"
+          },
+          "challenge_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The token from a passed human check, when retrying after a challenge"
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Order total, e.g. 3.00"
+          },
+          "email_domain": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only the domain of the buyer's email, never the address"
+          },
+          "client_ip": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The buyer's IP as your server saw it (stored only hashed)"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Answer as usual but record nothing: for testing an integration. attempt_id and custom_id are null.",
+            "default": false
+          }
+        }
+      },
+      "CheckOut": {
+        "type": "object",
+        "required": [
+          "decision",
+          "reason",
+          "incident_id",
+          "sca_method",
+          "attempt_id",
+          "custom_id"
+        ],
+        "title": "CheckOut",
+        "description": "What to do with this checkout.",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "allow_with_sca",
+              "challenge",
+              "block"
+            ],
+            "description": "allow: go on. allow_with_sca: go on with 3-D Secure. challenge: human check first. block: don't create the order"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why, in a few words (for your logs)"
+          },
+          "incident_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The attack this checkout is part of, if any"
+          },
+          "sca_method": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "SCA_ALWAYS"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set payment_source.card.attributes.verification.method to this"
+          },
+          "attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "This check, recorded; null if it could not be recorded"
+          },
+          "custom_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Put on the PayPal order (purchase_units[0].custom_id) so its webhooks reach this attempt"
+          }
+        }
+      },
+      "HTTPValidationError": {
+        "type": "object",
+        "title": "HTTPValidationError",
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array"
+          }
+        }
+      },
+      "OutcomeIn": {
+        "type": "object",
+        "required": [
+          "attempt_id",
+          "outcome"
+        ],
+        "title": "OutcomeIn",
+        "description": "What happened to a checked order.",
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "maxLength": 16,
+            "description": "attempt_id from the check"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "captured",
+              "declined",
+              "error",
+              "sca_failed",
+              "abandoned"
+            ],
+            "description": "What PayPal (or the buyer) did"
+          },
+          "decline_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "PayPal's code when declined"
+          },
+          "paypal_order_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The PayPal order id"
+          },
+          "capture_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The PayPal capture id"
+          }
+        }
+      },
+      "OutcomeOut": {
+        "type": "object",
+        "required": [
+          "attempt_id",
+          "outcome"
+        ],
+        "title": "OutcomeOut",
+        "description": "The attempt after the report.",
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "description": "The attempt reported on"
+          },
+          "outcome": {
+            "type": "string",
+            "description": "The attempt's outcome now (unchanged if a webhook recorded it first)"
+          }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "input": {},
+          "ctx": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "GuardKey": {
+        "type": "apiKey",
+        "description": "A key from the Developers page",
+        "in": "header",
+        "name": "X-Guard-Key"
+      }
+    }
+  }
+}

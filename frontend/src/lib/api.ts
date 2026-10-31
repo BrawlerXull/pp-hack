@@ -405,3 +405,32 @@ export type RunContext = Partial<{
 }>;
 
 export type LiveEvent = { kind: string; data: Record<string, unknown> };
+
+// ---- Developers page (GET /integration/*) ----------------------------------------------------------
+
+export type ApiKeyRow = { id: string; name: string; prefix: string; created_at: string; last_used_at: string | null };
+export type NewApiKey = ApiKeyRow & { key: string }; // the secret: in the create answer only
+
+export type IntegrationStatus = {
+  last_call_at: string | null;
+  checks_24h: number;
+  latest_check: { ts: string; sku: string; decision: Decision; outcome: Outcome } | null;
+  last_webhook_at: string | null;
+  webhook_path: string;
+};
+
+// ---- Ask Guard (POST /assistant/chat) --------------------------------------------------------------
+
+export type ChatRole = "user" | "assistant" | "note";
+
+export type Proposal = {
+  id: string;
+  tool: string;
+  title: string;
+  detail: string;
+  danger: boolean;
+  owner_only: boolean;
+  request: { method: "POST" | "PATCH" | "PUT" | "DELETE"; path: string; body: Record<string, unknown> | null };
+};
+
+export type AssistantReply = { reply: string; proposals: Proposal[]; looked_up: string[]; model: string | null };

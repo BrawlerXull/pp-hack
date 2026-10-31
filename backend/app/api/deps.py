@@ -1,11 +1,12 @@
 import hmac
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request, Security
+from fastapi.security import APIKeyHeader
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import visitor
+from app import apikeys, visitor
 from app.config import Settings, get_settings
 from app.db.models import Role, User
 from app.db.session import get_session
@@ -14,6 +15,11 @@ from app.paypal.client import PayPalClient
 
 SESSION_COOKIE = "cg_session"
 SESSION_MAX_AGE_S = 7 * 24 * 3600
+# The public guard API's key, declared as a security scheme so the OpenAPI spec (and the SDKs APIMatic
+# generates from it) send it as a header on every call.
+GUARD_KEY = APIKeyHeader(
+    name="X-Guard-Key", auto_error=False, scheme_name="GuardKey", description="A key from the Developers page"
+)
 
 
 def get_paypal(request: Request) -> PayPalClient:
@@ -75,14 +81,21 @@ async def current_user(
     return user
 
 
-def require_shop_key(
+async def require_shop_key(
     settings: Annotated[Settings, Depends(get_settings)],
-    x_guard_key: Annotated[str | None, Header()] = None,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    x_guard_key: Annotated[str | None, Security(GUARD_KEY)] = None,
 ) -> str:
-    """External guard API auth for shops calling /v1/guard/* from their own checkout."""
-    if not x_guard_key or not hmac.compare_digest(x_guard_key, settings.shop_api_key):
+    """External guard API auth for shops calling /v1/guard/* from their own checkout: a key made on the
+    Developers page (app/apikeys.py), or the SHOP_API_KEY from the environment."""
+    if not x_guard_key:
         raise HTTPException(401, "invalid X-Guard-Key")
-    return settings.shop_id
+    if hmac.compare_digest(x_guard_key, settings.shop_api_key):
+        return settings.shop_id
+    key = await apikeys.lookup(session, x_guard_key)
+    if key is None:
+        raise HTTPException(401, "invalid X-Guard-Key")
+    return key.shop_id
 
 
 def require_simulator(settings: Annotated[Settings, Depends(get_settings)]) -> None:
