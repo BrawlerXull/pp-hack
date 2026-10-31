@@ -1,0 +1,24 @@
+# Keeps the free Render service awake during judging (free web services sleep after 15 idle minutes, and
+# the first visit after that waits about a minute). Needs the DEMO_URL repository secret. Stops after
+# Dec 15, 2026, when judging ends.
+name: Keep demo awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.run_started_at < '2026-12-16' }}
+    steps:
+      - name: GET /api/livez
+        env:
+          DEMO_URL: ${{ secrets.DEMO_URL }}
+        run: |
+          if [ -z "$DEMO_URL" ]; then echo "::warning::DEMO_URL is not set"; exit 0; fi
+          curl -sS --max-time 90 --retry 2 --retry-all-errors "${DEMO_URL%/}/api/livez"

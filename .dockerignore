@@ -1,0 +1,17 @@
+# Build context of docker/all-in-one (the repository root). Never bake secrets or local state in.
+**/.env
+**/.env.*
+**/firebase-service-account*.json
+**/*-firebase-adminsdk-*.json
+backend/.venv
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+backend/spike-output
+frontend/node_modules
+frontend/.next
+frontend/next-env.d.ts
+sdks
+docs
+.git

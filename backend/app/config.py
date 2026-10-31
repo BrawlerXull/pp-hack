@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     ai_enabled: bool = True
 
     database_url: str = "postgresql+asyncpg://localhost:5432/checkout_guard"
+    # Connections per process (plus as many again in overflow). A free hosted Postgres allows few.
+    db_pool_size: int = 10
 
     # Demo shop identity + auth
     shop_id: str = "wick-and-wax"
@@ -61,6 +63,10 @@ class Settings(BaseSettings):
 
     # Simulator endpoints (/sim/*) are only mounted when this is true.
     simulator_enabled: bool = True
+
+    # Run the worker (app/worker/main.py) inside the API process instead of as its own service: for a
+    # single free web service, where no background worker is available. Off by default.
+    run_worker_in_api: bool = False
 
     # Worker cadence
     detect_interval_s: float = 5.0
@@ -117,8 +123,15 @@ class Settings(BaseSettings):
         # Render and most tools hand out postgres:// URLs; SQLAlchemy async needs the asyncpg driver.
         for prefix in ("postgres://", "postgresql://"):
             if v.startswith(prefix):
-                return "postgresql+asyncpg://" + v[len(prefix) :]
-        return v
+                v = "postgresql+asyncpg://" + v[len(prefix) :]
+        # Hosted Postgres (Supabase, Neon) hands out libpq options asyncpg does not take: sslmode becomes
+        # asyncpg's ssl, and channel_binding is dropped.
+        base, _, query = v.partition("?")
+        if not query:
+            return v
+        params = [p for p in query.split("&") if p and not p.startswith("channel_binding=")]
+        params = [f"ssl={p.split('=', 1)[1]}" if p.startswith("sslmode=") else p for p in params]
+        return base + ("?" + "&".join(params) if params else "")
 
     @model_validator(mode="after")
     def _sandbox_only(self) -> "Settings":

@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -28,6 +29,7 @@ from app.db.session import get_session, get_sessionmaker
 from app.events import Broadcaster
 from app.log_config import configure_logging
 from app.paypal.client import PayPalClient
+from app.worker import main as worker
 
 
 @asynccontextmanager
@@ -40,7 +42,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await ensure_shop(s, cfg.shop_id)
     await breaker.reset_until_restart()
     await app.state.broadcaster.start()
+    stop_worker = asyncio.Event()
+    worker_task = asyncio.create_task(worker.run(stop_worker)) if cfg.run_worker_in_api else None
     yield
+    if worker_task is not None:
+        stop_worker.set()
+        await asyncio.wait_for(worker_task, timeout=30)
     await app.state.broadcaster.stop()
     await app.state.paypal.aclose()
 

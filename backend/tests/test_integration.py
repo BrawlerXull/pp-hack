@@ -87,3 +87,15 @@ async def test_the_public_spec_has_only_the_guard_api_and_its_key_header(api):
     assert spec["paths"]["/v1/guard/check"]["post"]["operationId"] == "check"
     assert spec["servers"][0]["url"].endswith("/api")
     assert "UserOut" not in spec["components"]["schemas"]
+
+
+def test_a_hosted_postgres_url_works_with_asyncpg():
+    """Supabase and Neon hand out libpq URLs: sslmode becomes ssl, channel_binding goes."""
+    from app.config import Settings
+
+    url = "postgresql://u:p@db.example.com:5432/postgres?sslmode=require&channel_binding=require"
+    assert (
+        Settings(database_url=url).database_url
+        == "postgresql+asyncpg://u:p@db.example.com:5432/postgres?ssl=require"
+    )
+    assert Settings(database_url="postgres://u:p@h/db").database_url == "postgresql+asyncpg://u:p@h/db"

@@ -43,13 +43,16 @@ WEBHOOK_BATCHES_PER_TICK = 20
 log = structlog.get_logger()
 
 
-async def run() -> None:
-    configure_logging()
+async def run(stop: asyncio.Event | None = None) -> None:
+    """Until SIGINT/SIGTERM, or until `stop` is set when the API runs the worker in its own process
+    (RUN_WORKER_IN_API): the API then keeps its own logging and signal handling."""
     settings = get_settings()
-    stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
+    if stop is None:
+        configure_logging()
+        stop = asyncio.Event()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
 
     paypal = PayPalClient(settings)
     sessions = get_sessionmaker()
