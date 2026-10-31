@@ -114,7 +114,7 @@ function createHttpClientAdapter(client: HttpClient): HttpClientInterface {
 function getBaseUri(server: Server = 'default', config: Configuration): string {
   if (config.environment === Environment.Production) {
     if (server === 'default') {
-      return 'https://checkout-guard-web.onrender.com/api';
+      return 'https://checkout-guard-8s7p.onrender.com/api';
     }
   }
   throw new Error('Could not get Base URL. Invalid environment or server.');

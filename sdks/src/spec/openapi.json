@@ -15,7 +15,7 @@
   },
   "servers": [
     {
-      "url": "https://checkout-guard-web.onrender.com/api",
+      "url": "https://checkout-guard-8s7p.onrender.com/api",
       "description": "This deployment"
     }
   ],

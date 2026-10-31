@@ -190,7 +190,7 @@ class Configuration(HttpClientConfiguration):
     # All the environments the SDK can run in
     environments = {
         Environment.PRODUCTION: {
-            Server.DEFAULT: "https://checkout-guard-web.onrender.com/api",
+            Server.DEFAULT: "https://checkout-guard-8s7p.onrender.com/api",
         },
     }
 

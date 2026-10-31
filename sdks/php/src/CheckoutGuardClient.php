@@ -209,5 +209,5 @@ class CheckoutGuardClient implements ConfigurationInterface
      * @var array
      */
     private const ENVIRONMENT_MAP =
-        [Environment::PRODUCTION => [Server::DEFAULT_ => 'https://checkout-guard-web.onrender.com/api']];
+        [Environment::PRODUCTION => [Server::DEFAULT_ => 'https://checkout-guard-8s7p.onrender.com/api']];
 }

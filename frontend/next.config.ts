@@ -29,6 +29,11 @@ const nextConfig: NextConfig = {
   // The dev-only Next.js badge sits over the sidebar in demo recordings.
   devIndicators: false,
   cacheComponents: true,
+  experimental: {
+    // The /api proxy gives up after 30 s by default; an Ask Guard answer (several Gemini steps, with a
+    // fallback when a model is slow) can take longer.
+    proxyTimeout: 120_000,
+  },
   partialPrefetching: true,
   turbopack: {
     rules: {

@@ -10,8 +10,8 @@ Built for the PayPal AI Hackathon 2026. Everything runs in the **PayPal sandbox*
 
 | | |
 |---|---|
-| Hosted demo | `https://<frontend-host>` *(placeholder: filled in at submission)*: product page, with links to the shop and the dashboard |
-| Owner dashboard | `https://<frontend-host>/guard`: sign in as `demo@wickandwax.example` with `<judge password>` *(given in the submission form)*, or create your own account (it joins as a viewer) |
+| Hosted demo | **https://checkout-guard-8s7p.onrender.com**: product page, with links to the shop and the dashboard. Free hosting: if it has been idle, the first page can take about a minute |
+| Owner dashboard | https://checkout-guard-8s7p.onrender.com/guard: sign in as `demo@wickandwax.example` with `<judge password>` *(given in the submission form)*, or create your own account (it joins as a viewer) |
 | Mobile app | Open the hosted demo on a phone and choose **Install app** (Android, desktop Chrome/Edge) or **Share → Add to Home Screen** (iPhone). Then **Settings → Notifications → Turn on** for push alerts |
 | Sandbox buyer (PayPal button) | `<sandbox-buyer-email>` / `<sandbox-buyer-password>` *(placeholder)* |
 
@@ -249,6 +249,15 @@ PayPal webhooks (ngrok + `scripts/register_webhook.py`), enabling card payments 
 - **Health.** Render's health check uses `/livez`: the process is up and the database answers. `/healthz` is the full readiness report (database, PayPal, Gemini, live stream) and answers 503 when degraded. A daily GitHub Action ([.github/workflows/healthcheck.yml](.github/workflows/healthcheck.yml)) checks it on the `DEMO_URL` secret.
 - **CI.** [.github/workflows/ci.yml](.github/workflows/ci.yml) runs ruff, the migrations with a drift check, and pytest against Postgres for the backend, and tsc, lint and build for the frontend.
 
+
+**The hosted demo runs on free tiers.** It uses one free Render web service built from [docker/all-in-one/Dockerfile](docker/all-in-one/Dockerfile) and a free Supabase Postgres:
+- **One container.** Next.js serves the UI on `$PORT` and proxies `/api` to the API on `127.0.0.1:8000`. The API runs the worker inside its own process (`RUN_WORKER_IN_API=true`), because the free tier has no background workers.
+- **Migrations** run when the container starts.
+- **Database connection.** The database is reached through Supabase's session pooler, which Render can reach over IPv4. `DATABASE_URL` keeps `sslmode=require`; the app converts it for asyncpg. `DB_POOL_SIZE=5`.
+- **Staying awake.** Free web services sleep after 15 idle minutes, so [.github/workflows/keepalive.yml](.github/workflows/keepalive.yml) pings `/api/livez` every 10 minutes until judging ends. It needs the `DEMO_URL` repository secret.
+- **Webhook.** The PayPal sandbox webhook points at `https://checkout-guard-8s7p.onrender.com/api/webhooks/paypal`.
+
+The paid layout above (separate API, worker and frontend) needs no code change: it is the same app with `RUN_WORKER_IN_API` off.
 ### Attacker terminal
 
 For a split-screen video, put this terminal next to the War Room. It logs in as the owner, starts the same labelled simulation as the Demo lab, and prints one line per attempt as it lands, plus `>> GUARD:` lines when the defender acts. Ctrl-C stops the run.
